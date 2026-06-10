@@ -1,0 +1,13 @@
+# Rust build output
+/target
+**/target/
+
+# Local experiment artifacts (do not commit)
+*.jsonl
+*.leakcheck.txt
+*.report.txt
+rss-*.csv
+package-lock.json
+
+# Editor / OS
+.DS_Store
