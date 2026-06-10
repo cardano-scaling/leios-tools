@@ -210,6 +210,14 @@ cargo run -p net-cli -- multi-follow \
   --listen 0.0.0.0:8888
 ```
 
+### Sample Execution
+
+```
+RUST_LOG=info cargo run -p net-cluster -- \
+  --config net-cluster/configs/sample-cluster.toml \
+  --net-node-bin target/debug/net-node
+```
+
 ### Leios simulation
 
 ```sh

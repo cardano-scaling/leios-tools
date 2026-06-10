@@ -21,6 +21,14 @@ While the simulation is running, it will log what's going on to the console. You
 
 The simulation runs in virtual time and completes as fast as your machine allows.
 
+```
+cargo run --release \
+  ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+  output/NA-0.200-mainnet.jsonl \
+  -s 1000 \
+  -p "../../ouroboros-leios/analysis/sims/2026w18/experiments/NA,0.200/top-stake-fraction/topology-v2-1500/seed-0/config.yaml"
+```
+
 ## Engine and shard selection
 
 The simulator supports two execution engines, selected via the `engine` parameter:
