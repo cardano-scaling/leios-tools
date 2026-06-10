@@ -1,1 +1,783 @@
-../../data/simulation/config.schema.json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "BehaviourSpec": {
+      "description": "Per-node consensus behaviour.  Tagged enum (kind = honest|composite|rb-header-equivocator|lazy-voter).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["kind"],
+          "type": "object",
+          "properties": { "kind": { "const": "honest", "type": "string" } }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind", "children"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "composite", "type": "string" },
+            "children": { "type": "array", "items": { "$ref": "#/definitions/BehaviourSpec" } }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "rb-header-equivocator", "type": "string" },
+            "ways": { "type": "integer", "minimum": 2, "default": 2 }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "lazy-voter", "type": "string" },
+            "reason": {
+              "default": "declined",
+              "description": "NoVote reason recorded for telemetry on each abstention.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "BehaviourSelection": {
+      "description": "Which nodes a behaviour applies to.  Tagged enum (kind = all|nodes|stake-random|stake-ordered|stake-fraction).  Stake-aware variants ignore zero-stake nodes; selection is deterministic for a given seed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["kind"],
+          "type": "object",
+          "properties": { "kind": { "const": "all", "type": "string" } }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "nodes", "type": "string" },
+            "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind", "count"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "stake-random", "type": "string" },
+            "count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind", "count"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "stake-ordered", "type": "string" },
+            "count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind", "fraction"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "stake-fraction", "type": "string" },
+            "fraction": { "type": "number" }
+          }
+        }
+      ]
+    },
+    "CleanupPolicies": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/definitions/CleanupPolicy"
+          },
+          "type": "array"
+        },
+        {
+          "const": "all",
+          "type": "string"
+        }
+      ]
+    },
+    "CleanupPolicy": {
+      "enum": [
+        "cleanup-expired-certificate",
+        "cleanup-expired-ib",
+        "cleanup-expired-unadopted-eb",
+        "cleanup-expired-uncertified-eb",
+        "cleanup-expired-vote"
+      ],
+      "type": "string"
+    },
+    "ConstantDistribution": {
+      "properties": {
+        "distribution": {
+          "const": "constant",
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "CommitteeSelectionAlgorithm": {
+      "enum": ["wfa-ls", "everyone", "top-stake-fraction"],
+      "type": "string"
+    },
+    "DiffusionStrategy": {
+      "enum": ["peer-order", "freshest-first", "oldest-first"],
+      "type": "string"
+    },
+    "Distribution": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/NormalDistribution"
+        },
+        {
+          "$ref": "#/definitions/ExpDistribution"
+        },
+        {
+          "$ref": "#/definitions/LogNormalDistribution"
+        },
+        {
+          "$ref": "#/definitions/ConstantDistribution"
+        }
+      ]
+    },
+    "EBPropagationCriteria": {
+      "enum": ["eb-received", "txs-received", "fully-valid"],
+      "type": "string"
+    },
+    "ExpDistribution": {
+      "properties": {
+        "distribution": {
+          "const": "exp",
+          "type": "string"
+        },
+        "lambda": {
+          "type": "number"
+        },
+        "scale": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LateEBAttackConfig": {
+      "description": "Configuration for a \"late EB\" attack,\nwhere nodes deliberately withhold EBs until near the end of the voting phase.",
+      "properties": {
+        "attackers": {
+          "$ref": "#/definitions/NodeSelection",
+          "description": "The set of stake pools which are participating in the attack."
+        },
+        "propagation-delay-ms": {
+          "description": "How long the attackers will wait before diffusing their EBs",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "LateTXAttackConfig": {
+      "description": "Configuration for a \"late TX\" attack,\nwhere EB producers create TXs which they do not disseminate until also disseminating the EB.",
+      "properties": {
+        "attack-probability": {
+          "description": "How often does one of these nodes perform this attack when they get the chance?",
+          "type": "number"
+        },
+        "attackers": {
+          "$ref": "#/definitions/NodeSelection",
+          "description": "The set of stake pools which are participating in the attack."
+        },
+        "tx-generation-distribution": {
+          "$ref": "#/definitions/Distribution",
+          "description": "How many transactions are generated as part of the attack?"
+        }
+      },
+      "type": "object"
+    },
+    "LeiosVariant": {
+      "enum": [
+        "short",
+        "full",
+        "full-without-ibs",
+        "full-with-tx-references",
+        "linear",
+        "linear-with-tx-references"
+      ],
+      "type": "string"
+    },
+    "LogNormalDistribution": {
+      "properties": {
+        "distribution": {
+          "const": "log-normal",
+          "type": "string"
+        },
+        "mu": {
+          "type": "number"
+        },
+        "sigma": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "MempoolSamplingStrategy": {
+      "enum": ["ordered-by-id", "random"],
+      "type": "string"
+    },
+    "NodeSelection": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/NodesNodeSelection"
+        },
+        {
+          "$ref": "#/definitions/StakeFractionNodeSelection"
+        }
+      ]
+    },
+    "NodesNodeSelection": {
+      "properties": {
+        "nodes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "NormalDistribution": {
+      "properties": {
+        "distribution": {
+          "const": "normal",
+          "type": "string"
+        },
+        "mean": {
+          "type": "number"
+        },
+        "std_dev": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "RelayStrategy": {
+      "enum": ["request-from-all", "request-from-first"],
+      "type": "string"
+    },
+    "StakeFractionNodeSelection": {
+      "properties": {
+        "stake-fraction": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "A configuration for a Leios simulation.",
+  "properties": {
+    "cert-generation-cpu-time-ms-constant": {
+      "type": "number"
+    },
+    "cert-generation-cpu-time-ms-per-node": {
+      "type": "number"
+    },
+    "cert-size-bytes-constant": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "cert-size-bytes-per-node": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "cert-validation-cpu-time-ms-constant": {
+      "type": "number"
+    },
+    "cert-validation-cpu-time-ms-per-node": {
+      "type": "number"
+    },
+    "cleanup-policies": {
+      "$ref": "#/definitions/CleanupPolicies",
+      "description": "Only supported by Haskell simulation."
+    },
+    "eb-body-avg-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "eb-body-validation-cpu-time-ms-constant": {
+      "type": "number"
+    },
+    "eb-body-validation-cpu-time-ms-per-byte": {
+      "type": "number"
+    },
+    "eb-diffusion-max-bodies-to-request": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-diffusion-max-headers-to-request": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-diffusion-max-window-size": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-diffusion-strategy": {
+      "$ref": "#/definitions/DiffusionStrategy",
+      "description": "Only supported by Haskell simulation."
+    },
+    "eb-generation-cpu-time-ms": {
+      "type": "number"
+    },
+    "eb-generation-probability": {
+      "type": "number"
+    },
+    "eb-header-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "eb-include-txs-from-previous-stage": {
+      "description": "For stracciatella: when creating a new EB, have it reference transactions from a previous EB",
+      "type": "boolean"
+    },
+    "eb-max-age-for-relay-slots": {
+      "additionalProperties": false,
+      "description": "The maximum age of EBs to be relayed.\n\nAn EB from slot `s` will only be relayed\nup to slot `s+eb-max-age-for-relay-slots`.\n\nOnly supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-max-age-slots": {
+      "additionalProperties": false,
+      "description": "The maximum age of EBs included in RBs.\n\nAn EB from slot `s` can only be included in RBs\nup to slot `s+eb-max-age-slots`.\n\nIn short leios we expect votes to diffuse within 3 stages lengths of\nEB generation, we allow for 2 more stage lengths to account for\nvariance in the interval within RBs.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-referenced-txs-max-size-bytes": {
+      "additionalProperties": false,
+      "description": "The maximum size of transactions (in bytes) which an EB can reference.\nOnly relevant when running with the \"full-without-ibs\" variant.\n\nOnly supported by Rust simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "eb-size-bytes-constant": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "eb-size-bytes-per-ib": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "eb-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "rb-apply-cpu-time-ms": {
+      "description": "Per-block constant CPU cost for ledger-apply (shared-consensus adapter only).",
+      "type": "number"
+    },
+    "rb-apply-cpu-time-ms-per-tx": {
+      "description": "Per-tx scaling for RB ledger-apply (shared-consensus adapter only).",
+      "type": "number"
+    },
+    "eb-apply-cpu-time-ms": {
+      "description": "Per-EB-closure constant CPU cost for ledger-apply (shared-consensus adapter only).",
+      "type": "number"
+    },
+    "eb-apply-cpu-time-ms-per-tx": {
+      "description": "Per-tx scaling for EB ledger-apply (shared-consensus adapter only).",
+      "type": "number"
+    },
+    "ib-body-avg-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "ib-body-max-size-bytes": {
+      "additionalProperties": false,
+      "description": "Only supported by Rust simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "ib-body-validation-cpu-time-ms-constant": {
+      "type": "number"
+    },
+    "ib-body-validation-cpu-time-ms-per-byte": {
+      "type": "number"
+    },
+    "ib-diffusion-max-bodies-to-request": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "ib-diffusion-max-headers-to-request": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "ib-diffusion-max-window-size": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "ib-diffusion-strategy": {
+      "$ref": "#/definitions/DiffusionStrategy"
+    },
+    "ib-generation-cpu-time-ms": {
+      "type": "number"
+    },
+    "ib-generation-probability": {
+      "type": "number"
+    },
+    "ib-head-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "ib-head-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "ib-shard-group-count": {
+      "description": "The \"k\" IB sharding parameter.\nControls how many groups of shards are assigned at a time.\n\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "ib-shard-period-length-slots": {
+      "description": "The \"m\" IB sharding parameter.\nControls how many slots in a row will use the same list of shards.\n\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "ib-shards": {
+      "description": "The total number of shards available for IBs.\nMust be divisible by ib_shard_group_count.\n\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "consensus-behaviours": {
+      "default": [],
+      "description": "Per-node adversarial / experimental behaviours wired into the shared-consensus engine.\nEach entry pairs a BehaviourSpec (kind = honest|composite|rb-header-equivocator|lazy-voter)\nwith a BehaviourSelection (kind = all|nodes|stake-random|stake-ordered|stake-fraction)\npicking which nodes run it.  Overlapping selections compose.\nDeterministic for a given seed.  Ignored by engines other than `shared-consensus`.",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "required": ["spec", "selection"],
+        "type": "object",
+        "properties": {
+          "spec": { "$ref": "#/definitions/BehaviourSpec" },
+          "selection": { "$ref": "#/definitions/BehaviourSelection" }
+        }
+      }
+    },
+    "late-eb-attack": {
+      "$ref": "#/definitions/LateEBAttackConfig",
+      "description": "Configuration for a \"late EB\" attack,\nwhere nodes deliberately withhold EBs until near the end of the voting phase."
+    },
+    "late-tx-attack": {
+      "$ref": "#/definitions/LateTXAttackConfig",
+      "description": "Configuration for a \"late TX\" attack,\nwhere EB producers create TXs which they do not disseminate until also disseminating the EB."
+    },
+    "leios-header-diffusion-time-ms": {
+      "description": "The expected time it takes a header to fully diffuse across the network.\nThis is Δhdr from the Leios paper.",
+      "type": "number"
+    },
+    "leios-ib-generation-time-ms": {
+      "description": "The expected time it takes a node to generate an IB.\nThis is used as part of a validation rule to protect against equivocation attacks.\nIn practice, it should probably always equal ib-generation-cpu-time-ms.",
+      "type": "number"
+    },
+    "leios-late-ib-inclusion": {
+      "description": "Extends Leios so that EB producers include IBs directly from previous pipelines.\nDue to casuality, the EB must always include them, even if those IBs end up being\ncertified in their own pipeline.",
+      "type": "boolean"
+    },
+    "leios-mempool-aggressive-pruning": {
+      "description": "If true, transactions will be removed from the Leios mempool if they conflict with in-flight IBs.",
+      "type": "boolean"
+    },
+    "leios-mempool-sampling-strategy": {
+      "$ref": "#/definitions/MempoolSamplingStrategy",
+      "description": "The strategy to use when selecting TXs from the Leios mempool."
+    },
+    "leios-mempool-size-bytes": {
+      "additionalProperties": false,
+      "description": "The maximum size of a mempool, in bytes",
+      "properties": {},
+      "type": "number"
+    },
+    "leios-tx-generated-backlog-max-size": {
+      "description": "Maximum number of locally-generated transactions in the tx backlog (waiting area behind the mempool). null = unbounded.",
+      "type": ["number", "null"]
+    },
+    "leios-tx-peer-backlog-max-size": {
+      "description": "Maximum number of peer-received transactions in the tx backlog. null = unbounded.",
+      "type": ["number", "null"]
+    },
+    "leios-stage-active-voting-slots": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "leios-stage-length-slots": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "leios-variant": {
+      "$ref": "#/definitions/LeiosVariant"
+    },
+    "leios-vote-send-recv-stages": {
+      "description": "Determines whether a Leios pipeline has separate Vote (Send) and Vote (Recv) stages.\nIf this is set to `true`, it is recommended to set `leios-stage-active-voting-slots`\nto be equal to `leios-stage-length-slots`.\n\nOnly supported by Haskell simulation.",
+      "type": "boolean"
+    },
+    "linear-diffuse-stage-length-slots": {
+      "additionalProperties": false,
+      "description": "How long after the EB voting stage are votes allowed to diffuse.\nMatches L_diff from the paper.",
+      "properties": {},
+      "type": "number"
+    },
+    "linear-eb-propagation-criteria": {
+      "$ref": "#/definitions/EBPropagationCriteria",
+      "description": "Which conditions must be met before a node will send an EB to peers?\n - \"eb-received\": the EB must only go through basic validation\n - \"txs-received\": all TXs in the EB must have been received\n - \"fully-valid\": the EB must be fully validated"
+    },
+    "linear-tx-max-age-slots": {
+      "description": "Maximum age (in slots) before a transaction can be pruned from node memory. When set, transactions older than this that are no longer in the mempool will be removed. Set to null to disable pruning.",
+      "type": ["number", "null"]
+    },
+    "linear-vote-stage-length-slots": {
+      "additionalProperties": false,
+      "description": "How long the EB voting stage is allowed to last.\nShould be more than 3x leios-header-diffusion-time-ms.\nMatches L_vote from the paper.",
+      "properties": {},
+      "type": "number"
+    },
+    "multiplex-mini-protocols": {
+      "description": "Only supported by Haskell simulation.",
+      "type": "boolean"
+    },
+    "praos-chain-quality": {
+      "description": "Praos blockchain quality parameter.\nThis is η from the Leios paper.\nControls the pipelines EBs should reference in Full leios:\n  i - ⌈3η/L⌉, …, i-3\nwhere i is the index of the current pipeline.",
+      "type": "number"
+    },
+    "praos-fallback-enabled": {
+      "description": "If true, RBs will contain transactions directly as well as through a certificate.\nIf false, RBs will only contain a cert.",
+      "type": "boolean"
+    },
+    "rb-body-legacy-praos-payload-avg-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "rb-body-legacy-praos-payload-validation-cpu-time-ms-constant": {
+      "type": "number"
+    },
+    "rb-body-legacy-praos-payload-validation-cpu-time-ms-per-byte": {
+      "type": "number"
+    },
+    "rb-body-max-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "rb-generation-cpu-time-ms": {
+      "type": "number"
+    },
+    "rb-generation-probability": {
+      "type": "number"
+    },
+    "rb-head-size-bytes": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "rb-head-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "relay-strategy": {
+      "$ref": "#/definitions/RelayStrategy"
+    },
+    "simulate-transactions": {
+      "description": "Only supported by Rust simulation.",
+      "type": "boolean"
+    },
+    "tcp-congestion-control": {
+      "description": "Use the TCP congestion-window model for all links (slow-start, bandwidth-delay product, ACK pipelining). Supported by both Haskell and Rust simulations.",
+      "type": "boolean",
+      "default": true
+    },
+    "shard-count": {
+      "description": "Number of clock shards for parallel simulation. Each shard advances time independently.\nOnly supported by Rust simulation.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 1
+    },
+    "shard-strategy": {
+      "description": "Strategy for assigning nodes to shards.\n- round-robin: simple node_id % shard_count\n- zero-latency-clusters: keeps 0-latency-connected nodes on the same shard\n- geographic: k-means clustering by node coordinates\n- min-latency-clusters: agglomerative clustering maximizing cross-shard latency\nOnly supported by Rust simulation.",
+      "type": "string",
+      "enum": ["round-robin", "zero-latency-clusters", "geographic", "min-latency-clusters", "min-cut"],
+      "default": "round-robin"
+    },
+    "shard-max-size-pct": {
+      "description": "Max shard size as percentage of average size. Used by min-latency-clusters to prevent imbalanced shards.\nOnly supported by Rust simulation.",
+      "type": "integer",
+      "minimum": 100,
+      "default": 200
+    },
+    "engine": {
+      "description": "Simulation engine.\n- actor: tokio-based async actor system, non-deterministic, supports attacker scenarios\n- sequential: discrete event simulation, deterministic, does not support attacker scenarios\nOnly supported by Rust simulation.",
+      "type": "string",
+      "enum": ["actor", "sequential"],
+      "default": "actor"
+    },
+    "parallel-threshold": {
+      "description": "Minimum simultaneous events before using rayon parallelism in the sequential engine.\nOnly supported by Rust simulation.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 10
+    },
+    "timestamp-resolution-ms": {
+      "description": "The smallest unit of time to simulate, in fractions of a millisecond.\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "treat-blocks-as-full": {
+      "description": "When `true`, any delays and message sizes are calculated as if\neach block contained as much data as the expected average, rounded up.\nIn particular, for the sake of the above, we consider that:\n  - Each RB includes a certificate.\n  - Certificates contain votes from `vote-threshold` nodes.\n  - Vote bundles vote for `ceil eb-generation-probability` EBs.\n  - EBs reference `ceil (ib-generation-probability * leios-stage-length-slots)` IBs.\nOnly supported by Haskell simulation.",
+      "type": "boolean"
+    },
+    "tx-batch-window-ms": {
+      "description": "When set, the sequential engine batches all TX generation events within this time window (in ms) into a single timestamp. Independent of timestamp-resolution-ms.",
+      "type": ["number", "null"]
+    },
+    "tx-conflict-fraction": {
+      "description": "What fraction of TXs (from 0 to 1) should introduce conflicts with transactions which were produced before?\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "tx-generation-distribution": {
+      "$ref": "#/definitions/Distribution",
+      "description": "Only supported by Rust simulation."
+    },
+    "tx-max-size-bytes": {
+      "additionalProperties": false,
+      "description": "Only supported by Rust simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "tx-overcollateralization-factor-distribution": {
+      "$ref": "#/definitions/Distribution",
+      "description": "Distribution used to choose the \"over-collateralization factor\" for a transaction.\nAn \"overcollateralization factor\" of n means the TX has enough collateral to be included in n+1 shards.\nA factor of 0 means the TX has enough collateral to be include in 1 shard; i.e. it is not over-collateralized.\nOnly supported by Rust simulation."
+    },
+    "tx-size-bytes-distribution": {
+      "$ref": "#/definitions/Distribution",
+      "description": "Only supported by Rust simulation."
+    },
+    "tx-start-time": {
+      "description": "When the first transaction should appear.\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "tx-stop-time": {
+      "description": "The cutoff time after which transactions should not appear.\nOnly supported by Rust simulation.",
+      "type": "number"
+    },
+    "tx-validation-cpu-time-ms": {
+      "description": "Only supported by Rust simulation.",
+      "type": "number"
+    },
+    "tx-validation-cpu-time-ms-per-byte": {
+      "description": "Only supported by Rust simulation.",
+      "type": "number"
+    },
+    "vote-bundle-size-bytes-constant": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "number"
+    },
+    "vote-bundle-size-bytes-per-eb": {
+      "additionalProperties": false,
+      "description": "Grandfathered for Haskell sim.",
+      "properties": {},
+      "type": "number"
+    },
+    "persistent-vote-bundle-size-bytes-per-eb": {
+      "type": "number"
+    },
+    "non-persistent-vote-bundle-size-bytes-per-eb": {
+      "type": "number"
+    },
+    "vote-diffusion-max-bodies-to-request": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "vote-diffusion-max-headers-to-request": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "vote-diffusion-max-window-size": {
+      "additionalProperties": false,
+      "description": "Only supported by Haskell simulation.",
+      "properties": {},
+      "type": "number"
+    },
+    "vote-diffusion-strategy": {
+      "$ref": "#/definitions/DiffusionStrategy",
+      "description": "Only supported by Haskell simulation."
+    },
+    "vote-generation-cpu-time-ms-constant": {
+      "description": "Grandfathered for Haskell sim.",
+      "type": "number"
+    },
+    "persistent-vote-generation-cpu-time-ms": {
+      "type": "number"
+    },
+    "non-persistent-vote-generation-cpu-time-ms": {
+      "type": "number"
+    },
+    "vote-generation-cpu-time-ms-per-ib": {
+      "type": "number"
+    },
+    "vote-generation-cpu-time-ms-per-tx": {
+      "type": "number"
+    },
+    "vote-generation-probability": {
+      "description": "Grandfathered for Haskell sim.",
+      "type": "number"
+    },
+    "persistent-vote-generation-probability": {
+      "type": "number"
+    },
+    "non-persistent-vote-generation-probability": {
+      "type": "number"
+    },
+    "quorum-weight-fraction": {
+      "description": "Fraction of expected total weight required for quorum. Replaces the old `vote-threshold` knob. CIP-0164 default 0.75; legacy sim runs used 0.6. For `top-stake-fraction` selection the denominator is total active stake (CIP-164 PR #1196).",
+      "type": "number"
+    },
+    "vote-validation-cpu-time-ms": {
+      "description": "Grandfathered for Haskell sim.",
+      "type": "number"
+    },
+    "persistent-vote-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "non-persistent-vote-validation-cpu-time-ms": {
+      "type": "number"
+    },
+    "committee-selection-algorithm": {
+      "$ref": "#/definitions/CommitteeSelectionAlgorithm",
+      "description": "Committee selection algorithm. 'wfa-ls' (default) uses VRF lottery. 'everyone' means every node votes. 'top-stake-fraction' selects highest-stake nodes covering committee-stake-fraction-threshold of total stake."
+    },
+    "committee-stake-fraction-threshold": {
+      "description": "Fraction of total stake eligible to vote when committee-selection-algorithm is 'top-stake-fraction'. Default 0.95.",
+      "type": "number"
+    }
+  },
+  "type": "object"
+}
