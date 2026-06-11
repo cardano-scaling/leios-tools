@@ -141,14 +141,29 @@ impl HeaderInfo {
                     remaining -= 1;
                 }
                 minicbor::data::Type::Array | minicbor::data::Type::ArrayIndef => {
+                    // Tuple shape `[hash, size]`.  Accept both definite
+                    // and indefinite encodings to stay liberal; the
+                    // indefinite form needs the trailing break marker
+                    // (CBOR 0xff) explicitly consumed.
                     let arr_len = d.array()?;
-                    if arr_len != Some(2) {
-                        return Err(DecodeError::message(format!(
-                            "announced_eb tuple expected array(2), got {arr_len:?}"
-                        )));
-                    }
                     let eb_hash = parse_hash32(&mut d)?;
                     let eb_size = d.u32()?;
+                    match arr_len {
+                        Some(2) => {}
+                        Some(other) => {
+                            return Err(DecodeError::message(format!(
+                                "announced_eb tuple expected array(2), got array({other})"
+                            )));
+                        }
+                        None => {
+                            if d.datatype()? != minicbor::data::Type::Break {
+                                return Err(DecodeError::message(
+                                    "announced_eb indefinite tuple has more than 2 elements",
+                                ));
+                            }
+                            d.skip()?;
+                        }
+                    }
                     announced_eb = Some((eb_hash, eb_size));
                     remaining -= 1;
                 }
@@ -587,6 +602,69 @@ mod tests {
         );
 
         let info = HeaderInfo::parse(&raw).expect("tuple-encoded announced_eb must parse");
+        assert_eq!(info.block_number, 49907);
+        assert_eq!(info.announced_eb, Some((eb_hash, 65536)));
+        assert_eq!(info.certified_eb, None);
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_as_indefinite_tuple() {
+        // A peer using indefinite-length CBOR for the tuple sends
+        // 0x9f <hash> <size> 0xff instead of 0x82 <hash> <size>.
+        // The trailing 0xff break must be consumed; otherwise the next
+        // `Decoder::array()` (for the outer inner array) would see it
+        // and fail.  Patch a known-good tuple-encoded header byte-by-
+        // byte: locate the 0x82 (definite array(2)) for the announced
+        // tuple, replace with 0x9f (indefinite), and append a 0xff
+        // before the trailing body_signature.
+        let eb_hash = [0x99; 32];
+        let mut raw = build_test_header_eb_tuple(
+            7,
+            49907,
+            1_001_160,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            2048,
+            [0xCC; 32],
+            (eb_hash, 65536),
+            None,
+        );
+
+        // Find the announced_eb tuple's 0x82 marker — the only
+        // standalone 0x82 followed by 0x58 0x20 0x99... (bytes(32) of
+        // 0x99) in the buffer.  Replace the 0x82 with 0x9f and
+        // insert a 0xff break after the u32 size.
+        let needle = [0x82u8, 0x58, 0x20, 0x99, 0x99];
+        let idx = raw
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("must find tuple marker");
+        raw[idx] = 0x9f;
+        // After 0x82 we have: 0x58 0x20 + 32-byte hash + u32 size (1a XX XX XX XX = 5 bytes).
+        // Insert 0xff break after that.
+        let after_tuple = idx + 1 + 2 + 32 + 5;
+        raw.insert(after_tuple, 0xff);
+
+        // The outer #6.24-wrapped bstr length needs to grow by 1 too.
+        // Locate the inner bstr length prefix (5903 7f ... or 5903 81 ...
+        // since these tests use 0x5903XX two-byte lengths) and bump it.
+        // Skip outer `[era, ...]`: bytes 0..2 are array(2)+era. Bytes 2..3
+        // are 0xd8 0x18 (tag 24). Bytes 4..7 are 0x59 <len_hi> <len_lo>
+        // (or 0x58 <len> for shorter). Bump whichever applies.
+        match raw[4] {
+            0x58 => {
+                raw[5] = raw[5].wrapping_add(1);
+            }
+            0x59 => {
+                let len = u16::from_be_bytes([raw[5], raw[6]]) + 1;
+                raw[5] = (len >> 8) as u8;
+                raw[6] = (len & 0xff) as u8;
+            }
+            other => panic!("unexpected bstr length prefix {other:#04x}"),
+        }
+
+        let info = HeaderInfo::parse(&raw)
+            .expect("indefinite-length tuple-encoded announced_eb must parse");
         assert_eq!(info.block_number, 49907);
         assert_eq!(info.announced_eb, Some((eb_hash, 65536)));
         assert_eq!(info.certified_eb, None);
