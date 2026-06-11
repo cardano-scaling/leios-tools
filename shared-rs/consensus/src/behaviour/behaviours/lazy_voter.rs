@@ -89,6 +89,7 @@ mod tests {
             non_persistent_vote_bytes: 180,
             persistent_seats: 1,
             retry_vote_in_window: true,
+            evaluate_votes: true,
         };
         let state = LeiosState::new("t".to_string(), elections, voting, pipeline);
         match voter.decide_vote(&state, &dummy_hash, 10, &honest) {
