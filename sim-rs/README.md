@@ -21,13 +21,17 @@ While the simulation is running, it will log what's going on to the console. You
 
 The simulation runs in virtual time and completes as fast as your machine allows.
 
+To run the simulation on a more realistic network, use the pseudo-mainnet topology in `data/simulation/pseudo-mainnet/`:
+
 ```
 cargo run --release \
   ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
-  output/NA-0.200-mainnet.jsonl \
+  output/mainnet.jsonl \
   -s 1000 \
-  -p "../../ouroboros-leios/analysis/sims/2026w18/experiments/NA,0.200/top-stake-fraction/topology-v2-1500/seed-0/config.yaml"
+  -p "./sim-cli/configs/mainnet.yaml"
 ```
+
+NOTE: the `output/mainnet.jsonl` file can grow huge very quickly. Unless really needed, can be omitted.
 
 ## Engine and shard selection
 
