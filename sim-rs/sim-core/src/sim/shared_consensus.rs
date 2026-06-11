@@ -1940,7 +1940,7 @@ impl SharedConsensus {
         let tx_count = rb.transactions.len() as u32;
         let fx = self
             .praos
-            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), tx_count);
+            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), tx_count, 0);
         self.dispatch_praos_effects(out, fx);
     }
 

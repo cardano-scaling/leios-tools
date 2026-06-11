@@ -172,6 +172,53 @@ impl BlockBody {
         u32::try_from(tx_count).map_err(|_| DecodeError::message("tx_bodies length exceeds u32"))
     }
 
+    /// Declared field count of the merged_block array.  CIP-0164's
+    /// CDDL:
+    ///
+    ///   merged_block = [
+    ///     header,
+    ///     transaction_bodies,
+    ///     transaction_witness_sets,
+    ///     auxiliary_data_set,
+    ///     ? eb_certificate,
+    ///     ? eb_tx_references,
+    ///   ]
+    ///
+    /// so the count answers "are CIP-0164 Leios extensions present in
+    /// the body?":
+    ///   4 = base (no Leios extensions)
+    ///   5 = exactly one extension present (cert XOR tx_references,
+    ///       ambiguous from length alone)
+    ///   6 = both extensions present (cert definitely)
+    ///
+    /// Returns `None` for Byron blocks or unparseable bodies.
+    pub fn praos_block_field_count(&self) -> Option<u32> {
+        self.try_praos_block_field_count().ok()
+    }
+
+    fn try_praos_block_field_count(&self) -> Result<u32, DecodeError> {
+        let mut d = Decoder::new(&self.raw);
+
+        let tag = d.tag()?;
+        if tag.as_u64() != 24 {
+            return Err(DecodeError::message("expected CBOR tag 24"));
+        }
+        let inner_bytes = d.bytes()?;
+
+        let mut inner = Decoder::new(inner_bytes);
+        let _outer_len = inner.array()?;
+        let era = inner.u32()?;
+        if era < 2 {
+            return Err(DecodeError::message("Byron block"));
+        }
+        let block_len = match inner.array()? {
+            Some(n) => n,
+            None => return Err(DecodeError::message("indefinite block array")),
+        };
+        u32::try_from(block_len)
+            .map_err(|_| DecodeError::message("merged_block length exceeds u32"))
+    }
+
     /// Extract the header from this block in ChainSync wire format:
     /// `[era_tag, #6.24(header_cbor)]`.
     ///

@@ -819,6 +819,7 @@ impl PraosState {
         body_bytes: Vec<u8>,
         parsed_header: Option<ParsedHeaderInfo>,
         tx_count: u32,
+        body_field_count: u32,
     ) -> Vec<PraosEffect> {
         use crate::behaviour::BehaviourOutcome;
         let appended: Vec<PraosEffect> =
@@ -914,6 +915,7 @@ impl PraosState {
             %point,
             block_no,
             body_bytes = body_bytes_len,
+            body_field_count,
             tx_count,
             eb_announced = %announced_eb_hash
                 .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>())
@@ -2241,12 +2243,14 @@ mod tests {
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
             0,
+            0,
         );
         s.on_block_received(
             pt(100, 2),
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
+            0,
             0,
         );
         assert!(s.is_equivocating_slot(100));
@@ -2264,12 +2268,14 @@ mod tests {
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
             0,
+            0,
         );
         s.on_block_received(
             pt(100, 2),
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xBB)),
+            0,
             0,
         );
         assert!(!s.is_equivocating_slot(100));
@@ -2280,8 +2286,8 @@ mod tests {
         // Pre-issuer callers (issuer = Vec::new()) get no-op detection,
         // preserving legacy behavior.
         let mut s = fresh();
-        s.on_block_received(pt(100, 1), vec![], vec![], Some(hi(100, 100, None)), 0);
-        s.on_block_received(pt(100, 2), vec![], vec![], Some(hi(100, 100, None)), 0);
+        s.on_block_received(pt(100, 1), vec![], vec![], Some(hi(100, 100, None)), 0, 0);
+        s.on_block_received(pt(100, 2), vec![], vec![], Some(hi(100, 100, None)), 0, 0);
         assert!(!s.is_equivocating_slot(100));
     }
 
@@ -2295,6 +2301,7 @@ mod tests {
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
+            0,
             0,
         );
         // Second on_block_received with the same hash is a no-op via
@@ -2552,14 +2559,14 @@ mod tests {
     fn on_block_received_dedups_via_cache() {
         let mut s = fresh();
         install_validated_block(&mut s, 100, 1, 1, None);
-        let fx = s.on_block_received(pt(100, 1), vec![], vec![], None, 0);
+        let fx = s.on_block_received(pt(100, 1), vec![], vec![], None, 0, 0);
         assert!(fx.is_empty());
     }
 
     #[test]
     fn on_block_received_origin_point_is_noop() {
         let mut s = fresh();
-        let fx = s.on_block_received(Point::Origin, vec![], vec![], None, 0);
+        let fx = s.on_block_received(Point::Origin, vec![], vec![], None, 0, 0);
         assert!(fx.is_empty());
     }
 
@@ -2572,6 +2579,7 @@ mod tests {
             vec![0xBB],
             Some(hi(1, 100, None)),
             0,
+            0,
         );
         assert!(fx
             .iter()
@@ -2583,7 +2591,7 @@ mod tests {
     #[test]
     fn on_block_received_opaque_header_no_chain_tree_insert() {
         let mut s = fresh();
-        let fx = s.on_block_received(pt(100, 1), vec![0xAA], vec![0xBB], None, 0);
+        let fx = s.on_block_received(pt(100, 1), vec![0xAA], vec![0xBB], None, 0, 0);
         // No chain_tree entry, so try_switch fails silently.
         assert!(fx.is_empty());
         assert!(s.chain_tree.block_number(&h(1)).is_none());

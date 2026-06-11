@@ -352,12 +352,14 @@ impl PraosConsensus {
                     self.state.note_header_first_seen(*hash, self.current_slot);
                 }
                 let tx_count = body.praos_tx_count().unwrap_or(0);
+                let body_field_count = body.praos_block_field_count().unwrap_or(0);
                 let fx = self.state.on_block_received(
                     point.clone(),
                     header.raw.clone(),
                     body.raw.clone(),
                     parsed,
                     tx_count,
+                    body_field_count,
                 );
                 (true, fx)
             }
@@ -535,12 +537,14 @@ impl PraosConsensus {
             .unwrap_or_else(|| WrappedHeader::opaque(Vec::new()));
         let parsed = Self::parse_header(&header);
         let tx_count = body.praos_tx_count().unwrap_or(0);
+        let body_field_count = body.praos_block_field_count().unwrap_or(0);
         let fx = self.state.on_block_received(
             point.clone(),
             header.raw.clone(),
             body.raw.clone(),
             parsed,
             tx_count,
+            body_field_count,
         );
         self.dispatch(fx).await;
     }
