@@ -313,6 +313,20 @@ impl Consensus {
                 // in `LeiosState` until its body validates locally.
                 // `BodyPath::decide` reads this for the next own RB.
                 if let Some((eb_slot, eb_hash)) = self.praos.parent_announced_eb_for_cert(point) {
+                    // Permanent diagnostic: surfaces every chain-committed
+                    // certification we observe.  Fires sparsely (only
+                    // RBs whose header set `certified_eb=true` AND whose
+                    // parent carried an `announced_eb_hash`), so the cost
+                    // is one INFO line per real cert.  Cross-references
+                    // the `eb_announced` field on the prior block's
+                    // "block received and cached" log.
+                    tracing::info!(
+                        node_id = %self.praos.node_id_str(),
+                        %point,
+                        eb_slot,
+                        eb_hash = %eb_hash.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "RB applied with cert for parent's announced EB"
+                    );
                     self.leios.state.on_chain_endorsement(eb_slot, eb_hash);
                 }
                 self.praos.on_validation_outcome(outcome).await

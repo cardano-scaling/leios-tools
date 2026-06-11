@@ -899,10 +899,24 @@ impl PraosState {
                 certified_eb,
             },
         );
+        // Surface the parsed CIP-0164 Leios extension fields on every
+        // cache.  The actual EB pipeline runs through `LeiosState`, but
+        // having `eb_announced` / `eb_certified` on the same line as
+        // `block received and cached` is the cheapest way to confirm in
+        // operator logs that headers carrying Leios extensions decoded
+        // successfully (rather than silently degrading to "no
+        // extension").  Vanilla RBs print `eb_announced="none"
+        // eb_certified=false` and cost the formatter ~30 bytes; Leios
+        // RBs print the full 64-hex EB hash, matching the LeiosNotify
+        // gossip log so the two streams cross-reference.
         info!(
             node_id = %self.node_id,
             %point,
             block_no,
+            eb_announced = %announced_eb_hash
+                .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                .unwrap_or_else(|| "none".to_string()),
+            eb_certified = certified_eb,
             "block received and cached"
         );
         self.try_switch_and_execute_internal(hash, &mut fx);
