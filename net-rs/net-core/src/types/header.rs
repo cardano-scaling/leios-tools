@@ -111,27 +111,65 @@ impl HeaderInfo {
         // Field 9: protocol_version — skip
         d.skip()?;
 
-        // CIP-0164 Leios extensions — optional trailing fields.
-        // The array length alone determines which are present:
-        //   10 = base only (no Leios)
-        //   11 = +1 field: certified_eb (bool)
-        //   12 = +2 fields: announced_eb (hash32 + uint32 pair)
-        //   13 = +3 fields: announced_eb pair + certified_eb
-        let extra = body_len - HEADER_BODY_BASE_FIELDS;
-
-        let announced_eb = if extra >= 2 {
-            let eb_hash = parse_hash32(&mut d)?;
-            let eb_size = d.u32()?;
-            Some((eb_hash, eb_size))
-        } else {
-            None
-        };
-
-        let certified_eb = if extra == 1 || extra == 3 {
-            Some(d.bool()?)
-        } else {
-            None
-        };
+        // CIP-0164 Leios extensions — optional trailing fields.  Be
+        // liberal about layout: array length alone isn't enough because
+        // implementations disagree on how to group `announced_eb`.  The
+        // CIP draft we follow encodes it as two flat fields (hash, size),
+        // so a 12-element body means "10 base + announced_eb (flat)";
+        // the leios-prototype dev relay (and likely a later draft)
+        // encodes it as a single tuple `[hash, size]`, so an 11-element
+        // body can mean "10 base + announced_eb (as tuple)" instead of
+        // the "10 base + certified_eb bool" we'd otherwise assume.
+        //
+        // Dispatch on the CBOR datatype of each trailing field rather
+        // than its position:
+        //
+        //   bool          → certified_eb           (consumes 1 element)
+        //   array(2)      → announced_eb tuple     (consumes 1 element)
+        //   bytes(32)     → announced_eb flat hash; the next element is
+        //                   the u32 size            (consumes 2 elements)
+        //
+        // Any other shape falls through as an error rather than being
+        // silently misread.
+        let mut announced_eb: Option<([u8; 32], u32)> = None;
+        let mut certified_eb: Option<bool> = None;
+        let mut remaining = body_len - HEADER_BODY_BASE_FIELDS;
+        while remaining > 0 {
+            match d.datatype()? {
+                minicbor::data::Type::Bool => {
+                    certified_eb = Some(d.bool()?);
+                    remaining -= 1;
+                }
+                minicbor::data::Type::Array | minicbor::data::Type::ArrayIndef => {
+                    let arr_len = d.array()?;
+                    if arr_len != Some(2) {
+                        return Err(DecodeError::message(format!(
+                            "announced_eb tuple expected array(2), got {arr_len:?}"
+                        )));
+                    }
+                    let eb_hash = parse_hash32(&mut d)?;
+                    let eb_size = d.u32()?;
+                    announced_eb = Some((eb_hash, eb_size));
+                    remaining -= 1;
+                }
+                minicbor::data::Type::Bytes => {
+                    if remaining < 2 {
+                        return Err(DecodeError::message(
+                            "flat announced_eb expects hash followed by size, only 1 slot left",
+                        ));
+                    }
+                    let eb_hash = parse_hash32(&mut d)?;
+                    let eb_size = d.u32()?;
+                    announced_eb = Some((eb_hash, eb_size));
+                    remaining -= 2;
+                }
+                other => {
+                    return Err(DecodeError::message(format!(
+                        "unexpected header_body extension field type: {other:?}"
+                    )));
+                }
+            }
+        }
 
         Ok(HeaderInfo {
             era,
@@ -452,6 +490,126 @@ mod tests {
 
         let info = HeaderInfo::parse(&raw).expect("should parse");
         assert_eq!(info.announced_eb, None);
+        assert_eq!(info.certified_eb, Some(true));
+    }
+
+    /// Build a header where `announced_eb` is encoded as a single
+    /// `array(2)` tuple `[hash, size]` rather than two flat trailing
+    /// fields.  This matches the layout sent by the public Leios dev
+    /// relay (leios-prototype) and a later CIP-0164 draft; we accept it
+    /// liberally via CBOR type dispatch.
+    fn build_test_header_eb_tuple(
+        era: u8,
+        block_number: u64,
+        slot: u64,
+        prev_hash: Option<[u8; 32]>,
+        issuer_vkey: [u8; 32],
+        body_size: u32,
+        block_body_hash: [u8; 32],
+        announced_eb: ([u8; 32], u32),
+        certified_eb: Option<bool>,
+    ) -> Vec<u8> {
+        use minicbor::encode::Error as EncodeError;
+        use std::io::Write as _;
+        let field_count = HEADER_BODY_BASE_FIELDS + 1 + if certified_eb.is_some() { 1 } else { 0 };
+
+        let mut body_buf = Vec::new();
+        let mut be = Encoder::new(&mut body_buf);
+        be.array(field_count).unwrap();
+        be.u64(block_number).unwrap();
+        be.u64(slot).unwrap();
+        match prev_hash {
+            Some(h) => {
+                be.bytes(&h).unwrap();
+            }
+            None => {
+                be.null().unwrap();
+            }
+        }
+        be.bytes(&issuer_vkey).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.array(2).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.u32(body_size).unwrap();
+        be.bytes(&block_body_hash).unwrap();
+        be.array(4).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.u64(0).unwrap();
+        be.u64(0).unwrap();
+        be.bytes(&[0u8; 64]).unwrap();
+        be.array(2).unwrap();
+        be.u32(10).unwrap();
+        be.u32(0).unwrap();
+
+        // announced_eb as tuple [hash, size]
+        be.array(2).unwrap();
+        be.bytes(&announced_eb.0).unwrap();
+        be.u32(announced_eb.1).unwrap();
+        if let Some(cert) = certified_eb {
+            be.bool(cert).unwrap();
+        }
+
+        let mut inner_buf = Vec::new();
+        let mut ie = Encoder::new(&mut inner_buf);
+        ie.array(2).unwrap();
+        ie.writer_mut()
+            .write_all(&body_buf)
+            .map_err(EncodeError::write)
+            .unwrap();
+        ie.bytes(&[0u8; 64]).unwrap();
+
+        let mut outer_buf = Vec::new();
+        let mut oe = Encoder::new(&mut outer_buf);
+        oe.array(2).unwrap();
+        oe.u32(era as u32).unwrap();
+        oe.tag(minicbor::data::Tag::new(24)).unwrap();
+        oe.bytes(&inner_buf).unwrap();
+        outer_buf
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_as_tuple() {
+        // Relay variant: announced_eb encoded as array(2) → header_body is
+        // array(11).  Without type dispatch we'd misread the trailing
+        // array as a (non-existent) certified_eb bool and fail.
+        let eb_hash = [0x77; 32];
+        let raw = build_test_header_eb_tuple(
+            7,
+            49907,
+            1_001_160,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            2048,
+            [0xCC; 32],
+            (eb_hash, 65536),
+            None,
+        );
+
+        let info = HeaderInfo::parse(&raw).expect("tuple-encoded announced_eb must parse");
+        assert_eq!(info.block_number, 49907);
+        assert_eq!(info.announced_eb, Some((eb_hash, 65536)));
+        assert_eq!(info.certified_eb, None);
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_tuple_plus_certified_eb() {
+        // 12-field array: 10 base + announced_eb tuple + certified_eb bool.
+        let eb_hash = [0x88; 32];
+        let raw = build_test_header_eb_tuple(
+            7,
+            50000,
+            1_001_500,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            4096,
+            [0xCC; 32],
+            (eb_hash, 32768),
+            Some(true),
+        );
+
+        let info = HeaderInfo::parse(&raw).expect("tuple + cert layout must parse");
+        assert_eq!(info.announced_eb, Some((eb_hash, 32768)));
         assert_eq!(info.certified_eb, Some(true));
     }
 
