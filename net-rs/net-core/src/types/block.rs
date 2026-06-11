@@ -1,13 +1,32 @@
 //! Raw block bodies with optional Leios metadata (CIP-0164).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
+use tracing::warn;
+
+use shared_consensus::praos::{LeiosCertSummary, ParsedBodyInfo};
 
 use super::{Point, MAX_BLOCK_SIZE};
 
 /// Number of base fields in a Shelley+ block array (before Leios extensions).
 const BLOCK_BASE_FIELDS: u64 = 4;
+
+/// Cap on the byte prefix captured when a `leios_certificate` shape
+/// probe fails.  Enough to identify the CBOR major type, top-level
+/// array length, and the first few elements when shape-comparing
+/// against draft revisions of CIP-0164.
+const UNKNOWN_CERT_FIELD_PROBE_BYTES: usize = 96;
+
+/// Soft cap on the number of `praos_inspect` shape-mismatch WARN lines
+/// emitted per process.  Counter is process-global rather than
+/// per-peer; the diagnostic exists to identify the prototype's wire
+/// shape on first contact, not to repeat the same hex every block.
+const SHAPE_MISMATCH_WARN_BUDGET: usize = 5;
+
+static SHAPE_MISMATCH_WARNS: AtomicUsize = AtomicUsize::new(0);
 
 // --- LeiosBlockInfo ---
 
@@ -129,16 +148,47 @@ impl BlockBody {
         Some(super::WrappedHeader::new(buf))
     }
 
-    /// Count the transactions in the Praos block body's `tx_bodies` field.
+    /// One-pass inspection of a Conway+ Praos `merged_block`.
     ///
-    /// Walks `#6.24(bytes .cbor [era_tag, [header, tx_bodies, …]])` and
-    /// returns the array length of `tx_bodies` (field 1). Returns `None`
-    /// for Byron blocks or unparseable data.
-    pub fn praos_tx_count(&self) -> Option<u32> {
-        self.try_praos_tx_count().ok()
+    /// Returns a populated [`ParsedBodyInfo`] when the block parses;
+    /// `ParsedBodyInfo::default()` (i.e. all zeros / `None`) on any
+    /// decode failure (Byron, opaque test fixtures, malformed CBOR).
+    ///
+    /// CIP-0164's CDDL for `merged_block` (with the Conway-era
+    /// `invalid_transactions` field that the CIP text currently omits):
+    ///
+    /// ```text
+    /// merged_block = [
+    ///   header,
+    ///   transaction_bodies,
+    ///   transaction_witness_sets,
+    ///   auxiliary_data_set,
+    ///   invalid_transactions,
+    ///   ? eb_certificate,
+    ///   ? eb_tx_references,
+    /// ]
+    /// ```
+    ///
+    /// Field-count mapping:
+    ///   5 — base Conway body, no Leios extensions
+    ///   6 — first trailing optional present (CDDL positions it as
+    ///       `eb_certificate`)
+    ///   7 — both trailing optionals present
+    ///
+    /// `leios_cert` is `Some` iff field 5 (after the base) decodes as
+    /// an `array(4)` whose first element is a `uint` — i.e. matches the
+    /// CIP-0164 `leios_certificate = [slot_no, endorser_block_hash,
+    /// signers, aggregated_signature]` shape.  Only `slot_no` and
+    /// `endorser_block_hash` are surfaced; the bitfield and BLS
+    /// signature stay in the raw bytes.
+    ///
+    /// `tx_references_count` is `Some(n)` iff field 6 decodes as an
+    /// array of length `n` (the CDDL `[* tx_reference]`).
+    pub fn praos_inspect(&self) -> ParsedBodyInfo {
+        self.try_praos_inspect().unwrap_or_default()
     }
 
-    fn try_praos_tx_count(&self) -> Result<u32, DecodeError> {
+    fn try_praos_inspect(&self) -> Result<ParsedBodyInfo, DecodeError> {
         let mut d = Decoder::new(&self.raw);
 
         let tag = d.tag()?;
@@ -153,70 +203,120 @@ impl BlockBody {
         if era < 2 {
             return Err(DecodeError::message("Byron block"));
         }
-
         let block_len = match inner.array()? {
             Some(n) => n,
             None => return Err(DecodeError::message("indefinite block array")),
         };
+        let field_count = u32::try_from(block_len)
+            .map_err(|_| DecodeError::message("merged_block length exceeds u32"))?;
         if block_len < 2 {
-            return Err(DecodeError::message("block array too short"));
+            return Ok(ParsedBodyInfo {
+                field_count,
+                ..ParsedBodyInfo::default()
+            });
         }
 
         // Field 0: header — skip.
         inner.skip()?;
-        // Field 1: tx_bodies — `[* transaction_body]` per Cardano CDDL.
+        // Field 1: tx_bodies — `[* transaction_body]`.
         let tx_count = match inner.array()? {
-            Some(n) => n,
+            Some(n) => u32::try_from(n)
+                .map_err(|_| DecodeError::message("tx_bodies length exceeds u32"))?,
             None => return Err(DecodeError::message("indefinite tx_bodies array")),
         };
-        u32::try_from(tx_count).map_err(|_| DecodeError::message("tx_bodies length exceeds u32"))
-    }
-
-    /// Declared field count of the merged_block array.  CIP-0164's
-    /// CDDL:
-    ///
-    ///   merged_block = [
-    ///     header,
-    ///     transaction_bodies,
-    ///     transaction_witness_sets,
-    ///     auxiliary_data_set,
-    ///     ? eb_certificate,
-    ///     ? eb_tx_references,
-    ///   ]
-    ///
-    /// so the count answers "are CIP-0164 Leios extensions present in
-    /// the body?":
-    ///   4 = base (no Leios extensions)
-    ///   5 = exactly one extension present (cert XOR tx_references,
-    ///       ambiguous from length alone)
-    ///   6 = both extensions present (cert definitely)
-    ///
-    /// Returns `None` for Byron blocks or unparseable bodies.
-    pub fn praos_block_field_count(&self) -> Option<u32> {
-        self.try_praos_block_field_count().ok()
-    }
-
-    fn try_praos_block_field_count(&self) -> Result<u32, DecodeError> {
-        let mut d = Decoder::new(&self.raw);
-
-        let tag = d.tag()?;
-        if tag.as_u64() != 24 {
-            return Err(DecodeError::message("expected CBOR tag 24"));
+        for _ in 0..tx_count {
+            inner.skip()?;
         }
-        let inner_bytes = d.bytes()?;
-
-        let mut inner = Decoder::new(inner_bytes);
-        let _outer_len = inner.array()?;
-        let era = inner.u32()?;
-        if era < 2 {
-            return Err(DecodeError::message("Byron block"));
+        // Skip the rest of the Conway base: tx_witness_sets,
+        // auxiliary_data_set, invalid_transactions.  We treat the count
+        // permissively to keep working if the era/CDDL adds another
+        // mandatory field — at worst the trailing-optional probes below
+        // see the wrong field and bail to `None`, never corrupt state.
+        let base_remaining = block_len.saturating_sub(2).min(3);
+        for _ in 0..base_remaining {
+            inner.skip()?;
         }
-        let block_len = match inner.array()? {
-            Some(n) => n,
-            None => return Err(DecodeError::message("indefinite block array")),
-        };
-        u32::try_from(block_len)
-            .map_err(|_| DecodeError::message("merged_block length exceeds u32"))
+
+        let trailing = block_len.saturating_sub(2 + base_remaining);
+
+        let mut leios_cert = None;
+        let mut tx_references_count = None;
+        let mut cert_field_bytes: Option<Vec<u8>> = None;
+        let mut tx_refs_field_bytes: Option<Vec<u8>> = None;
+
+        // Trailing optional 1: try as leios_certificate.  On a shape
+        // mismatch (e.g. the prototype's `leios_certificate` doesn't
+        // match the CIP-0164 CDDL we ship) capture the raw bytes so
+        // we can WARN about them below.
+        if trailing >= 1 {
+            let start = inner.position();
+            match try_decode_leios_cert(&mut inner) {
+                Ok(c) => leios_cert = Some(c),
+                Err(_) => {
+                    inner.set_position(start);
+                    inner.skip()?;
+                    let end = inner.position();
+                    let raw = &inner.input()[start..end];
+                    let take = raw.len().min(UNKNOWN_CERT_FIELD_PROBE_BYTES);
+                    cert_field_bytes = Some(raw[..take].to_vec());
+                }
+            }
+        }
+
+        // Trailing optional 2: tx_references as `[* tx_reference]`.
+        // Same shape-or-capture treatment.
+        if trailing >= 2 {
+            let start = inner.position();
+            match inner.array() {
+                Ok(Some(n)) => {
+                    tx_references_count =
+                        Some(u32::try_from(n).unwrap_or(u32::MAX));
+                    for _ in 0..n {
+                        inner.skip().ok();
+                    }
+                }
+                Ok(None) => {
+                    // Indefinite array — count via skip-until-break.
+                    let mut count: u32 = 0;
+                    while inner.datatype()? != minicbor::data::Type::Break {
+                        inner.skip()?;
+                        count = count.saturating_add(1);
+                    }
+                    inner.skip()?; // break
+                    tx_references_count = Some(count);
+                }
+                Err(_) => {
+                    inner.set_position(start);
+                    inner.skip()?;
+                    let end = inner.position();
+                    let raw = &inner.input()[start..end];
+                    let take = raw.len().min(UNKNOWN_CERT_FIELD_PROBE_BYTES);
+                    tx_refs_field_bytes = Some(raw[..take].to_vec());
+                }
+            }
+        }
+
+        // Codec-level diagnostic: if either trailing field didn't match
+        // the expected shape, dump a hex prefix.  Throttled across the
+        // process so a chain full of mismatched blocks logs the first
+        // few only.
+        if (cert_field_bytes.is_some() || tx_refs_field_bytes.is_some())
+            && SHAPE_MISMATCH_WARNS.fetch_add(1, Ordering::Relaxed) < SHAPE_MISMATCH_WARN_BUDGET
+        {
+            warn!(
+                field_count,
+                cert_field_hex = %hex_prefix(cert_field_bytes.as_deref()),
+                tx_refs_field_hex = %hex_prefix(tx_refs_field_bytes.as_deref()),
+                "praos body trailing optional did not match CIP-0164 shape"
+            );
+        }
+
+        Ok(ParsedBodyInfo {
+            tx_count,
+            field_count,
+            leios_cert,
+            tx_references_count,
+        })
     }
 
     /// Extract the header from this block in ChainSync wire format:
@@ -317,6 +417,57 @@ impl<'a> minicbor::Decode<'a, ()> for BlockBody {
             .ok_or_else(|| DecodeError::message("failed to extract block bytes"))?;
         Ok(BlockBody::new(raw.to_vec()))
     }
+}
+
+/// Format up to `UNKNOWN_CERT_FIELD_PROBE_BYTES` of raw bytes as a
+/// lowercase hex string, or `"none"` when the slot wasn't captured.
+fn hex_prefix(bytes: Option<&[u8]>) -> String {
+    use std::fmt::Write as _;
+    match bytes {
+        Some(b) => {
+            let mut s = String::with_capacity(b.len() * 2);
+            for x in b {
+                let _ = write!(s, "{x:02x}");
+            }
+            s
+        }
+        None => "none".to_string(),
+    }
+}
+
+/// Attempt to decode the next CBOR element as a CIP-0164
+/// `leios_certificate = [slot_no, endorser_block_hash, signers,
+/// aggregated_signature]`.  Returns the summary on a shape match;
+/// `Err` on anything else (e.g. an `eb_tx_references` array in this
+/// slot instead) so the caller's outer Result coerces to `None`.
+fn try_decode_leios_cert(d: &mut Decoder<'_>) -> Result<LeiosCertSummary, DecodeError> {
+    match d.array()? {
+        Some(4) => {}
+        Some(other) => {
+            return Err(DecodeError::message(format!(
+                "leios_certificate expected array(4), got array({other})"
+            )));
+        }
+        None => {
+            return Err(DecodeError::message(
+                "leios_certificate indefinite array not supported",
+            ));
+        }
+    }
+    let eb_slot = d.u64()?;
+    let eb_hash_bytes = d.bytes()?;
+    if eb_hash_bytes.len() != 32 {
+        return Err(DecodeError::message(format!(
+            "leios_certificate eb_hash expected 32 bytes, got {}",
+            eb_hash_bytes.len()
+        )));
+    }
+    let mut eb_hash = [0u8; 32];
+    eb_hash.copy_from_slice(eb_hash_bytes);
+    // Skip signers (bytes) and aggregated_signature.
+    d.skip()?;
+    d.skip()?;
+    Ok(LeiosCertSummary { eb_slot, eb_hash })
 }
 
 #[cfg(test)]
@@ -543,36 +694,98 @@ mod tests {
     }
 
     #[test]
-    fn praos_tx_count_empty() {
+    fn praos_inspect_empty() {
         let raw = build_test_block_with_tx_count(7, 0, None);
         let body = BlockBody::new(raw);
-        assert_eq!(body.praos_tx_count(), Some(0));
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, 0);
+        // build_test_block_with_tx_count emits the legacy 4-field base
+        // (no `invalid_transactions`); good enough as a control case.
+        assert_eq!(info.field_count, 4);
+        assert!(info.leios_cert.is_none());
+        assert!(info.tx_references_count.is_none());
     }
 
     #[test]
-    fn praos_tx_count_several() {
+    fn praos_inspect_several() {
         let raw = build_test_block_with_tx_count(7, 5, None);
         let body = BlockBody::new(raw);
-        assert_eq!(body.praos_tx_count(), Some(5));
+        assert_eq!(body.praos_inspect().tx_count, 5);
     }
 
     #[test]
-    fn praos_tx_count_with_eb_certificate() {
+    fn praos_inspect_with_eb_certificate_blob() {
+        // The fixture emits a 2-byte opaque cert blob, so the cert
+        // shape probe doesn't match `[slot, hash, signers, sig]` and
+        // we report `leios_cert = None`.  The tx_count still extracts.
         let raw = build_test_block_with_tx_count(7, 3, Some(&[0xCA, 0xFE]));
         let body = BlockBody::new(raw);
-        assert_eq!(body.praos_tx_count(), Some(3));
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, 3);
+        assert_eq!(info.field_count, 5);
+        assert!(info.leios_cert.is_none());
     }
 
     #[test]
-    fn praos_tx_count_byron_returns_none() {
+    fn praos_inspect_with_real_leios_certificate_shape() {
+        // Conway-era body layout: 5 base fields including
+        // `invalid_transactions`, then a `leios_certificate` trailing
+        // optional encoded inline as an `array(4)`.
+        use std::io::Write as _;
+        let tx_count = 2u64;
+        let mut block_buf = Vec::new();
+        let mut be = Encoder::new(&mut block_buf);
+        be.array(6).unwrap(); // 5 Conway base + 1 cert
+        be.bytes(&[0x80]).unwrap(); // 0 header
+        be.array(tx_count).unwrap(); // 1 tx_bodies
+        for _ in 0..tx_count {
+            be.null().unwrap();
+        }
+        be.array(0).unwrap(); // 2 tx_witness_sets
+        be.null().unwrap(); // 3 auxiliary_data_set
+        be.array(0).unwrap(); // 4 invalid_transactions
+        // 5 leios_certificate
+        be.array(4).unwrap();
+        be.u64(12345).unwrap();
+        be.bytes(&[0xAB; 32]).unwrap();
+        be.bytes(&[0xCC; 8]).unwrap();
+        be.bytes(&[0xDD; 16]).unwrap();
+
+        let mut inner_buf = Vec::new();
+        let mut ie = Encoder::new(&mut inner_buf);
+        ie.array(2).unwrap();
+        ie.u32(7).unwrap();
+        ie.writer_mut().write_all(&block_buf).unwrap();
+
+        let mut outer_buf = Vec::new();
+        let mut oe = Encoder::new(&mut outer_buf);
+        oe.tag(minicbor::data::Tag::new(24)).unwrap();
+        oe.bytes(&inner_buf).unwrap();
+
+        let body = BlockBody::new(outer_buf);
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, 2);
+        assert_eq!(info.field_count, 6);
+        let cert = info.leios_cert.expect("cert shape should match");
+        assert_eq!(cert.eb_slot, 12345);
+        assert_eq!(cert.eb_hash, [0xAB; 32]);
+    }
+
+    #[test]
+    fn praos_inspect_byron_returns_default() {
         let raw = build_test_block_with_tx_count(0, 0, None);
         let body = BlockBody::new(raw);
-        assert_eq!(body.praos_tx_count(), None);
+        let info = body.praos_inspect();
+        // Byron path returns DecodeError → default
+        assert_eq!(info.tx_count, 0);
+        assert_eq!(info.field_count, 0);
     }
 
     #[test]
-    fn praos_tx_count_invalid_returns_none() {
+    fn praos_inspect_invalid_returns_default() {
         let body = BlockBody::opaque(vec![0xFF]);
-        assert_eq!(body.praos_tx_count(), None);
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, 0);
+        assert_eq!(info.field_count, 0);
     }
 }

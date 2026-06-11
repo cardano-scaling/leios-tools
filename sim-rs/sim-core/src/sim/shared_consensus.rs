@@ -1937,10 +1937,16 @@ impl SharedConsensus {
         let hash = synthesize_rb_hash(id);
         self.rb_hash_to_id.insert(hash, id);
         let parsed = parsed_header_from_rb(&rb);
-        let tx_count = rb.transactions.len() as u32;
+        // Sim doesn't ship wire-format bodies, so the wrapper feeds in
+        // logical args only: tx_count from the rb model, the rest of
+        // ParsedBodyInfo defaults to zero/None.
+        let parsed_body = shared_consensus::praos::ParsedBodyInfo {
+            tx_count: rb.transactions.len() as u32,
+            ..Default::default()
+        };
         let fx = self
             .praos
-            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), tx_count, 0);
+            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
         self.dispatch_praos_effects(out, fx);
     }
 
