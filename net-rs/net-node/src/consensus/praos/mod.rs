@@ -255,6 +255,7 @@ impl PraosConsensus {
             slot: i.slot,
             prev_hash: i.prev_hash,
             announced_eb_hash: i.announced_eb.map(|(hash, _size)| hash),
+            announced_eb_size: i.announced_eb.map(|(_hash, size)| size),
             certified_eb: i.certified_eb.unwrap_or(false),
             // CIP-0164 RB-header equivocation tracker keys on issuer
             // identity.  `issuer_vkey` is the Shelley+ header field

@@ -2282,6 +2282,10 @@ fn parsed_header_from_rb(rb: &LinearRankingBlock) -> ParsedHeaderInfo {
         slot: h.id.slot,
         prev_hash: h.parent.map(synthesize_rb_hash),
         announced_eb_hash: h.eb_announcement.map(synthesize_eb_hash),
+        // The sim model doesn't track per-EB byte sizes — sim EBs are
+        // logical handles, not wire-encoded.  Leaving `None` keeps the
+        // sim's chain-tracking semantics unchanged.
+        announced_eb_size: None,
         certified_eb: rb.endorsement.is_some(),
         // CIP-0164 equivocation detection keys on (slot, issuer).
         // Sim doesn't have signing keys, so encode `NodeId` (a u64

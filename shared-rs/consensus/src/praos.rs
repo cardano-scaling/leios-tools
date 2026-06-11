@@ -844,13 +844,14 @@ impl PraosState {
             return fx;
         }
         let header_was_parsed = parsed_header.is_some();
-        let (block_no, slot, prev_hash, announced_eb_hash, certified_eb, issuer) =
+        let (block_no, slot, prev_hash, announced_eb_hash, announced_eb_size, certified_eb, issuer) =
             match parsed_header {
                 Some(info) => (
                     info.block_number,
                     info.slot,
                     info.prev_hash,
                     info.announced_eb_hash,
+                    info.announced_eb_size,
                     info.certified_eb,
                     info.issuer,
                 ),
@@ -861,6 +862,7 @@ impl PraosState {
                         _ => 0,
                     },
                     self.chain_tree.prev_hash(&hash),
+                    None,
                     None,
                     false,
                     Vec::new(),
@@ -901,14 +903,18 @@ impl PraosState {
         );
         // Surface the parsed CIP-0164 Leios extension fields on every
         // cache.  The actual EB pipeline runs through `LeiosState`, but
-        // having `eb_announced` / `eb_certified` on the same line as
-        // `block received and cached` is the cheapest way to confirm in
-        // operator logs that headers carrying Leios extensions decoded
-        // successfully (rather than silently degrading to "no
-        // extension").  Vanilla RBs print `eb_announced="none"
-        // eb_certified=false` and cost the formatter ~30 bytes; Leios
-        // RBs print the full 64-hex EB hash, matching the LeiosNotify
-        // gossip log so the two streams cross-reference.
+        // having `eb_announced` / `eb_announced_bytes` / `eb_certified`
+        // on the same line as `block received and cached` is the
+        // cheapest way to confirm in operator logs that headers
+        // carrying Leios extensions decoded successfully (rather than
+        // silently degrading to "no extension").  Vanilla RBs print
+        // `eb_announced="none" eb_announced_bytes=0 eb_certified=false`
+        // and cost the formatter ~50 bytes; Leios RBs print the full
+        // 64-hex EB hash and its declared byte size, matching the
+        // LeiosNotify gossip log so the two streams cross-reference
+        // and an operator can compare `eb_announced_bytes` against
+        // `rb_body_max_bytes` to see how aggressively the producer
+        // overflowed.
         info!(
             node_id = %self.node_id,
             %point,
@@ -916,6 +922,7 @@ impl PraosState {
             eb_announced = %announced_eb_hash
                 .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>())
                 .unwrap_or_else(|| "none".to_string()),
+            eb_announced_bytes = announced_eb_size.unwrap_or(0),
             eb_certified = certified_eb,
             "block received and cached"
         );
@@ -2035,6 +2042,13 @@ pub struct ParsedHeaderInfo {
     pub prev_hash: Option<[u8; 32]>,
     /// EB hash this header announces, if any (CIP-0164 Leios extension).
     pub announced_eb_hash: Option<[u8; 32]>,
+    /// Byte size of the announced EB as declared in the header
+    /// (CIP-0164 Leios extension: the `eb_size` field on the
+    /// `announced_eb` tuple).  `None` when `announced_eb_hash` is
+    /// `None`.  Useful as operator telemetry to compare against
+    /// `rb_body_max_bytes` and confirm the producer overflowed
+    /// correctly.
+    pub announced_eb_size: Option<u32>,
     /// CIP-0164 Leios extension: whether this RB certifies the parent
     /// RB's announced EB.  The EB being certified is the parent's
     /// `announced_eb_hash`; chain context (`parent_announced_eb`)
@@ -2068,6 +2082,7 @@ mod tests {
     fn hi(block_number: u64, slot: u64, prev_seed: Option<u8>) -> ParsedHeaderInfo {
         ParsedHeaderInfo {
             announced_eb_hash: None,
+            announced_eb_size: None,
             block_number,
             slot,
             prev_hash: prev_seed.map(h),
@@ -2215,6 +2230,7 @@ mod tests {
             slot,
             prev_hash: None,
             announced_eb_hash: None,
+            announced_eb_size: None,
             certified_eb: false,
             issuer: vec![issuer; 4],
         }

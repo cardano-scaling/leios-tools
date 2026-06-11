@@ -482,9 +482,15 @@ pub(crate) fn spawn_leios_notify(
                         .send((peer_id, PeerEvent::LeiosBlockAnnounced { header }))
                         .await;
                 }
-                Ok(LeiosNotifyEvent::BlockOffer { point }) => {
+                Ok(LeiosNotifyEvent::BlockOffer { point, eb_size }) => {
                     let (slot, eb_hash) = eb_fields(&point);
-                    tracing::info!(%peer_id, slot, eb_hash, "leios_notify: EB offered");
+                    tracing::info!(
+                        %peer_id,
+                        slot,
+                        eb_hash,
+                        eb_bytes = eb_size,
+                        "leios_notify: EB offered"
+                    );
                     let _ = event_sender
                         .send((peer_id, PeerEvent::LeiosBlockOffered { point }))
                         .await;
