@@ -137,6 +137,11 @@ impl HeaderInfo {
         while remaining > 0 {
             match d.datatype()? {
                 minicbor::data::Type::Bool => {
+                    if certified_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate certified_eb extension in header_body",
+                        ));
+                    }
                     certified_eb = Some(d.bool()?);
                     remaining -= 1;
                 }
@@ -145,6 +150,11 @@ impl HeaderInfo {
                     // and indefinite encodings to stay liberal; the
                     // indefinite form needs the trailing break marker
                     // (CBOR 0xff) explicitly consumed.
+                    if announced_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate announced_eb extension in header_body",
+                        ));
+                    }
                     let arr_len = d.array()?;
                     let eb_hash = parse_hash32(&mut d)?;
                     let eb_size = d.u32()?;
@@ -168,6 +178,11 @@ impl HeaderInfo {
                     remaining -= 1;
                 }
                 minicbor::data::Type::Bytes => {
+                    if announced_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate announced_eb extension in header_body",
+                        ));
+                    }
                     if remaining < 2 {
                         return Err(DecodeError::message(
                             "flat announced_eb expects hash followed by size, only 1 slot left",

@@ -918,7 +918,8 @@ impl PraosState {
             body_field_count,
             tx_count,
             eb_announced = %announced_eb_hash
-                .map(|h| h.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                .as_ref()
+                .map(hex32)
                 .unwrap_or_else(|| "none".to_string()),
             eb_announced_bytes = announced_eb_size.unwrap_or(0),
             eb_certified = certified_eb,
@@ -2025,6 +2026,19 @@ impl PraosState {
         self.block_policy
             .pick(point, &candidates, self.rtt.as_ref())
     }
+}
+
+/// Encode a 32-byte hash as a 64-char lowercase hex string with one
+/// allocation.  Used on the per-block log path; avoids the per-byte
+/// `format!` allocations the naive `iter().map(format!).collect()`
+/// pattern incurs.
+fn hex32(h: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
+    for b in h {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
