@@ -94,8 +94,10 @@ impl EventMonitor {
         let mut ibs_containing_tx: BTreeMap<TransactionId, f64> = BTreeMap::new();
         let mut ebs_containing_ib: BTreeMap<InputBlockId, f64> = BTreeMap::new();
         let mut votes_per_bundle: BTreeMap<VoteBundleId, f64> = BTreeMap::new();
+        // Borrow (don't move) pool_ids so `self` stays whole and the
+        // shared `report_protocol_summary` method can take `&self`.
         let mut votes_per_pool: BTreeMap<NodeId, f64> =
-            self.pool_ids.into_iter().map(|id| (id, 0.0)).collect();
+            self.pool_ids.iter().copied().map(|id| (id, 0.0)).collect();
         let mut eb_votes: BTreeMap<EndorserBlockId, f64> = BTreeMap::new();
 
         let mut last_timestamp = Timestamp::zero();
@@ -234,6 +236,31 @@ impl EventMonitor {
                             lm_ibs,
                             lm_ebs,
                             lm_queue,
+                        );
+                        // Periodic protocol summary (same content as the
+                        // end-of-run leios/network report, cumulative so far).
+                        self.report_protocol_summary(
+                            last_timestamp,
+                            total_slots,
+                            total_votes,
+                            total_leios_txs,
+                            total_leios_bytes,
+                            leios_blocks_with_endorsements,
+                            &txs,
+                            &ibs,
+                            &ebs,
+                            &seen_ibs,
+                            &ibs_containing_tx,
+                            &ebs_containing_ib,
+                            &votes_per_bundle,
+                            &votes_per_pool,
+                            &eb_votes,
+                            &no_vote_reasons,
+                            &tx_messages,
+                            &ib_messages,
+                            &eb_messages,
+                            &vote_messages,
+                            &pbo,
                         );
                     }
                 }
@@ -505,24 +532,10 @@ impl EventMonitor {
         let mut finalized_tx_bytes = 0;
         let mut pending_txs = 0;
         let mut pending_tx_bytes = 0;
-        let mut praos_txs = 0;
-        let mut praos_tx_bytes = 0;
-        let mut leios_txs = 0;
-        let mut leios_tx_bytes = 0;
         for tx in txs.values() {
-            if let Some(tx_type) = tx.tx_type {
+            if tx.tx_type.is_some() {
                 finalized_txs += 1;
                 finalized_tx_bytes += tx.bytes;
-                match tx_type {
-                    TransactionType::Praos => {
-                        praos_txs += 1;
-                        praos_tx_bytes += tx.bytes;
-                    }
-                    TransactionType::Leios => {
-                        leios_txs += 1;
-                        leios_tx_bytes += tx.bytes;
-                    }
-                }
             } else {
                 pending_txs += 1;
                 pending_tx_bytes += tx.bytes;
@@ -556,49 +569,149 @@ impl EventMonitor {
             }
         });
 
-        info_span!("leios").in_scope(|| {
-            let times_to_reach_ib: Vec<_> = txs
-                .values()
-                .filter_map(|tx| {
-                    let ib_time = tx.included_in_ib?;
-                    Some(ib_time - tx.generated)
-                })
-                .collect();
-            let times_to_reach_eb: Vec<_> = txs
-                .values()
-                .filter_map(|tx| {
-                    let eb_time = tx.included_in_eb?;
-                    Some(eb_time - tx.generated)
-                })
-                .collect();
-            let times_to_reach_block: Vec<_> = txs
-                .values()
-                .filter_map(|tx| {
-                    let block_time = tx.included_in_block?;
-                    Some(block_time - tx.generated)
-                })
-                .collect();
-            let ib_expiration_cutoff = last_timestamp.checked_sub_duration(Duration::from_secs(self.maximum_ib_age)).unwrap_or_default();
-            let expired_ibs = ibs.values().filter(|ib| ib.included_in_eb.is_none() && ib.generated < ib_expiration_cutoff).count();
-            let eb_expiration_cutoff = last_timestamp.checked_sub_duration(Duration::from_secs(self.maximum_eb_age)).unwrap_or_default();
-            let expired_ebs = ebs.values().filter(|eb| eb.included_in_eb.is_none() && eb.included_in_block.is_none() && eb.generated < eb_expiration_cutoff).count();
-            let empty_ebs = ebs.values().filter(|eb| eb.is_empty()).count();
-            let bundle_count = votes_per_bundle.len();
-            let has_ibs = self.variant.has_ibs();
-            let txs_per_eb = compute_stats(ebs.values().map(|eb| eb.txs.len() as f64));
-            let eb_time_stats = compute_stats(times_to_reach_eb.iter().map(|t| t.as_secs_f64()));
-            let block_time_stats = compute_stats(times_to_reach_block.iter().map(|t| t.as_secs_f64()));
-            let votes_per_pool = compute_stats(votes_per_pool.into_values());
-            let uncertified_ebs = ebs.keys()
-                .filter(|id| eb_votes.get(id).copied().unwrap_or(0.0) < self.vote_threshold as f64)
-                .count();
-            let votes_per_eb = compute_stats(eb_votes.into_values());
-            let votes_per_bundle = compute_stats(votes_per_bundle.into_values());
+        self.report_protocol_summary(
+            last_timestamp,
+            total_slots,
+            total_votes,
+            total_leios_txs,
+            total_leios_bytes,
+            leios_blocks_with_endorsements,
+            &txs,
+            &ibs,
+            &ebs,
+            &seen_ibs,
+            &ibs_containing_tx,
+            &ebs_containing_ib,
+            &votes_per_bundle,
+            &votes_per_pool,
+            &eb_votes,
+            &no_vote_reasons,
+            &tx_messages,
+            &ib_messages,
+            &eb_messages,
+            &vote_messages,
+            &pbo,
+        );
 
+        if max_local_backlog_len > 0 {
+            info!("Maximum local tx backlog length: {max_local_backlog_len}");
+        }
+        if max_peer_backlog_len > 0 {
+            info!("Maximum peer tx backlog length: {max_peer_backlog_len}");
+        }
+        if txs_dropped_generated_backlog_full > 0 {
+            info!(
+                "{txs_dropped_generated_backlog_full} generated transaction(s) were dropped because the generated tx backlog was full."
+            );
+        }
+        if txs_dropped_peer_backlog_full > 0 {
+            info!(
+                "{txs_dropped_peer_backlog_full} peer transaction(s) were dropped because the peer tx backlog was full."
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Emit the leios + network protocol summary.  Shared by the
+    /// end-of-run report and the periodic per-slot report so the two can
+    /// never drift.  Iterates the accumulators by reference (non-consuming)
+    /// so it can run repeatedly mid-simulation; all figures are
+    /// cumulative-so-far (same semantics as the final summary).
+    #[allow(clippy::too_many_arguments)]
+    fn report_protocol_summary(
+        &self,
+        last_timestamp: Timestamp,
+        total_slots: u64,
+        total_votes: u64,
+        total_leios_txs: u64,
+        total_leios_bytes: u64,
+        leios_blocks_with_endorsements: u64,
+        txs: &BTreeMap<TransactionId, Transaction>,
+        ibs: &BTreeMap<InputBlockId, InputBlock>,
+        ebs: &BTreeMap<EndorserBlockId, EndorserBlock>,
+        seen_ibs: &BTreeMap<NodeId, f64>,
+        ibs_containing_tx: &BTreeMap<TransactionId, f64>,
+        ebs_containing_ib: &BTreeMap<InputBlockId, f64>,
+        votes_per_bundle: &BTreeMap<VoteBundleId, f64>,
+        votes_per_pool: &BTreeMap<NodeId, f64>,
+        eb_votes: &BTreeMap<EndorserBlockId, f64>,
+        no_vote_reasons: &BTreeMap<NoVoteReason, u64>,
+        tx_messages: &MessageStats,
+        ib_messages: &MessageStats,
+        eb_messages: &MessageStats,
+        vote_messages: &MessageStats,
+        pbo: &Option<PrettyBytesOptions>,
+    ) {
+        // Tally finalized tx counts/bytes by type (computed here so the
+        // method is self-contained and callable mid-run).
+        let mut praos_txs = 0u64;
+        let mut praos_tx_bytes = 0u64;
+        let mut leios_txs = 0u64;
+        let mut leios_tx_bytes = 0u64;
+        for tx in txs.values() {
+            match tx.tx_type {
+                Some(TransactionType::Praos) => {
+                    praos_txs += 1;
+                    praos_tx_bytes += tx.bytes;
+                }
+                Some(TransactionType::Leios) => {
+                    leios_txs += 1;
+                    leios_tx_bytes += tx.bytes;
+                }
+                None => {}
+            }
+        }
+
+        let has_ibs = self.variant.has_ibs();
+        let times_to_reach_ib: Vec<_> = txs
+            .values()
+            .filter_map(|tx| Some(tx.included_in_ib? - tx.generated))
+            .collect();
+        let times_to_reach_eb: Vec<_> = txs
+            .values()
+            .filter_map(|tx| Some(tx.included_in_eb? - tx.generated))
+            .collect();
+        let times_to_reach_block: Vec<_> = txs
+            .values()
+            .filter_map(|tx| Some(tx.included_in_block? - tx.generated))
+            .collect();
+        let eb_expiration_cutoff = last_timestamp
+            .checked_sub_duration(Duration::from_secs(self.maximum_eb_age))
+            .unwrap_or_default();
+        let expired_ebs = ebs
+            .values()
+            .filter(|eb| {
+                eb.included_in_eb.is_none()
+                    && eb.included_in_block.is_none()
+                    && eb.generated < eb_expiration_cutoff
+            })
+            .count();
+        let empty_ebs = ebs.values().filter(|eb| eb.is_empty()).count();
+        let ib_expiration_cutoff = last_timestamp
+            .checked_sub_duration(Duration::from_secs(self.maximum_ib_age))
+            .unwrap_or_default();
+        let expired_ibs = ibs
+            .values()
+            .filter(|ib| ib.included_in_eb.is_none() && ib.generated < ib_expiration_cutoff)
+            .count();
+        let bundle_count = votes_per_bundle.len();
+        let txs_per_eb = compute_stats(ebs.values().map(|eb| eb.txs.len() as f64));
+        let eb_time_stats = compute_stats(times_to_reach_eb.iter().map(|t| t.as_secs_f64()));
+        let block_time_stats = compute_stats(times_to_reach_block.iter().map(|t| t.as_secs_f64()));
+        let votes_per_pool_stats = compute_stats(votes_per_pool.values().copied());
+        let uncertified_ebs = ebs
+            .keys()
+            .filter(|id| eb_votes.get(id).copied().unwrap_or(0.0) < self.vote_threshold as f64)
+            .count();
+        let votes_per_eb = compute_stats(eb_votes.values().copied());
+        let votes_per_bundle_stats = compute_stats(votes_per_bundle.values().copied());
+
+        info_span!("leios").in_scope(|| {
             if has_ibs {
                 let txs_per_ib = compute_stats(ibs.values().map(|ib| ib.txs.len() as f64));
                 let bytes_per_ib = compute_stats(ibs.values().map(|ib| ib.bytes as f64));
-                let ibs_per_tx = compute_stats(ibs_containing_tx.into_values());
+                let ibs_per_tx = compute_stats(ibs_containing_tx.values().copied());
                 let ibs_received = compute_stats(
                     self.node_ids
                         .iter()
@@ -652,7 +765,7 @@ impl EventMonitor {
             );
             if has_ibs {
                 let ibs_per_eb = compute_stats(ebs.values().map(|eb| eb.ibs.len() as f64));
-                let ebs_per_ib = compute_stats(ebs_containing_ib.into_values());
+                let ebs_per_ib = compute_stats(ebs_containing_ib.values().copied());
                 info!(
                     "Each EB contained an average of {:.3} IB(s) (stddev {:.3}). {} EB(s) were empty.",
                     ibs_per_eb.mean, ibs_per_eb.std_dev, empty_ebs
@@ -680,15 +793,15 @@ impl EventMonitor {
             );
             info!("{} total votes were generated.", total_votes);
             info!("Each stake pool produced an average of {:.3} vote(s) (stddev {:.3}).",
-                votes_per_pool.mean, votes_per_pool.std_dev);
+                votes_per_pool_stats.mean, votes_per_pool_stats.std_dev);
             info!("Each EB received an average of {:.3} vote(s) (stddev {:.3}).",
                 votes_per_eb.mean, votes_per_eb.std_dev);
             info!("There were {bundle_count} bundle(s) of votes. Each bundle contained {:.3} vote(s) (stddev {:.3}).",
-                votes_per_bundle.mean, votes_per_bundle.std_dev);
+                votes_per_bundle_stats.mean, votes_per_bundle_stats.std_dev);
             if !no_vote_reasons.is_empty() {
                 let total: u64 = no_vote_reasons.values().sum();
                 info!("{total} vote(s) were not generated due to validation failures:");
-                for (reason, count) in &no_vote_reasons {
+                for (reason, count) in no_vote_reasons {
                     info!("  {reason:?}: {count}");
                 }
             }
@@ -721,31 +834,12 @@ impl EventMonitor {
 
         info_span!("network").in_scope(|| {
             tx_messages.display("TX");
-            if self.variant.has_ibs() {
+            if has_ibs {
                 ib_messages.display("IB");
             }
             eb_messages.display("EB");
             vote_messages.display("Vote");
         });
-
-        if max_local_backlog_len > 0 {
-            info!("Maximum local tx backlog length: {max_local_backlog_len}");
-        }
-        if max_peer_backlog_len > 0 {
-            info!("Maximum peer tx backlog length: {max_peer_backlog_len}");
-        }
-        if txs_dropped_generated_backlog_full > 0 {
-            info!(
-                "{txs_dropped_generated_backlog_full} generated transaction(s) were dropped because the generated tx backlog was full."
-            );
-        }
-        if txs_dropped_peer_backlog_full > 0 {
-            info!(
-                "{txs_dropped_peer_backlog_full} peer transaction(s) were dropped because the peer tx backlog was full."
-            );
-        }
-
-        Ok(())
     }
 }
 
