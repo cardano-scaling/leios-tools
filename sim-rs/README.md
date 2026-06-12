@@ -63,6 +63,40 @@ This uses the sequential engine with 6 shards and `zero-latency-clusters`, typic
 > [!NOTE]
 > For instructions on running the simulation using Docker, please refer to the Docker Simulation section in the root README.md.
 
+## Network partitions (T27)
+
+The simulator supports time-windowed network-layer partitions: a `partition-scenarios` parameter block cuts a set of directed edges at `start-time-s` and, if `stop-time-s` is set, heals them again. Scenarios are resolved against the topology at init (unknown node names are a hard error), and only edges that actually exist are cut — the true count is reported at runtime:
+
+```
+Network partition 'eu-na-split' activated: 53744 edge(s) cut.
+Network partition 'eu-na-split' healed: 53744 edge(s) restored.
+```
+
+Partitions are kept in their own overlay file rather than in the experiment config, so the same config can run with and without the partition. Pass the overlay as the **last** `-p`.
+
+A commented example covering all selector shapes (`set-to-set` with `both`/`from-to`/`to-from` directions, and `isolate`) is in [`parameters/partition-example.yaml`](./parameters/partition-example.yaml), written against the small test topology:
+
+```sh
+cargo run --release -- test_data/simple.yaml /tmp/partition-demo.jsonl \
+    -s 120 -p parameters/partition-example.yaml
+```
+
+For continent-scale cuts on the pseudo-mainnet topologies, generate an overlay from the topology's country-code metadata (the `*.yaml.meta.json` sidecar) instead of listing nodes by hand:
+
+```sh
+python3 scripts/gen-partition.py \
+    ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+    --from EU --to NA --start 300 --stop 900 -o eu-na.yaml
+
+cargo run --release \
+  ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+  -s 1000 \
+  -p "./sim-cli/configs/mainnet.yaml" \
+  -p eu-na.yaml
+```
+
+Omitting `stop-time-s` keeps the partition in place until the end of the simulation. Scenarios may overlap in time; each cut/heal is applied independently.
+
 ## Using traces in model comparisons
 
 ### Transaction diffusion

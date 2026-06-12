@@ -59,6 +59,19 @@ pub struct BlockRef<Id> {
     pub id: Id,
 }
 
+/// A directed edge as it appears in partition telemetry (`from → to`),
+/// carrying node names for readability.
+#[derive(Clone, Debug, Serialize)]
+pub struct PartitionLink {
+    pub from: Node,
+    pub to: Node,
+}
+
+/// Max number of cut edges echoed into an [`Event::PartitionStarted`]
+/// for inspection; the event's `link_count` always carries the true
+/// total.
+pub const PARTITION_SAMPLE_LINKS: usize = 8;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Endorsement<Node: Display = NodeId> {
     pub eb: BlockRef<EndorserBlockId<Node>>,
@@ -323,6 +336,23 @@ pub enum Event {
         recipient: Node,
     },
 
+    /// A network-layer partition (T27 §S2) activated: `link_count`
+    /// directed edges were cut at this timestamp.  Emitted once per
+    /// partition window edge by the designated emitter shard (not once
+    /// per shard).  `sample_links` carries up to [`PARTITION_SAMPLE_LINKS`]
+    /// of the cut edges for eyeballing; `link_count` is the true total.
+    PartitionStarted {
+        name: String,
+        link_count: usize,
+        sample_links: Vec<PartitionLink>,
+    },
+    /// A previously-activated partition healed: the same `link_count`
+    /// directed edges were restored.
+    PartitionHealed {
+        name: String,
+        link_count: usize,
+    },
+
     #[cfg(test)]
     TestNodeEvent {
         node: String,
@@ -370,6 +400,9 @@ impl Event {
             Self::VoteGenerated { voter, .. } => Some(voter.id),
             Self::VoteSent { sender, .. } => Some(sender.id),
             Self::VoteReceived { recipient, .. } => Some(recipient.id),
+            // Partition events are network-global (no originating node);
+            // sort first within their timestamp bucket.
+            Self::PartitionStarted { .. } | Self::PartitionHealed { .. } => None,
             #[cfg(test)]
             Self::TestNodeEvent { .. } => None,
         }
@@ -957,6 +990,36 @@ impl EventTracker {
             kind: vote.id.kind,
             sender: self.to_node(sender),
             recipient: self.to_node(recipient),
+        });
+    }
+
+    // -- T27 §S2 network partition telemetry ----------------------------
+
+    /// Record that a partition activated, cutting `links`.  Stamped at the
+    /// current virtual time (the partition's scheduled instant).  Only the
+    /// designated emitter shard calls this, so the event fires once per
+    /// window edge rather than once per shard.
+    pub fn track_partition_started(&self, name: &str, links: &[crate::config::Link]) {
+        let sample_links = links
+            .iter()
+            .take(PARTITION_SAMPLE_LINKS)
+            .map(|l| PartitionLink {
+                from: self.to_node(l.from),
+                to: self.to_node(l.to),
+            })
+            .collect();
+        self.send(Event::PartitionStarted {
+            name: name.to_string(),
+            link_count: links.len(),
+            sample_links,
+        });
+    }
+
+    /// Record that a partition healed, restoring `link_count` edges.
+    pub fn track_partition_healed(&self, name: &str, link_count: usize) {
+        self.send(Event::PartitionHealed {
+            name: name.to_string(),
+            link_count,
         });
     }
 
