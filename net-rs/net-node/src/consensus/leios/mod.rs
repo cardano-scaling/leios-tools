@@ -24,7 +24,7 @@ use shared_consensus::leios::{
 pub use shared_consensus::pipeline::PipelineConfig;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
-
+use net_core::protocols::txsubmission::TxId;
 use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
 use crate::production::decode_overflow_eb;
 use crate::telemetry::NodeEvent;
@@ -209,7 +209,7 @@ impl LeiosConsensus {
         // a receiver has merged via `LeiosFetch BlockTxs`.  Snapshot
         // upfront so we don't hold the mempool lock across the call.
         let known = self.mempool.lock().unwrap().all_known_tx_ids();
-        let tx_known = |h: &[u8; 32]| known.contains(h.as_slice());
+        let tx_known = |id: &shared_consensus::mempool::TxId| known.contains(&TxId::new_with_tx(id.clone()));
         let mut fx = self.state.on_slot(slot, &tx_known);
         fx.push(LeiosEffect::EmitTelemetry(
             LeiosTelemetryEvent::LeiosElectionInfo {
@@ -237,7 +237,9 @@ impl LeiosConsensus {
             }
             NetworkEvent::LeiosBlockReceived { point, block } => {
                 let manifest = decode_overflow_eb(block);
-                (true, self.state.on_eb_received(point.clone(), manifest))
+                (true, self.state.on_eb_received(point.clone(),
+                    manifest.map(|m| m.iter().map(|tx| tx.get_con_tx_id().clone()).collect())
+                ))
             }
             NetworkEvent::LeiosVotesReceived { votes, .. } => {
                 // Inline votes: feed straight into aggregation (the mocked
@@ -268,7 +270,9 @@ impl LeiosConsensus {
     /// peer offers fire), and marks the EB validated immediately —
     /// the producer trusts its own work.
     pub async fn register_self_produced_eb(&mut self, point: Point, eb_data: &[u8]) {
-        let manifest = decode_overflow_eb(eb_data);
+        let manifest = decode_overflow_eb(eb_data).map(
+            |x| x.iter().map(|tx| tx.get_con_tx_id().clone()).collect()
+        );
         let fx = self.state.on_eb_received(point.clone(), manifest);
         self.dispatch(fx).await;
         self.state.on_validated_eb(point);
@@ -278,13 +282,13 @@ impl LeiosConsensus {
     /// manifest.  Bodies are blake2b-hashed here (the wire-format body
     /// hash) before being matched, since shared-consensus is format-agnostic.
     pub fn match_eb_tx_response(&mut self, point: &Point, bodies: &[Vec<u8>]) -> EbTxMatchOutcome {
-        let bodies_with_hashes: Vec<(Vec<u8>, [u8; 32])> = bodies
+        let bodies_with_hashes: Vec<(Vec<u8>, shared_consensus::mempool::TxId)> = bodies
             .iter()
             .map(|body| {
                 let h = blake2b_simd::Params::new().hash_length(32).hash(body);
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(h.as_bytes());
-                (body.clone(), hash)
+                (body.clone(), shared_consensus::mempool::TxId::new_from_slice(&hash))
             })
             .collect();
         self.state.match_eb_tx_response(point, &bodies_with_hashes)
@@ -881,7 +885,7 @@ mod tests {
     /// Build the manifest bytes that the producer would emit for a given
     /// list of 32-byte tx hashes at `slot`. Returns the same CBOR shape as
     /// `make_overflow_eb` (`[slot, [hash, ...]]`) plus the EB hash.
-    fn make_manifest(_slot: u64, hashes: &[[u8; 32]]) -> (Vec<u8>, [u8; 32]) {
+    fn make_manifest(_slot: u64, hashes: &[TxId]) -> (Vec<u8>, [u8; 32]) {
         // The endorser_block is the CIP-0164 `{ tx_hash => tx_size }`
         // manifest map — use the production encoder so the test blob
         // matches what `decode_overflow_eb` expects.
@@ -936,9 +940,9 @@ mod tests {
         }
     }
 
-    fn push_tx_with_id(mempool: &crate::mempool::SharedMempool, id: [u8; 32]) {
+    fn push_tx_with_id(mempool: &crate::mempool::SharedMempool, id: TxId) {
         let tx = PendingTx {
-            tx_id: TxId(id.to_vec()),
+            tx_id: id,
             body: TxBody(vec![]),
             size: 0,
         };
@@ -953,11 +957,11 @@ mod tests {
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
         // Three txs in the EB; we already have #0 and #2 in the mempool.
-        let h0 = [0xA0u8; 32];
-        let h1 = [0xA1u8; 32];
-        let h2 = [0xA2u8; 32];
-        push_tx_with_id(&mempool, h0);
-        push_tx_with_id(&mempool, h2);
+        let h0 = TxId::new_with_slice(&[0xA0u8; 32]);
+        let h1 = TxId::new_with_slice(&[0xA1u8; 32]);
+        let h2 = TxId::new_with_slice(&[0xA2u8; 32]);
+        push_tx_with_id(&mempool, h0.clone());
+        push_tx_with_id(&mempool, h2.clone());
 
         let (manifest, eb_hash) = make_manifest(7, &[h0, h1, h2]);
         let eb_point = Point::Specific {
@@ -1026,10 +1030,10 @@ mod tests {
         let mempool = crate::mempool::new_mempool(1000);
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
-        let h0 = [0xB0u8; 32];
-        let h1 = [0xB1u8; 32];
-        push_tx_with_id(&mempool, h0);
-        push_tx_with_id(&mempool, h1);
+        let h0 = TxId::new_with_slice(&[0xB0u8; 32]);
+        let h1 = TxId::new_with_slice(&[0xB1u8; 32]);
+        push_tx_with_id(&mempool, h0.clone());
+        push_tx_with_id(&mempool, h1.clone());
 
         let (manifest, eb_hash) = make_manifest(3, &[h0, h1]);
         let eb_point = Point::Specific {
@@ -1077,9 +1081,9 @@ mod tests {
         let body0 = b"alpha".to_vec();
         let body1 = b"bravo".to_vec();
         let body2 = b"charlie".to_vec();
-        let h0 = body_hash(&body0);
-        let h1 = body_hash(&body1);
-        let h2 = body_hash(&body2);
+        let h0 = TxId::new_with_slice(&body_hash(&body0));
+        let h1 = TxId::new_with_slice(&body_hash(&body1));
+        let h2 = TxId::new_with_slice(&body_hash(&body2));
 
         let (manifest, eb_hash) = make_manifest(20, &[h0, h1, h2]);
         let eb_point = Point::Specific {

@@ -48,6 +48,7 @@ use crate::peer::PeerId;
 use crate::types::Point;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
+use crate::mempool::TxId;
 
 #[derive(Debug, Default)]
 pub struct T22ThreatBehaviour {
@@ -124,7 +125,7 @@ impl Behaviour for T22ThreatBehaviour {
         &mut self,
         state: &LeiosState,
         point: &Point,
-        _tx_hashes: &[[u8; 32]],
+        _tx_hashes: &[TxId],
     ) -> BehaviourOutcome<LeiosEffect> {
         let skip_process = self.hide_eb_tx_received
             && !self.should_process_eb_data("on_eb_received", state, point);

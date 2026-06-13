@@ -205,7 +205,7 @@ fn derive_quorum_fraction(sim_config: &SimConfiguration) -> f64 {
 /// `MissingTX` voting predicate's `tx_known` callback — see
 /// [`tx_id_hash`].
 fn tx_id_for(id: TransactionId) -> TxId {
-    tx_id_hash(id).to_vec()
+    TxId::new_from_slice(&tx_id_hash(id))
 }
 
 /// 32-byte form of [`tx_id_for`], for callers that need the hash

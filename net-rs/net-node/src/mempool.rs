@@ -35,7 +35,7 @@ fn to_con_pid(id: PeerId) -> shared_consensus::peer::PeerId {
 
 fn from_con_tx(tx: shared_consensus::mempool::PendingTx) -> PendingTx {
     PendingTx {
-        tx_id: TxId(tx.tx_id),
+        tx_id: TxId::new_with_tx(tx.tx_id),
         body: TxBody(tx.body),
         size: tx.size,
     }
@@ -69,7 +69,7 @@ fn to_hash_32(id: Vec<u8>) -> [u8; 32] {
 #[derive(Debug, Clone, Default)]
 pub struct BodyPath {
     pub inline: Vec<PendingTx>,
-    pub manifest_hashes: Vec<[u8; 32]>,
+    pub manifest_hashes: Vec<TxId>,
 }
 
 /// I/O-side wrapper around `shared_consensus::mempool::MempoolState`.  Public
@@ -141,7 +141,7 @@ impl Mempool {
         use shared_consensus::mempool::{MempoolEffect, TxRejectReason};
         let effects = self
             .state
-            .admit_validated(tx.tx_id.0.clone(), tx.body.0.clone(), tx.size);
+            .admit_validated(tx.tx_id.get_con_tx_id().clone(), tx.body.0.clone(), tx.size);
         let admitted = !effects.iter().any(|e| {
             matches!(
                 e,
@@ -182,8 +182,8 @@ impl Mempool {
         self.state.forget_peer(to_con_pid(peer_id));
     }
 
-    pub fn get_body_by_id(&self, id: &[u8]) -> Option<Vec<u8>> {
-        self.state.get_body_by_id(id)
+    pub fn get_body_by_id(&self, id: &TxId) -> Option<Vec<u8>> {
+        self.state.get_body_by_id(id.get_con_tx_id())
     }
 
     /// Run the CIP-0164 overflow rule.  Returns the body path the next
@@ -213,7 +213,7 @@ impl Mempool {
         );
         BodyPath {
             inline: con.inline.into_iter().map(from_con_tx).collect(),
-            manifest_hashes: con.manifest.into_iter().map(to_hash_32).collect(),
+            manifest_hashes: con.manifest.iter().map(|h| TxId::new_with_tx(h.clone())).collect(),
         }
     }
 
@@ -243,7 +243,7 @@ impl Mempool {
     /// BlockTxs, not TxSubmission.
     pub fn merge_eb_body(&mut self, body: Vec<u8>) {
         let tx = tx_from_received_bytes(body);
-        self.state.merge_eb_body(tx.tx_id.0, tx.body.0, tx.size);
+        self.state.merge_eb_body(tx.tx_id.get_con_tx_id(), tx.body.0, tx.size);
     }
 
     /// Mark a tx as advertised to the given peer; returns `true` iff
@@ -252,15 +252,15 @@ impl Mempool {
     /// O(log N) per peer instead of rescanning the mempool.
     pub fn mark_announced_to_peer(&mut self, peer_id: PeerId, tx_id: &TxId) -> bool {
         self.state
-            .mark_announced_to_peer(to_con_pid(peer_id), &tx_id.0)
+            .mark_announced_to_peer(to_con_pid(peer_id), tx_id.get_con_tx_id())
     }
 
     /// Snapshot of every locally available tx id — free pool plus
     /// EB-pinned bodies.  Used by the CIP-0164 `MissingTX` voting
     /// predicate.
-    pub fn all_known_tx_ids(&self) -> HashSet<Vec<u8>> {
-        let mut ids: HashSet<Vec<u8>> = self.state.txs.iter().map(|t| t.tx_id.clone()).collect();
-        ids.extend(self.state.eb_pinned.keys().cloned());
+    pub fn all_known_tx_ids(&self) -> HashSet<TxId> {
+        let mut ids = HashSet::from_iter(TxId::from_consensus_txid_vec(self.state.txs.iter().map(|t| t.tx_id.clone()).collect()).into_iter());
+        ids.extend(TxId::from_consensus_txid_vec(self.state.eb_pinned.keys().cloned().collect()));
         ids
     }
 }
@@ -282,7 +282,7 @@ impl MempoolTxBodyResolver {
 }
 
 impl net_core::store::leios_store::TxBodyResolver for MempoolTxBodyResolver {
-    fn resolve_body(&self, tx_id: &[u8]) -> Option<Vec<u8>> {
+    fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>> {
         self.0.lock().unwrap().get_body_by_id(tx_id)
     }
 }
@@ -293,7 +293,7 @@ pub fn tx_from_received_bytes(body: Vec<u8>) -> PendingTx {
     let hash = blake2b_simd::Params::new().hash_length(32).hash(&body);
     let size = body.len() as u32;
     PendingTx {
-        tx_id: TxId(hash.as_bytes().to_vec()),
+        tx_id: TxId::new(hash.as_bytes().to_vec()),
         body: TxBody(body),
         size,
     }
@@ -411,7 +411,7 @@ mod tests {
 
     fn make_tx_with_id(id: u8, size: usize) -> PendingTx {
         PendingTx {
-            tx_id: TxId(vec![id; 32]),
+            tx_id: TxId::new(vec![id; 32]),
             body: TxBody(vec![0; size]),
             size: size as u32,
         }
@@ -433,7 +433,7 @@ mod tests {
         let tx = make_fake_tx(&mut rng, 500);
         assert_eq!(tx.body.0.len(), 500);
         assert_eq!(tx.size, 500);
-        assert_eq!(tx.tx_id.0.len(), 32);
+        assert_eq!(tx.tx_id.get_con_tx_id().get_bytes().len(), 32);
     }
 
     #[test]
@@ -441,7 +441,7 @@ mod tests {
         let body = vec![0xAA; 100];
         let tx1 = tx_from_received_bytes(body.clone());
         let tx2 = tx_from_received_bytes(body);
-        assert_eq!(tx1.tx_id.0, tx2.tx_id.0);
+        assert_eq!(tx1.tx_id, tx2.tx_id);
         assert_eq!(tx1.size, 100);
     }
 
@@ -449,7 +449,7 @@ mod tests {
     fn tx_from_received_bytes_different_inputs() {
         let tx1 = tx_from_received_bytes(vec![0xAA; 100]);
         let tx2 = tx_from_received_bytes(vec![0xBB; 100]);
-        assert_ne!(tx1.tx_id.0, tx2.tx_id.0);
+        assert_ne!(tx1.tx_id, tx2.tx_id);
     }
 
     #[test]
@@ -482,14 +482,14 @@ mod tests {
         {
             let mut p = pool.lock().unwrap();
             p.push(PendingTx {
-                tx_id: TxId(vec![0xCC; 32]),
+                tx_id: TxId::new(vec![0xCC; 32]),
                 body: TxBody(vec![0xDE, 0xAD]),
                 size: 2,
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&[0xCC; 32]), Some(vec![0xDE, 0xAD]));
-        assert_eq!(resolver.resolve_body(&[0x99; 32]), None);
+        assert_eq!(resolver.resolve_body(&TxId::new_with_slice(&[0xCC; 32])), Some(vec![0xDE, 0xAD]));
+        assert_eq!(resolver.resolve_body(&TxId::new_with_slice(&[0x99; 32])), None);
     }
 
     #[tokio::test]
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(pool_locked.len(), 1);
         let expected = tx_from_received_bytes(body);
         assert_eq!(
-            pool_locked.get_body_by_id(&expected.tx_id.0),
+            pool_locked.get_body_by_id(&expected.tx_id),
             Some(expected.body.0)
         );
     }

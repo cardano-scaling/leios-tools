@@ -16,7 +16,7 @@ use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
-use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_ID_SIZE, MAX_TX_SIZE, MAX_UNACKED};
+use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, TX_ID_SIZE};
 
 // --- TxId encode/decode ---
 //
@@ -24,13 +24,18 @@ use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_ID_SIZE, MAX_TX_SIZE, MAX
 // The codec wraps them as CBOR `bytes(N)` on the wire so the receiver can
 // recover the same bytes on decode.
 
+// --- TxBody encode/decode ---
+//
+// `TxBody(_)` carries the raw transaction bytes; same wrapping pattern as
+// `TxId`.
+
 impl minicbor::Encode<()> for TxId {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut Encoder<W>,
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
-        e.bytes(&self.0)?;
+        e.bytes(&self.0.get_bytes())?;
         Ok(())
     }
 }
@@ -38,20 +43,16 @@ impl minicbor::Encode<()> for TxId {
 impl<'a> minicbor::Decode<'a, ()> for TxId {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let raw = d.bytes()?;
-        if raw.len() > MAX_TX_ID_SIZE {
+        if raw.len() != TX_ID_SIZE {
             return Err(DecodeError::message(format!(
-                "tx id too large: {} bytes exceeds limit {MAX_TX_ID_SIZE}",
+                "tx id has incorrect size: {} instead of {TX_ID_SIZE}",
                 raw.len()
             )));
         }
-        Ok(TxId(raw.to_vec()))
+        Ok(TxId::new(raw.to_vec()))
     }
 }
 
-// --- TxBody encode/decode ---
-//
-// `TxBody(_)` carries the raw transaction bytes; same wrapping pattern as
-// `TxId`.
 
 impl minicbor::Encode<()> for TxBody {
     fn encode<W: minicbor::encode::Write>(
@@ -264,7 +265,7 @@ mod tests {
     }
 
     fn make_tx_id() -> TxId {
-        TxId(vec![0xaa; 32])
+        TxId::new(vec![0xaa; 32])
     }
 
     fn make_tx_body(payload: &[u8]) -> TxBody {
@@ -397,7 +398,7 @@ mod tests {
         let raw_hash: Vec<u8> = (0..32).collect();
         let msg = Message::MsgReplyTxIds {
             tx_ids: vec![TxIdAndSize {
-                tx_id: TxId(raw_hash.clone()),
+                tx_id: TxId::new(raw_hash.clone()),
                 size: 1234,
             }],
         };
@@ -405,7 +406,7 @@ mod tests {
         match decoded {
             Message::MsgReplyTxIds { tx_ids } => {
                 assert_eq!(tx_ids.len(), 1);
-                assert_eq!(tx_ids[0].tx_id.0, raw_hash);
+                assert_eq!(tx_ids[0].tx_id.0.get_bytes(), &raw_hash);
                 assert_eq!(tx_ids[0].size, 1234);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),

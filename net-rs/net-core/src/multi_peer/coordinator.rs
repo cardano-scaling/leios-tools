@@ -107,6 +107,7 @@ use crate::peer::peer_task::{
 };
 use crate::peer::types::{PeerCommand, PeerEvent};
 use crate::peer::{ConnectionMode, PeerId};
+use crate::protocols::txsubmission::TxId;
 use crate::store::chain_store::ChainStore;
 use crate::store::leios_store::LeiosStore;
 
@@ -634,16 +635,16 @@ impl Coordinator {
                 // at the right slots in our sparse holdings.
                 if let (Some(store), Point::Specific { slot, hash }) = (&self.leios_store, &point) {
                     if let Some(manifest) = store.get_eb_manifest(*slot, hash) {
-                        let by_hash: HashMap<[u8; 32], u32> = manifest
+                        let by_hash: HashMap<TxId, u32> = manifest
                             .iter()
                             .enumerate()
-                            .map(|(i, h)| (*h, i as u32))
+                            .map(|(i, h)| (h.clone(), i as u32))
                             .collect();
                         let indexed: BTreeMap<u32, Vec<u8>> = transactions
                             .iter()
                             .filter_map(|body| {
                                 let id = blake2b_256(body);
-                                by_hash.get(&id).map(|&i| (i, body.clone()))
+                                by_hash.get(&TxId::new(id.to_vec())).map(|&i| (i, body.clone()))
                             })
                             .collect();
                         if !indexed.is_empty() {
@@ -863,7 +864,7 @@ impl Coordinator {
 
             NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, tx_hashes);
+                    store.record_eb_manifest(point, TxId::from_consensus_txid_vec(tx_hashes));
                 }
             }
 
@@ -1460,6 +1461,7 @@ pub fn spawn_coordinator(config: CoordinatorConfig) -> CoordinatorHandle {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocols::txsubmission::TxId;
     use super::*;
     use crate::types::WrappedHeader;
 
@@ -2536,9 +2538,9 @@ mod tests {
     async fn record_leios_eb_manifest_enables_resolver_backed_serve() {
         use crate::store::leios_store::TxBodyResolver;
 
-        struct StubResolver(std::collections::HashMap<Vec<u8>, Vec<u8>>);
+        struct StubResolver(HashMap<TxId, Vec<u8>>);
         impl TxBodyResolver for StubResolver {
-            fn resolve_body(&self, tx_id: &[u8]) -> Option<Vec<u8>> {
+            fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>> {
                 self.0.get(tx_id).cloned()
             }
         }
@@ -2546,7 +2548,7 @@ mod tests {
         let h0 = [0x01u8; 32];
         let h1 = [0x02u8; 32];
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(
-            [(h0.to_vec(), vec![10u8]), (h1.to_vec(), vec![20u8])]
+            [(TxId::new(h0.to_vec()), vec![10u8]), (TxId::new(h1.to_vec()), vec![20u8])]
                 .into_iter()
                 .collect(),
         ));
@@ -2577,7 +2579,10 @@ mod tests {
         net_cmd_sender
             .send(NetworkCommand::RecordLeiosEbManifest {
                 point,
-                tx_hashes: vec![h0, h1],
+                tx_hashes: vec![
+                    shared_consensus::mempool::TxId::new_from_slice(&h0),
+                    shared_consensus::mempool::TxId::new_from_slice(&h1)
+                ],
             })
             .await
             .expect("command should accept");
@@ -2685,9 +2690,9 @@ mod tests {
         let body0 = b"alpha".to_vec();
         let body1 = b"bravo".to_vec();
         let body2 = b"charlie".to_vec();
-        let h0 = blake2b_256(&body0);
-        let h1 = blake2b_256(&body1);
-        let h2 = blake2b_256(&body2);
+        let h0 = TxId::new_with_slice(&blake2b_256(&body0));
+        let h1 = TxId::new_with_slice(&blake2b_256(&body1));
+        let h2 = TxId::new_with_slice(&blake2b_256(&body2));
         let eb_hash = [0xEEu8; 32];
         let point = Point::Specific {
             slot: 12,

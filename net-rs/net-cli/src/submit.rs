@@ -51,7 +51,7 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
     enc.bytes(&payload).expect("CBOR encode tx body");
 
     PendingTx {
-        tx_id: TxId(id_buf),
+        tx_id: TxId::new(id_buf),
         body: TxBody(body_buf),
         size: size as u32,
     }

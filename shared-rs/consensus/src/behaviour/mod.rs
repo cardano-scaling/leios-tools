@@ -216,7 +216,7 @@ pub trait Behaviour: Send + Sync {
         &mut self,
         _state: &LeiosState,
         _point: &Point,
-        _tx_hashes: &[[u8; 32]],
+        _tx_hashes: &[TxId],
     ) -> BehaviourOutcome<LeiosEffect> {
         BehaviourOutcome::Continue
     }
@@ -479,7 +479,7 @@ impl Behaviour for CompositeBehaviour {
         &mut self,
         state: &LeiosState,
         point: &Point,
-        tx_hashes: &[[u8; 32]],
+        tx_hashes: &[TxId],
     ) -> BehaviourOutcome<LeiosEffect> {
         for c in self.children.iter_mut() {
             let out = c.on_eb_received(state, point, tx_hashes);

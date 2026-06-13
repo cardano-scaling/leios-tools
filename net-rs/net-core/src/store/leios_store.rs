@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 use crate::protocols::leios_fetch::bitmap;
+use crate::protocols::txsubmission::TxId;
 use crate::types::{Point, Vote};
 
 /// Resolves a transaction body by its 32-byte hash. The Leios store calls
@@ -21,7 +22,7 @@ use crate::types::{Point, Vote};
 /// locally — typically the host application's mempool answers.
 pub trait TxBodyResolver: Send + Sync {
     /// Return the body for `tx_id`, or `None` if unknown.
-    fn resolve_body(&self, tx_id: &[u8]) -> Option<Vec<u8>>;
+    fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>>;
 }
 
 /// A notification about available Leios data, served by LeiosNotify.
@@ -55,7 +56,7 @@ struct LeiosStoreInner {
     /// Per-EB ordered tx hash list. Populated by receivers after decoding
     /// a fetched EB manifest. Pairs with `tx_body_resolver` to serve the
     /// bodies indirectly without keeping a duplicate copy.
-    eb_tx_hashes: HashMap<BlockKey, Vec<[u8; 32]>>,
+    eb_tx_hashes: HashMap<BlockKey, Vec<TxId>>,
     /// Votes keyed by (slot, eb_hash, voter_id), for dedup and re-serving.
     votes: HashMap<(u64, [u8; 32], u16), Vote>,
     /// Notification queue for the LeiosNotify server.  Front-pruned
@@ -280,7 +281,7 @@ impl LeiosStore {
     /// `BlockTxsOffer` notification so this node advertises tx availability
     /// to downstream peers — that's how epidemic flooding extends beyond
     /// the original producer.
-    pub fn record_eb_manifest(&self, point: Point, tx_hashes: Vec<[u8; 32]>) {
+    pub fn record_eb_manifest(&self, point: Point, tx_hashes: Vec<TxId>) {
         let (slot, hash) = match &point {
             Point::Specific { slot, hash } => (*slot, *hash),
             Point::Origin => return,
@@ -336,7 +337,7 @@ impl LeiosStore {
     /// Look up the ordered tx-hash manifest for an EB, if recorded.
     /// Receivers consult this to map a fetched body's content hash to
     /// its position in the EB before merging into `block_txs`.
-    pub fn get_eb_manifest(&self, slot: u64, hash: &[u8; 32]) -> Option<Vec<[u8; 32]>> {
+    pub fn get_eb_manifest(&self, slot: u64, hash: &[u8; 32]) -> Option<Vec<TxId>> {
         let inner = self.inner.lock().unwrap();
         let key = BlockKey { slot, hash: *hash };
         inner.eb_tx_hashes.get(&key).cloned()
@@ -560,6 +561,14 @@ fn notification_heap_bytes(n: &LeiosNotification) -> usize {
 mod tests {
     use super::*;
 
+    fn tx_id(b: u8) -> TxId {
+        TxId::new(vec![b; 32])
+    }
+
+    fn tx_id_from_arr(arr: [u8; 32]) -> TxId {
+        TxId::new(arr.to_vec())
+    }
+
     #[test]
     fn inject_and_get_block() {
         let (store, _rx) = LeiosStore::new(100);
@@ -615,9 +624,9 @@ mod tests {
         assert_eq!(got, vec![vec![0u8], vec![63u8], vec![65u8]]);
     }
 
-    struct StubResolver(HashMap<Vec<u8>, Vec<u8>>);
+    struct StubResolver(HashMap<TxId, Vec<u8>>);
     impl TxBodyResolver for StubResolver {
-        fn resolve_body(&self, tx_id: &[u8]) -> Option<Vec<u8>> {
+        fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>> {
             self.0.get(tx_id).cloned()
         }
     }
@@ -628,9 +637,9 @@ mod tests {
         let h1 = [0x20u8; 32];
         let h2 = [0x30u8; 32];
         let bodies = HashMap::from([
-            (h0.to_vec(), vec![1u8]),
-            (h1.to_vec(), vec![2u8]),
-            (h2.to_vec(), vec![3u8]),
+            (tx_id_from_arr(h0), vec![1u8]),
+            (tx_id_from_arr(h1), vec![2u8]),
+            (tx_id_from_arr(h2), vec![3u8]),
         ]);
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(bodies));
         let (store, _rx) = LeiosStore::new_with_resolver(100, Some(resolver));
@@ -640,7 +649,7 @@ mod tests {
             slot: 5,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point, vec![h0, h1, h2]);
+        store.record_eb_manifest(point, vec![tx_id_from_arr(h0), tx_id_from_arr(h1), tx_id_from_arr(h2)]);
 
         // Bitmap selects indices 0 and 2.
         let bitmap = bitmap::from_indices(&[0, 2]);
@@ -654,7 +663,7 @@ mod tests {
         let h1 = [0x50u8; 32];
         // Only h0 is resolvable.
         let resolver: Arc<dyn TxBodyResolver> =
-            Arc::new(StubResolver(HashMap::from([(h0.to_vec(), vec![0xAA])])));
+            Arc::new(StubResolver(HashMap::from([(tx_id_from_arr(h0), vec![0xAA])])));
         let (store, _rx) = LeiosStore::new_with_resolver(100, Some(resolver));
 
         let eb_hash = [0xCCu8; 32];
@@ -662,7 +671,7 @@ mod tests {
             slot: 7,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point, vec![h0, h1]);
+        store.record_eb_manifest(point, vec![tx_id_from_arr(h0), tx_id_from_arr(h1)]);
 
         let bitmap = bitmap::from_indices(&[0, 1]);
         let got = store.get_block_txs(7, &eb_hash, &bitmap).unwrap();
@@ -683,7 +692,7 @@ mod tests {
         store.inject_block_txs_full(point.clone(), vec![vec![100u8], vec![200u8]]);
         // Pretend we also have manifest hashes (would normally be set
         // separately; here we make sure the block_txs path wins).
-        store.record_eb_manifest(point, vec![[0; 32], [0; 32]]);
+        store.record_eb_manifest(point, vec![tx_id(0), tx_id(0)]);
 
         let bitmap = bitmap::from_indices(&[0, 1]);
         let got = store.get_block_txs(1, &eb_hash, &bitmap).unwrap();
@@ -786,7 +795,7 @@ mod tests {
         let h1 = [0x20u8; 32];
         let h2 = [0x30u8; 32];
         let resolver: Arc<dyn TxBodyResolver> =
-            Arc::new(StubResolver(HashMap::from([(h1.to_vec(), vec![0xD1])])));
+            Arc::new(StubResolver(HashMap::from([(tx_id_from_arr(h1), vec![0xD1])])));
         let (store, _rx) = LeiosStore::new_with_resolver(100, Some(resolver));
 
         let eb_hash = [0xDDu8; 32];
@@ -794,7 +803,7 @@ mod tests {
             slot: 11,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        store.record_eb_manifest(point.clone(), vec![tx_id_from_arr(h0), tx_id_from_arr(h1), tx_id_from_arr(h2)]);
 
         let mut partial = BTreeMap::new();
         partial.insert(0u32, vec![0xD0]);
@@ -814,7 +823,7 @@ mod tests {
             slot: 13,
             hash: eb_hash,
         };
-        let manifest = vec![[0xAA; 32], [0xBB; 32]];
+        let manifest = vec![tx_id(0xAA), tx_id(0xBB)];
         store.record_eb_manifest(point, manifest.clone());
 
         assert_eq!(store.get_eb_manifest(13, &eb_hash), Some(manifest));
@@ -892,7 +901,7 @@ mod tests {
                 slot: 1,
                 hash: [0x22; 32],
             },
-            vec![[0xCC; 32]],
+            vec![tx_id(0xCC)],
         );
 
         // Pre-eviction sanity.

@@ -8,7 +8,7 @@ pub mod codec;
 
 use std::collections::VecDeque;
 use std::time::Duration;
-
+use minicbor::{Decoder, Encoder};
 use tokio::sync::mpsc;
 
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
@@ -34,17 +34,41 @@ pub const TIMEOUT_TXS: Duration = Duration::from_secs(10);
 /// Maximum number of unacknowledged tx ids (flow control window).
 pub const MAX_UNACKED: usize = 10;
 
-/// Maximum size of a single encoded tx id.
-pub const MAX_TX_ID_SIZE: usize = 128;
-
 /// Maximum size of a single encoded tx body.
 pub const MAX_TX_SIZE: usize = 2_500_000;
 
-// --- Types ---
+/// Maximum size of a single encoded tx id.
+pub const MAX_TX_ID_SIZE: usize = 128;
 
-/// Opaque transaction ID stored as raw CBOR bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxId(pub Vec<u8>);
+pub const TX_ID_SIZE: usize = 32;
+
+/// Opaque transaction identifier.  Conventionally Blake2b-256 of the
+/// body, but this crate doesn't enforce that — the wrapper picks the hash
+/// scheme and supplies it on every entry path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TxId(shared_consensus::mempool::TxId);
+
+impl TxId {
+    pub fn from_consensus_txid_vec (tx_vec: Vec<shared_consensus::mempool::TxId>) -> Vec<Self> {
+        tx_vec.into_iter().map(|tx| Self(tx)).collect()
+    }
+
+    pub fn new(p0: Vec<u8>) -> Self {
+        Self(shared_consensus::mempool::TxId::new(p0))
+    }
+
+    pub fn new_with_tx(p0: shared_consensus::mempool::TxId) -> Self {
+        Self(p0)
+    }
+
+    pub fn new_with_slice(p0: &[u8; 32]) -> Self {
+        Self(shared_consensus::mempool::TxId::new_from_slice(p0))
+    }
+
+    pub fn get_con_tx_id(&self) -> &shared_consensus::mempool::TxId {
+        &self.0
+    }
+}
 
 /// Opaque transaction body stored as raw CBOR bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,7 +399,7 @@ mod tests {
             TxSubmission::transition(
                 &State::StIdle,
                 &Message::MsgRequestTxs {
-                    tx_ids: vec![TxId(vec![0x42])]
+                    tx_ids: vec![TxId::new(vec![0x42])]
                 }
             )
             .unwrap(),
@@ -429,7 +453,7 @@ mod tests {
         assert!(TxSubmission::transition(
             &State::StTxIdsBlocking,
             &Message::MsgRequestTxs {
-                tx_ids: vec![TxId(vec![])]
+                tx_ids: vec![TxId::new(vec![])]
             }
         )
         .is_err());
@@ -503,7 +527,7 @@ mod tests {
 
     fn make_test_tx(id_byte: u8, size: usize) -> PendingTx {
         PendingTx {
-            tx_id: TxId(vec![id_byte; 32]),
+            tx_id: TxId::new(vec![id_byte; 32]),
             body: TxBody(vec![id_byte; size]),
             size: size as u32,
         }

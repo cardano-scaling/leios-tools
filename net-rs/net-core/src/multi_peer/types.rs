@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use std::time::Duration;
-
+use shared_consensus::mempool::TxId;
 use crate::peer::{ConnectionMode, PeerId};
 use crate::protocols::peersharing::PeerAddress;
 use crate::protocols::txsubmission::PendingTx;
@@ -178,7 +178,7 @@ pub enum NetworkCommand {
     /// configured `TxBodyResolver` (typically the local mempool).
     RecordLeiosEbManifest {
         point: Point,
-        tx_hashes: Vec<[u8; 32]>,
+        tx_hashes: Vec<TxId>,
     },
 
     /// Inject votes into the Leios store (for responder peers to re-serve

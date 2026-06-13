@@ -142,13 +142,13 @@ mod tests {
     use crate::config::CommitteeSelection;
     use crate::elections::{Elections, ElectionsConfig};
     use crate::leios::VotingConfig;
-    use crate::mempool::{EbKey, MempoolState};
+    use crate::mempool::{EbKey, MempoolState, TxId};
     use crate::pipeline::PipelineConfig;
     use std::collections::BTreeMap;
 
     fn pending(id: u8, size: u32) -> PendingTx {
         PendingTx {
-            tx_id: vec![id; 32],
+            tx_id: TxId::new(vec![id; 32]),
             body: vec![0u8; size as usize],
             size,
         }
@@ -221,11 +221,11 @@ mod tests {
         populate(&mut state, &[(1, 200), (2, 200), (3, 200), (4, 200)]);
         let body = BodyPath::decide(&mut state, 500, EB_CAP, &leios, false);
         assert_eq!(body.inline.len(), 2);
-        assert_eq!(body.inline[0].tx_id, vec![1u8; 32]);
-        assert_eq!(body.inline[1].tx_id, vec![2u8; 32]);
+        assert_eq!(body.inline[0].tx_id, TxId::new(vec![1u8; 32]));
+        assert_eq!(body.inline[1].tx_id, TxId::new(vec![2u8; 32]));
         assert_eq!(body.manifest.len(), 2);
-        assert_eq!(body.manifest[0], vec![3u8; 32]);
-        assert_eq!(body.manifest[1], vec![4u8; 32]);
+        assert_eq!(body.manifest[0], TxId::new(vec![3u8; 32]));
+        assert_eq!(body.manifest[1], TxId::new(vec![4u8; 32]));
         // Inline txs drained; manifest txs still in the free pool
         // pending the wrapper's produce_eb commit.
         assert_eq!(state.txs.len(), 2);
@@ -252,8 +252,8 @@ mod tests {
         // drain_up_to(500) takes [250] (next would be 501 > 500 with
         // non-empty result).  Residual = [251] → manifest.
         assert_eq!(body.inline.len(), 1);
-        assert_eq!(body.inline[0].tx_id, vec![1u8; 32]);
-        assert_eq!(body.manifest, vec![vec![2u8; 32]]);
+        assert_eq!(body.inline[0].tx_id, TxId::new(vec![1u8; 32]));
+        assert_eq!(body.manifest, vec![TxId::new(vec![2u8; 32])]);
     }
 
     #[test]
@@ -308,8 +308,8 @@ mod tests {
         let body = BodyPath::decide(&mut state, 500, 500, &leios, false);
         assert_eq!(body.inline.len(), 2);
         assert_eq!(body.manifest.len(), 2);
-        assert_eq!(body.manifest[0], vec![3u8; 32]);
-        assert_eq!(body.manifest[1], vec![4u8; 32]);
+        assert_eq!(body.manifest[0], TxId::new(vec![3u8; 32]));
+        assert_eq!(body.manifest[1], TxId::new(vec![4u8; 32]));
         // Residual txs 3..7 still in mempool; produce_eb drains the
         // manifest prefix.
         assert_eq!(state.txs.len(), 5);
@@ -336,7 +336,7 @@ mod tests {
         let body = BodyPath::decide(&mut state, 500, 500, &leios, false);
         assert_eq!(body.inline.len(), 1);
         assert_eq!(body.manifest.len(), 1);
-        assert_eq!(body.manifest[0], vec![2u8; 32]);
+        assert_eq!(body.manifest[0], TxId::new(vec![2u8; 32]));
     }
 
     #[test]
