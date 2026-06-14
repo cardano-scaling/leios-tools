@@ -586,8 +586,7 @@ impl NodeImpl for SharedConsensus {
         // self.leios is borrowed mutably.
         let mempool = &self.mempool;
         let tx_arcs = &self.tx_arcs;
-        let tx_known = |hash: &[u8; 32]| {
-            let key = hash.to_vec();
+        let tx_known = |key: &TxId| {
             mempool.has_tx(&key) || tx_arcs.contains_key(&key)
         };
         let leios_fx = self.leios.on_slot(slot, &tx_known);
@@ -1776,7 +1775,7 @@ impl SharedConsensus {
             slot: eb_id.slot,
             hash: eb_hash,
         };
-        let manifest: Vec<[u8; 32]> = eb.txs.iter().map(|tx| tx_id_hash(tx.id)).collect();
+        let manifest: Vec<TxId> = eb.txs.iter().map(|tx| tx_id_for(tx.id)).collect();
         let _ = self.leios.on_eb_received(point, Some(manifest));
     }
 
@@ -2177,7 +2176,7 @@ impl SharedConsensus {
                         .tx_arcs
                         .get(&tx_id)
                         .map(|tx| tx.id)
-                        .or_else(|| sim_id_from_bytes(&tx_id))
+                        .or_else(|| sim_id_from_bytes(&tx_id.get_bytes()))
                     else {
                         continue;
                     };
