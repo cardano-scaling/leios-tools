@@ -75,7 +75,7 @@ use shared_consensus::{
         ChainTipContext, LeiosEffect, LeiosState, LeiosTelemetryEvent, NoVoteReason, VotingConfig,
     },
     lottery as con_lottery,
-    mempool::{EbKey, MempoolEffect, MempoolState, PendingTx, TxId, TxRejectReason},
+    mempool::{EbKey, MempoolEffect, MempoolState, MempoolTx, TxId, TxRejectReason},
     peer::PeerId,
     pipeline::PipelineConfig,
     praos::{ParsedHeaderInfo, PraosEffect, PraosState},
@@ -205,7 +205,7 @@ fn derive_quorum_fraction(sim_config: &SimConfiguration) -> f64 {
 /// `MissingTX` voting predicate's `tx_known` callback — see
 /// [`tx_id_hash`].
 fn tx_id_for(id: TransactionId) -> TxId {
-    TxId::new_from_slice(&tx_id_hash(id))
+    TxId::new_with_slice(&tx_id_hash(id))
 }
 
 /// 32-byte form of [`tx_id_for`], for callers that need the hash
@@ -2017,7 +2017,7 @@ impl SharedConsensus {
     /// in practice — every tx that enters the mempool has a matching
     /// `tx_arcs` entry — but is defensive against future eviction
     /// drift).
-    fn collect_arcs(&self, pending: Vec<PendingTx>) -> Vec<Arc<Transaction>> {
+    fn collect_arcs(&self, pending: Vec<MempoolTx>) -> Vec<Arc<Transaction>> {
         pending
             .into_iter()
             .filter_map(|tx| self.tx_arcs.get(&tx.tx_id).cloned())

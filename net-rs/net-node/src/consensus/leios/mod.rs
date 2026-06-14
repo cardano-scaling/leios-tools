@@ -238,7 +238,7 @@ impl LeiosConsensus {
             NetworkEvent::LeiosBlockReceived { point, block } => {
                 let manifest = decode_overflow_eb(block);
                 (true, self.state.on_eb_received(point.clone(),
-                    manifest.map(|m| m.iter().map(|tx| tx.get_con_tx_id().clone()).collect())
+                    manifest.map(TxId::vec_to_consensus_txid)
                 ))
             }
             NetworkEvent::LeiosVotesReceived { votes, .. } => {
@@ -288,7 +288,7 @@ impl LeiosConsensus {
                 let h = blake2b_simd::Params::new().hash_length(32).hash(body);
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(h.as_bytes());
-                (body.clone(), shared_consensus::mempool::TxId::new_from_slice(&hash))
+                (body.clone(), shared_consensus::mempool::TxId::new_with_slice(&hash))
             })
             .collect();
         self.state.match_eb_tx_response(point, &bodies_with_hashes)
@@ -957,9 +957,9 @@ mod tests {
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
         // Three txs in the EB; we already have #0 and #2 in the mempool.
-        let h0 = TxId::new_with_slice(&[0xA0u8; 32]);
-        let h1 = TxId::new_with_slice(&[0xA1u8; 32]);
-        let h2 = TxId::new_with_slice(&[0xA2u8; 32]);
+        let h0 = TxId::new_with_array_ref(&[0xA0u8; 32]);
+        let h1 = TxId::new_with_array_ref(&[0xA1u8; 32]);
+        let h2 = TxId::new_with_array_ref(&[0xA2u8; 32]);
         push_tx_with_id(&mempool, h0.clone());
         push_tx_with_id(&mempool, h2.clone());
 
@@ -1030,8 +1030,8 @@ mod tests {
         let mempool = crate::mempool::new_mempool(1000);
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
-        let h0 = TxId::new_with_slice(&[0xB0u8; 32]);
-        let h1 = TxId::new_with_slice(&[0xB1u8; 32]);
+        let h0 = TxId::new_with_array_ref(&[0xB0u8; 32]);
+        let h1 = TxId::new_with_array_ref(&[0xB1u8; 32]);
         push_tx_with_id(&mempool, h0.clone());
         push_tx_with_id(&mempool, h1.clone());
 
@@ -1081,9 +1081,9 @@ mod tests {
         let body0 = b"alpha".to_vec();
         let body1 = b"bravo".to_vec();
         let body2 = b"charlie".to_vec();
-        let h0 = TxId::new_with_slice(&body_hash(&body0));
-        let h1 = TxId::new_with_slice(&body_hash(&body1));
-        let h2 = TxId::new_with_slice(&body_hash(&body2));
+        let h0 = TxId::new_with_array_ref(&body_hash(&body0));
+        let h1 = TxId::new_with_array_ref(&body_hash(&body1));
+        let h2 = TxId::new_with_array_ref(&body_hash(&body2));
 
         let (manifest, eb_hash) = make_manifest(20, &[h0, h1, h2]);
         let eb_point = Point::Specific {

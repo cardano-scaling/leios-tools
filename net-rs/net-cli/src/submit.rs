@@ -39,9 +39,11 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
     // TxId: random 32 bytes encoded as CBOR bytes.
     let mut hash = [0u8; 32];
     rng.fill(&mut hash);
-    let mut id_buf = Vec::new();
-    let mut enc = minicbor::Encoder::new(&mut id_buf);
-    enc.bytes(&hash).expect("CBOR encode tx id");
+
+    // TODO: do we really need CBOR-encoded TxId here? And TxBody as well?
+    //let mut id_buf = Vec::new();
+    //let mut enc = minicbor::Encoder::new(&mut id_buf);
+    //enc.bytes(&hash).expect("CBOR encode tx id");
 
     // TxBody: random bytes of the desired size, encoded as CBOR bytes.
     let mut payload = vec![0u8; size];
@@ -51,7 +53,7 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
     enc.bytes(&payload).expect("CBOR encode tx body");
 
     PendingTx {
-        tx_id: TxId::new(id_buf),
+        tx_id: TxId::new_with_array(hash),
         body: TxBody(body_buf),
         size: size as u32,
     }
@@ -174,4 +176,23 @@ pub async fn run(
     conn.running.abort();
 
     result.map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_hash() {
+        let mut rng = StdRng::from_entropy();
+
+        let mut hash = [0u8; 32];
+        rng.fill(&mut hash);
+        let mut id_buf = Vec::new();
+        let mut enc = minicbor::Encoder::new(&mut id_buf);
+        enc.bytes(&hash).expect("CBOR encode tx id");
+
+        println!("Hash: {:02x?}", hash);
+        println!("CBOR: {:02x?}", id_buf);
+    }
 }

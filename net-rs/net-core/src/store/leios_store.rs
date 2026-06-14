@@ -562,11 +562,11 @@ mod tests {
     use super::*;
 
     fn tx_id(b: u8) -> TxId {
-        TxId::new(vec![b; 32])
+        TxId::new_with_array([b; 32])
     }
 
     fn tx_id_from_arr(arr: [u8; 32]) -> TxId {
-        TxId::new(arr.to_vec())
+        TxId::new_with_array(arr)
     }
 
     #[test]

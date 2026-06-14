@@ -43,13 +43,15 @@ impl minicbor::Encode<()> for TxId {
 impl<'a> minicbor::Decode<'a, ()> for TxId {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let raw = d.bytes()?;
-        if raw.len() != TX_ID_SIZE {
-            return Err(DecodeError::message(format!(
+        match raw.as_array::<TX_ID_SIZE>() {
+            None => Err(DecodeError::message(format!(
                 "tx id has incorrect size: {} instead of {TX_ID_SIZE}",
                 raw.len()
-            )));
+            ))),
+            Some(array) => {
+                Ok(TxId::new_with_array_ref(array))
+            }
         }
-        Ok(TxId::new(raw.to_vec()))
     }
 }
 
@@ -261,11 +263,13 @@ mod tests {
 
     fn round_trip(msg: &Message) -> Message {
         let encoded = minicbor::to_vec(msg).unwrap();
+        println!("Encoded: {:02x?}", encoded);
         minicbor::decode(&encoded).unwrap()
     }
 
     fn make_tx_id() -> TxId {
-        TxId::new(vec![0xaa; 32])
+        let arr: [u8; 32] = std::array::from_fn(|i| i as u8 + 40);
+        TxId::new_with_array(arr)
     }
 
     fn make_tx_body(payload: &[u8]) -> TxBody {
@@ -306,17 +310,19 @@ mod tests {
 
     #[test]
     fn reply_tx_ids_round_trip() {
+        let tx_ids = vec![TxIdAndSize {
+            tx_id: make_tx_id(),
+            size: 1500,
+        }];
         let msg = Message::MsgReplyTxIds {
-            tx_ids: vec![TxIdAndSize {
-                tx_id: make_tx_id(),
-                size: 1500,
-            }],
+            tx_ids: tx_ids.clone(),
         };
         let decoded = round_trip(&msg);
         match decoded {
-            Message::MsgReplyTxIds { tx_ids } => {
-                assert_eq!(tx_ids.len(), 1);
-                assert_eq!(tx_ids[0].size, 1500);
+            Message::MsgReplyTxIds { tx_ids: decoded_tx_ids } => {
+                assert_eq!(decoded_tx_ids.len(), 1);
+                assert_eq!(decoded_tx_ids[0].size, 1500);
+                assert_eq!(decoded_tx_ids[0].tx_id, tx_ids[0].tx_id);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
         }
@@ -398,7 +404,7 @@ mod tests {
         let raw_hash: Vec<u8> = (0..32).collect();
         let msg = Message::MsgReplyTxIds {
             tx_ids: vec![TxIdAndSize {
-                tx_id: TxId::new(raw_hash.clone()),
+                tx_id: TxId::new_with_array_ref(raw_hash.as_array().unwrap()),
                 size: 1234,
             }],
         };

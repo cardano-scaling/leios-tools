@@ -1349,7 +1349,7 @@ mod tests {
     }
 
     fn tx_id(b: u8) -> TxId {
-        TxId::new(vec![b; 32])
+        TxId::new_with_slice(&[b; 32])
     }
 
     fn point(slot: u64, b: u8) -> Point {

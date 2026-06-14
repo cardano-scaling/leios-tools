@@ -1021,9 +1021,9 @@ mod tests {
         let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
             mux_pair_for_protocol(&lf_proto);
 
-        let h0 = TxId::new_with_slice(&[0xA0u8; 32]);
-        let h1 = TxId::new_with_slice(&[0xA1u8; 32]);
-        let h2 = TxId::new_with_slice(&[0xA2u8; 32]);
+        let h0 = TxId::new_with_array_ref(&[0xA0u8; 32]);
+        let h1 = TxId::new_with_array_ref(&[0xA1u8; 32]);
+        let h2 = TxId::new_with_array_ref(&[0xA2u8; 32]);
         // Bodies are single valid CBOR values (1-byte bytestrings,
         // 0x41 = bytes(1)) — txs pass through the codec as raw CBOR.
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(

@@ -365,7 +365,7 @@ pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
         let mut h = [0u8; 32];
         h.copy_from_slice(bytes);
         let _size = dec.u32().ok()?; // tx size — unused
-        Some(TxId::new_with_slice(&h))
+        Some(TxId::new_with_array_ref(&h))
     }
     let mut dec = minicbor::Decoder::new(blob);
     let entries = dec.map().ok()?;
@@ -485,7 +485,7 @@ mod tests {
 
     fn make_test_tx(id: u8, size: usize) -> PendingTx {
         PendingTx {
-            tx_id: TxId::new(vec![id; 32]),
+            tx_id: TxId::new_with_array([id; 32]),
             body: TxBody(vec![id; size]),
             size: size as u32,
         }
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_is_deterministic() {
-        let manifest = vec![TxId::new_with_slice(&[0x10u8; 32]), TxId::new_with_slice(&[0x20u8; 32])];
+        let manifest = vec![TxId::new_with_array_ref(&[0x10u8; 32]), TxId::new_with_array_ref(&[0x20u8; 32])];
         let a = encode_overflow_eb(&manifest);
         let b = encode_overflow_eb(&manifest);
         assert_eq!(a, b);
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn decode_overflow_eb_round_trip() {
-        let manifest = vec![TxId::new_with_slice(&[0x10u8; 32]), TxId::new_with_slice(&[0x20u8; 32])];
+        let manifest = vec![TxId::new_with_array_ref(&[0x10u8; 32]), TxId::new_with_array_ref(&[0x20u8; 32])];
         let data = encode_overflow_eb(&manifest);
         let hashes = decode_overflow_eb(&data).expect("decode");
         assert_eq!(hashes, manifest);
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_layout() {
-        let manifest = vec![TxId::new_with_slice(&[0xAAu8; 32]), TxId::new_with_slice(&[0xBBu8; 32])];
+        let manifest = vec![TxId::new_with_array_ref(&[0xAAu8; 32]), TxId::new_with_array_ref(&[0xBBu8; 32])];
         let data = encode_overflow_eb(&manifest);
         // Decode the manifest map: { hash => size }, hashes in order.
         let mut dec = minicbor::Decoder::new(&data);

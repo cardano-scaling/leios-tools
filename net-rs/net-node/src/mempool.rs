@@ -33,7 +33,7 @@ fn to_con_pid(id: PeerId) -> shared_consensus::peer::PeerId {
     shared_consensus::peer::PeerId(id.0)
 }
 
-fn from_con_tx(tx: shared_consensus::mempool::PendingTx) -> PendingTx {
+fn from_con_tx(tx: shared_consensus::mempool::MempoolTx) -> PendingTx {
     PendingTx {
         tx_id: TxId::new_with_tx(tx.tx_id),
         body: TxBody(tx.body),
@@ -259,8 +259,8 @@ impl Mempool {
     /// EB-pinned bodies.  Used by the CIP-0164 `MissingTX` voting
     /// predicate.
     pub fn all_known_tx_ids(&self) -> HashSet<TxId> {
-        let mut ids = HashSet::from_iter(TxId::from_consensus_txid_vec(self.state.txs.iter().map(|t| t.tx_id.clone()).collect()).into_iter());
-        ids.extend(TxId::from_consensus_txid_vec(self.state.eb_pinned.keys().cloned().collect()));
+        let mut ids = HashSet::from_iter(TxId::vec_from_consensus_txid(self.state.txs.iter().map(|t| t.tx_id.clone()).collect()).into_iter());
+        ids.extend(TxId::vec_from_consensus_txid(self.state.eb_pinned.keys().cloned().collect()));
         ids
     }
 }
@@ -291,9 +291,10 @@ impl net_core::store::leios_store::TxBodyResolver for MempoolTxBodyResolver {
 /// The tx_id is derived by hashing the body with Blake2b-256.
 pub fn tx_from_received_bytes(body: Vec<u8>) -> PendingTx {
     let hash = blake2b_simd::Params::new().hash_length(32).hash(&body);
+    let hash_array: &[u8; 64] = hash.as_array(); // TODO: 64 => 32!
     let size = body.len() as u32;
     PendingTx {
-        tx_id: TxId::new(hash.as_bytes().to_vec()),
+        tx_id: TxId::new_with_blake2b(hash_array),
         body: TxBody(body),
         size,
     }
@@ -411,7 +412,7 @@ mod tests {
 
     fn make_tx_with_id(id: u8, size: usize) -> PendingTx {
         PendingTx {
-            tx_id: TxId::new(vec![id; 32]),
+            tx_id: TxId::new_with_array([id; 32]),
             body: TxBody(vec![0; size]),
             size: size as u32,
         }
@@ -482,14 +483,14 @@ mod tests {
         {
             let mut p = pool.lock().unwrap();
             p.push(PendingTx {
-                tx_id: TxId::new(vec![0xCC; 32]),
+                tx_id: TxId::new_with_array([0xCC; 32]),
                 body: TxBody(vec![0xDE, 0xAD]),
                 size: 2,
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&TxId::new_with_slice(&[0xCC; 32])), Some(vec![0xDE, 0xAD]));
-        assert_eq!(resolver.resolve_body(&TxId::new_with_slice(&[0x99; 32])), None);
+        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0xCC; 32])), Some(vec![0xDE, 0xAD]));
+        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0x99; 32])), None);
     }
 
     #[tokio::test]

@@ -644,7 +644,7 @@ impl Coordinator {
                             .iter()
                             .filter_map(|body| {
                                 let id = blake2b_256(body);
-                                by_hash.get(&TxId::new(id.to_vec())).map(|&i| (i, body.clone()))
+                                by_hash.get(&TxId::new_with_array(id)).map(|&i| (i, body.clone()))
                             })
                             .collect();
                         if !indexed.is_empty() {
@@ -864,7 +864,7 @@ impl Coordinator {
 
             NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, TxId::from_consensus_txid_vec(tx_hashes));
+                    store.record_eb_manifest(point, TxId::vec_from_consensus_txid(tx_hashes));
                 }
             }
 
@@ -2548,7 +2548,7 @@ mod tests {
         let h0 = [0x01u8; 32];
         let h1 = [0x02u8; 32];
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(
-            [(TxId::new(h0.to_vec()), vec![10u8]), (TxId::new(h1.to_vec()), vec![20u8])]
+            [(TxId::new_with_array(h0), vec![10u8]), (TxId::new_with_array(h1), vec![20u8])]
                 .into_iter()
                 .collect(),
         ));
@@ -2580,8 +2580,8 @@ mod tests {
             .send(NetworkCommand::RecordLeiosEbManifest {
                 point,
                 tx_hashes: vec![
-                    shared_consensus::mempool::TxId::new_from_slice(&h0),
-                    shared_consensus::mempool::TxId::new_from_slice(&h1)
+                    shared_consensus::mempool::TxId::new_with_slice(&h0),
+                    shared_consensus::mempool::TxId::new_with_slice(&h1)
                 ],
             })
             .await
@@ -2690,9 +2690,9 @@ mod tests {
         let body0 = b"alpha".to_vec();
         let body1 = b"bravo".to_vec();
         let body2 = b"charlie".to_vec();
-        let h0 = TxId::new_with_slice(&blake2b_256(&body0));
-        let h1 = TxId::new_with_slice(&blake2b_256(&body1));
-        let h2 = TxId::new_with_slice(&blake2b_256(&body2));
+        let h0 = TxId::new_with_array_ref(&blake2b_256(&body0));
+        let h1 = TxId::new_with_array_ref(&blake2b_256(&body1));
+        let h2 = TxId::new_with_array_ref(&blake2b_256(&body2));
         let eb_hash = [0xEEu8; 32];
         let point = Point::Specific {
             slot: 12,
