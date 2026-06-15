@@ -255,15 +255,30 @@ impl BlockBody {
 
         // Field 0: header — skip.
         inner.skip()?;
-        // Field 1: tx_bodies — `[* transaction_body]`.
+        // Field 1: tx_bodies — `[* transaction_body]`. Accept both
+        // definite and indefinite-length arrays: dev-relay blocks
+        // around the Leios era encode tx_bodies as `9f ... ff` and
+        // returning Err here would silently default the whole body
+        // info (`field_count=0`), masking the actual shape downstream.
         let tx_count = match inner.array()? {
-            Some(n) => u32::try_from(n)
-                .map_err(|_| DecodeError::message("tx_bodies length exceeds u32"))?,
-            None => return Err(DecodeError::message("indefinite tx_bodies array")),
+            Some(n) => {
+                let n = u32::try_from(n)
+                    .map_err(|_| DecodeError::message("tx_bodies length exceeds u32"))?;
+                for _ in 0..n {
+                    inner.skip()?;
+                }
+                n
+            }
+            None => {
+                let mut n: u32 = 0;
+                while inner.datatype()? != minicbor::data::Type::Break {
+                    inner.skip()?;
+                    n = n.saturating_add(1);
+                }
+                inner.skip()?; // consume the break
+                n
+            }
         };
-        for _ in 0..tx_count {
-            inner.skip()?;
-        }
         // Skip the rest of the Conway base: tx_witness_sets,
         // auxiliary_data_set, invalid_transactions.  We treat the count
         // permissively to keep working if the era/CDDL adds another
@@ -761,6 +776,45 @@ mod tests {
         assert_eq!(info.tx_count, 3);
         assert_eq!(info.field_count, 5);
         assert!(info.leios_cert.is_none());
+    }
+
+    #[test]
+    fn praos_inspect_handles_indefinite_tx_bodies() {
+        // Dev-relay Leios-era blocks encode tx_bodies as an indefinite
+        // CBOR array (`9f ... ff`).  The base parser must walk those
+        // correctly rather than bailing out with `field_count=0`.
+        use std::io::Write as _;
+        let tx_count = 3u32;
+        let mut block_buf = Vec::new();
+        let mut be = Encoder::new(&mut block_buf);
+        be.array(5).unwrap(); // Conway base, no Leios extensions
+        be.bytes(&[0x80]).unwrap(); // 0 header
+        be.begin_array().unwrap(); // 1 tx_bodies (indefinite)
+        for _ in 0..tx_count {
+            be.null().unwrap();
+        }
+        be.end().unwrap();
+        be.array(0).unwrap(); // 2 tx_witness_sets
+        be.null().unwrap(); // 3 auxiliary_data_set
+        be.array(0).unwrap(); // 4 invalid_transactions
+
+        let mut inner_buf = Vec::new();
+        let mut ie = Encoder::new(&mut inner_buf);
+        ie.array(2).unwrap();
+        ie.u32(7).unwrap();
+        ie.writer_mut().write_all(&block_buf).unwrap();
+
+        let mut outer_buf = Vec::new();
+        let mut oe = Encoder::new(&mut outer_buf);
+        oe.tag(minicbor::data::Tag::new(24)).unwrap();
+        oe.bytes(&inner_buf).unwrap();
+
+        let body = BlockBody::new(outer_buf);
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, tx_count);
+        assert_eq!(info.field_count, 5);
+        assert!(info.leios_cert.is_none());
+        assert!(info.tx_references_count.is_none());
     }
 
     #[test]
