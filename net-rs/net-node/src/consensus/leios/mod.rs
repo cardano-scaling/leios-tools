@@ -270,9 +270,16 @@ impl LeiosConsensus {
                         .on_eb_txs_offered(point.clone(), *peer_id, bitmap, now),
                 )
             }
-            NetworkEvent::LeiosBlockReceived { point, block } => {
+            NetworkEvent::LeiosBlockReceived {
+                source,
+                point,
+                block,
+            } => {
                 let manifest = decode_overflow_eb(block);
-                (true, self.state.on_eb_received(point.clone(), manifest))
+                (
+                    true,
+                    self.state.on_eb_received(*source, point.clone(), manifest),
+                )
             }
             NetworkEvent::LeiosVotesReceived { votes, .. } => {
                 // Inline votes: feed straight into aggregation (the mocked
@@ -304,7 +311,8 @@ impl LeiosConsensus {
     /// the producer trusts its own work.
     pub async fn register_self_produced_eb(&mut self, point: Point, eb_data: &[u8]) {
         let manifest = decode_overflow_eb(eb_data);
-        let fx = self.state.on_eb_received(point.clone(), manifest);
+        // Self-produced: no source peer.
+        let fx = self.state.on_eb_received(None, point.clone(), manifest);
         self.dispatch(fx).await;
         self.state.on_validated_eb(point);
     }
@@ -377,10 +385,18 @@ impl LeiosConsensus {
                             .await;
                     }
                 }
-                LeiosEffect::RecordLeiosEbManifest { point, tx_hashes } => {
+                LeiosEffect::RecordLeiosEbManifest {
+                    source,
+                    point,
+                    tx_hashes,
+                } => {
                     let _ = self
                         .commands
-                        .send(NetworkCommand::RecordLeiosEbManifest { point, tx_hashes })
+                        .send(NetworkCommand::RecordLeiosEbManifest {
+                            source,
+                            point,
+                            tx_hashes,
+                        })
                         .await;
                 }
                 LeiosEffect::EmitVote {
@@ -694,6 +710,7 @@ mod tests {
             .await;
         leios
             .handle_event(&NetworkEvent::LeiosBlockReceived {
+                source: None,
                 point: p.clone(),
                 block: vec![],
             })
@@ -731,6 +748,7 @@ mod tests {
             .await;
         leios
             .handle_event(&NetworkEvent::LeiosBlockReceived {
+                source: None,
                 point: p.clone(),
                 block: vec![],
             })
@@ -1003,6 +1021,7 @@ mod tests {
         // EB arrives → manifest cached.
         leios
             .handle_event(&NetworkEvent::LeiosBlockReceived {
+                source: None,
                 point: eb_point.clone(),
                 block: manifest,
             })
@@ -1074,6 +1093,7 @@ mod tests {
 
         leios
             .handle_event(&NetworkEvent::LeiosBlockReceived {
+                source: None,
                 point: eb_point.clone(),
                 block: manifest,
             })
@@ -1124,6 +1144,7 @@ mod tests {
 
         leios
             .handle_event(&NetworkEvent::LeiosBlockReceived {
+                source: None,
                 point: eb_point.clone(),
                 block: manifest,
             })

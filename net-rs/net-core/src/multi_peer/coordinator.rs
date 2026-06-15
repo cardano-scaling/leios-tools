@@ -626,7 +626,11 @@ impl Coordinator {
                 if let Some(ref store) = self.leios_store {
                     store.inject_block(point.clone(), block.clone(), Some(peer_id));
                 }
-                self.emit_event(NetworkEvent::LeiosBlockReceived { point, block });
+                self.emit_event(NetworkEvent::LeiosBlockReceived {
+                    source: Some(peer_id),
+                    point,
+                    block,
+                });
             }
 
             PeerEvent::LeiosBlockTxsFetched {
@@ -868,15 +872,13 @@ impl Coordinator {
                 }
             }
 
-            NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
+            NetworkCommand::RecordLeiosEbManifest {
+                source,
+                point,
+                tx_hashes,
+            } => {
                 if let Some(ref store) = self.leios_store {
-                    // Source is None here: the upstream peer isn't
-                    // carried on the LeiosEffect::RecordLeiosEbManifest
-                    // path, so the resulting BlockTxsOffer can still be
-                    // echoed back to the EB's source. Acceptable
-                    // (BlockTxsOffer has no eb_size — no crash); the
-                    // narrower BlockOffer reflection is what mattered.
-                    store.record_eb_manifest(point, tx_hashes, None);
+                    store.record_eb_manifest(point, tx_hashes, source);
                 }
             }
 
@@ -2675,6 +2677,7 @@ mod tests {
         };
         net_cmd_sender
             .send(NetworkCommand::RecordLeiosEbManifest {
+                source: None,
                 point,
                 tx_hashes: vec![h0, h1],
             })

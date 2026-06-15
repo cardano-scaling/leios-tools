@@ -214,8 +214,12 @@ pub enum LeiosEffect {
         peers: Vec<PeerId>,
     },
     /// Record the EB-tx manifest in the network-side store so this
-    /// node can serve EB-tx requests back to peers.
+    /// node can serve EB-tx requests back to peers. `source` is the
+    /// peer that supplied the EB body (`None` if self-produced); the
+    /// LeiosNotify server skips re-offering the resulting BlockTxsOffer
+    /// back to that peer.
     RecordLeiosEbManifest {
+        source: Option<PeerId>,
         point: Point,
         tx_hashes: Vec<[u8; 32]>,
     },
@@ -929,9 +933,11 @@ impl LeiosState {
 
     /// An EB body arrived.  `manifest_hashes` is the decoded tx-hash
     /// list (or `None` if the body didn't decode as an overflow EB —
-    /// e.g., a header-only block).  Always emits a `ValidateEb`.
+    /// e.g., a header-only block).  `source` is the peer that supplied
+    /// the EB (`None` for self-produced).  Always emits a `ValidateEb`.
     pub fn on_eb_received(
         &mut self,
+        source: Option<PeerId>,
         point: Point,
         manifest_hashes: Option<Vec<[u8; 32]>>,
     ) -> Vec<LeiosEffect> {
@@ -947,6 +953,7 @@ impl LeiosState {
         if let (Some(hashes), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
             self.eb_tx_hashes.insert(*hash, (*slot, hashes.clone()));
             fx.push(LeiosEffect::RecordLeiosEbManifest {
+                source,
                 point: point.clone(),
                 tx_hashes: hashes,
             });
@@ -1590,7 +1597,7 @@ mod tests {
     fn on_eb_received_emits_record_and_validate() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
         let manifest = vec![h(0xA0), h(0xA1)];
-        let fx = state.on_eb_received(point(10, 1), Some(manifest.clone()));
+        let fx = state.on_eb_received(None, point(10, 1), Some(manifest.clone()));
         assert_eq!(fx.len(), 2);
         assert!(matches!(fx[0], LeiosEffect::RecordLeiosEbManifest { .. }));
         assert!(matches!(fx[1], LeiosEffect::ValidateEb { .. }));
@@ -1603,7 +1610,7 @@ mod tests {
     #[test]
     fn on_eb_received_validate_only_when_no_manifest() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
-        let fx = state.on_eb_received(point(10, 1), None);
+        let fx = state.on_eb_received(None, point(10, 1), None);
         assert_eq!(fx.len(), 1);
         assert!(matches!(fx[0], LeiosEffect::ValidateEb { .. }));
     }
