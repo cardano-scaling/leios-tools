@@ -50,7 +50,7 @@ impl TxId {
         tx_vec.into_iter().map(|tx| Self(tx)).collect()
     }
 
-    pub fn vec_to_consensus_txid (tx_vec: Vec<Self>) -> Vec<shared_consensus::mempool::TxId> {
+    pub fn vec_to_consensus_txid(tx_vec: Vec<Self>) -> Vec<shared_consensus::mempool::TxId> {
         tx_vec.into_iter().map(|tx| tx.get_con_tx_id().clone()).collect()
     }
 
