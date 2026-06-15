@@ -263,7 +263,6 @@ mod tests {
 
     fn round_trip(msg: &Message) -> Message {
         let encoded = minicbor::to_vec(msg).unwrap();
-        println!("Encoded: {:02x?}", encoded);
         minicbor::decode(&encoded).unwrap()
     }
 
