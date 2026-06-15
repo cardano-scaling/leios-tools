@@ -108,7 +108,9 @@ impl<TProtocol: Clone + Eq + Hash + Ord, TMessage: Debug> Network<TProtocol, TMe
     }
 
     /// Install this shard's partition runtime + telemetry tracker.
-    pub fn set_partition(
+    /// `pub(crate)`: only the engines call this, and `PartitionRuntime` is
+    /// itself crate-private.
+    pub(crate) fn set_partition(
         &mut self,
         runtime: crate::network::partition::PartitionRuntime,
         tracker: crate::events::EventTracker,

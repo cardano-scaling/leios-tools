@@ -346,8 +346,11 @@ pub enum Event {
         link_count: usize,
         sample_links: Vec<PartitionLink>,
     },
-    /// A previously-activated partition healed: the same `link_count`
-    /// directed edges were restored.
+    /// A previously-activated partition healed: this scenario released its
+    /// `link_count` directed edges.  Links cut by another still-active
+    /// scenario stay cut (the runtime refcounts overlapping windows), so
+    /// `link_count` is the scenario's own edge count, not necessarily the
+    /// number of edges that became active at this timestamp.
     PartitionHealed {
         name: String,
         link_count: usize,
