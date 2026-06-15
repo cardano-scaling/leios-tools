@@ -79,6 +79,31 @@ pub struct VotingConfig {
     /// for like-for-like comparisons against the older sim and for
     /// adversarial simulations.
     pub retry_vote_in_window: bool,
+    /// Should the voting predicates be evaluated at all?
+    ///
+    /// `true` (default) runs the CIP-0164 vote predicates on every
+    /// `SlotEffect::EligibleToVote`, emits structured `NoVote` /
+    /// `EmitVote` effects, and logs the per-EB voting decision.
+    ///
+    /// `false` skips the predicate entirely: no `decide_vote` call, no
+    /// `EmitVote` / `NoVote` effects, no `voting on eb` / `no vote on
+    /// eb` log lines.  The election still records `EligibleToVote`
+    /// (so observers can see the lottery fire), but this node neither
+    /// produces a vote nor logs a decision.
+    ///
+    /// Intended for nodes that *cannot* meaningfully participate in
+    /// voting because either:
+    ///
+    /// - they hold no stake (so they'd never need a cert), or
+    /// - they have no view of the network's stake distribution (so
+    ///   they can't compute the stake-weighted quorum threshold even
+    ///   if they observed every vote on the wire),
+    ///
+    /// without polluting operator logs with spurious `WrongEB`
+    /// abstentions caused by the wrapper never populating
+    /// [`ChainTipContext`].  The decision is the I/O wrapper's; this
+    /// crate just respects the flag.
+    pub evaluate_votes: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +586,19 @@ impl LeiosState {
                     eb_slot,
                     eb_seen_slot,
                 } => {
+                    // Vote-evaluation gate.  A node configured as
+                    // `evaluate_votes = false` (typically a stake=0
+                    // follower or any node without a voter stake table)
+                    // skips the entire predicate path: no `decide_vote`
+                    // call, no `EmitVote` / `NoVote` effect, no log.
+                    // Mark the election done so it doesn't re-fire the
+                    // same `EligibleToVote` every slot for the rest of
+                    // the voting window — there's nothing further this
+                    // node can do for it.
+                    if !self.voting_config.evaluate_votes {
+                        self.elections.mark_voted(&eb_hash);
+                        continue;
+                    }
                     let honest_vote = self.decide_vote(&eb_hash, eb_slot, eb_seen_slot, tx_known);
                     // Decision hook: behaviours can override the honest
                     // predicate result (lazy voter, wrong-EB voter).
@@ -1345,6 +1383,7 @@ mod tests {
             non_persistent_vote_bytes: 180,
             persistent_seats,
             retry_vote_in_window: true,
+            evaluate_votes: true,
         }
     }
 
@@ -1397,6 +1436,38 @@ mod tests {
             other => panic!("expected EmitVote, got {other:?}"),
         }
         assert!(state.elections.voted(&h(1)));
+    }
+
+    #[test]
+    fn evaluate_votes_false_skips_predicate_and_marks_election_done() {
+        // A node configured with `evaluate_votes = false` (e.g. a
+        // stake=0 follower without a voter stake registry) must:
+        //   - run no `decide_vote` predicate (so the empty-context
+        //     fallback can't synthesise spurious `WrongEB` effects);
+        //   - emit neither `EmitVote` nor `NoVote`;
+        //   - still `mark_voted` so the election doesn't keep
+        //     re-firing `EligibleToVote` for the whole window.
+        let mut voting = cfg(1); // seated voter — would normally PV-vote
+        voting.evaluate_votes = false;
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), voting, pipeline());
+        state.on_slot(10, &tx_all);
+        state.elections.announce(10, h(1));
+        // Deliberately do NOT call `tip_for` — leave ChainTipContext
+        // default, which would otherwise drive `decide_vote` straight
+        // into the `WrongEB` branch.
+        let fx = state.on_slot(13, &tx_all);
+        assert!(
+            fx.is_empty(),
+            "gated node must not emit vote effects, got {fx:?}"
+        );
+        assert!(
+            state.elections.voted(&h(1)),
+            "gated node must mark the election done to suppress re-firing"
+        );
+
+        // Re-arming the lottery on the next slot must still be a no-op.
+        let fx2 = state.on_slot(14, &tx_all);
+        assert!(fx2.is_empty());
     }
 
     #[test]

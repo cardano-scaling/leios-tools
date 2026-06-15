@@ -191,6 +191,7 @@ mod tests {
             non_persistent_vote_bytes: 180,
             persistent_seats: 1,
             retry_vote_in_window: true,
+            evaluate_votes: true,
         };
         crate::leios::LeiosState::new("test".into(), elections, voting, pipeline)
     }

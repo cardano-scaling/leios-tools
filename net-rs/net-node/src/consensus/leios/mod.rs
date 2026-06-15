@@ -82,6 +82,31 @@ impl LeiosConsensus {
             .iter()
             .map(|e| (e.node_id.clone(), e.stake))
             .collect();
+        // Decide whether running the vote predicates makes sense at all
+        // for this node.  Two independent prerequisites:
+        //
+        //   own_stake > 0   — otherwise the node is a non-producer and
+        //                     never needs to certify, so emitting votes
+        //                     is wasted work;
+        //   total_stake > 0 — derived from the stake registry; without
+        //                     it we can't weight observed votes against
+        //                     the CIP-0164 stake-fraction quorum
+        //                     threshold, so even collecting every vote
+        //                     would yield no decidable quorum.
+        //
+        // When either is unmet we leave the lottery alone (it still
+        // fires `EligibleToVote` for observability) but skip the
+        // predicate path, which otherwise emits a spurious `WrongEB`
+        // for every EB — the I/O wrapper never populates
+        // `ChainTipContext` on a follower, and the predicate's empty-
+        // context fallback labels that case `WrongEB`.
+        let evaluate_votes = stake > 0 && total_stake > 0;
+        let vote_eval_reason = match (stake > 0, total_stake > 0) {
+            (true, true) => "enabled",
+            (false, true) => "disabled: own stake=0 (non-producer)",
+            (true, false) => "disabled: total_stake=0 (cannot weight votes)",
+            (false, false) => "disabled: own stake=0 and total_stake=0",
+        };
         let voting_config = VotingConfig {
             committee_selection: committee_selection.clone(),
             stake,
@@ -93,6 +118,7 @@ impl LeiosConsensus {
             // single-shot collapse is sim-only for like-for-like
             // comparison against `linear_leios.rs`.
             retry_vote_in_window: true,
+            evaluate_votes,
         };
         info!(
             node_id = %node_id,
@@ -100,6 +126,15 @@ impl LeiosConsensus {
             expected_total_weight,
             committee_pools = persistent_committee.len(),
             "leios committee initialized"
+        );
+        info!(
+            node_id = %node_id,
+            own_stake = stake,
+            total_stake,
+            registered_voters = stake_registry_entries.len(),
+            evaluate_votes,
+            reason = vote_eval_reason,
+            "leios vote evaluation"
         );
         let elections_config = ElectionsConfig {
             node_id: node_id.clone(),
