@@ -43,15 +43,16 @@ impl minicbor::Encode<()> for TxId {
 impl<'a> minicbor::Decode<'a, ()> for TxId {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let raw = d.bytes()?;
-        match raw.as_array::<TX_ID_SIZE>() {
-            None => Err(DecodeError::message(format!(
+        if raw.len() != TX_ID_SIZE {
+            return Err(DecodeError::message(format!(
                 "tx id has incorrect size: {} instead of {TX_ID_SIZE}",
                 raw.len()
-            ))),
-            Some(array) => {
-                Ok(TxId::new_with_array_ref(array))
-            }
-        }
+            )));
+        };
+
+        let mut array = [0u8; TX_ID_SIZE];
+        array.copy_from_slice(&raw[..TX_ID_SIZE]);
+        Ok(TxId::new_with_array(array))
     }
 }
 
