@@ -31,7 +31,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use minicbor::{Decoder, Encoder};
 use tracing::info;
 
 use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
@@ -55,17 +54,17 @@ pub struct EbKey {
 /// body, but this crate doesn't enforce that — the wrapper picks the hash
 /// scheme and supplies it on every entry path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TxId([u8; 32]);
+pub struct TxId(Arc<[u8; 32]>);
 
 impl TxId {
     /// Copies slice bytes into the inner array.
     pub fn new_with_slice(bytes: &[u8; 32]) -> Self {
-        Self(bytes.clone())
+        Self(Arc::new(bytes.clone()))
     }
     
     /// Moves array to inner one.
     pub fn new_with_array(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+        Self(Arc::new(bytes))
     }
 
     /// Return a short hex representation of the first 4 bytes.
@@ -82,11 +81,37 @@ impl TxId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TxBody(Arc<[u8]>);
+
+impl TxBody {
+    pub fn new_with_vec(body: Vec<u8>) -> TxBody {
+        TxBody(body.into())
+    }
+
+    pub fn get_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Blake2b-256 over arbitrary bytes. Matches the tx-id derivation used
+    /// by the consensus layer: `blake2b_simd::Params::new().hash_length(32)`.
+    pub fn get_blake2b_256(&self) -> [u8; 32] {
+        let result = blake2b_simd::Params::new().hash_length(32).hash(self.get_slice());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(result.as_bytes());
+        out
+    }
+}
+
 /// A transaction body the mempool is holding.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MempoolTx {
     pub tx_id: TxId,
-    pub body: Vec<u8>,
+    pub body: TxBody,
     pub size: u32,
 }
 
@@ -101,7 +126,7 @@ pub enum MempoolEffect {
     /// validator returns, the wrapper calls
     /// [`MempoolState::on_tx_validated`] or
     /// [`MempoolState::on_tx_validation_failed`].
-    ValidateTx { tx_id: TxId, body: Vec<u8> },
+    ValidateTx { tx_id: TxId, body: TxBody },
     /// A tx was dropped before reaching the mempool (overflow,
     /// validation failure) or evicted from it.  Telemetry only — the
     /// wrapper forwards this to its events sink.
@@ -165,7 +190,7 @@ pub struct MempoolState {
     /// Bodies currently with the validator.  Cleared on
     /// `on_tx_validated` (body moves to `txs`) or
     /// `on_tx_validation_failed` (body dropped).
-    pub pending_validation: BTreeMap<TxId, Vec<u8>>,
+    pub pending_validation: BTreeMap<TxId, TxBody>,
     /// Per-EB ordered tx-hash list — the "EB Body" in CIP-0164 terms.
     /// Producers populate this from `produce_eb`; receivers from
     /// `record_eb_manifest` after decoding a fetched EB body.
@@ -234,7 +259,7 @@ impl MempoolState {
     /// `AlreadyKnown` and discards.  Otherwise records the body and
     /// emits `ValidateTx`; the wrapper validates and reports back via
     /// [`Self::on_tx_validated`] or [`Self::on_tx_validation_failed`].
-    pub fn on_tx_received(&mut self, tx_id: TxId, body: Vec<u8>) -> Vec<MempoolEffect> {
+    pub fn on_tx_received(&mut self, tx_id: TxId, body: TxBody) -> Vec<MempoolEffect> {
         let appended: Vec<MempoolEffect> =
             match self.invoke_hook(|b, s| b.on_tx_received(s, &tx_id, &body)) {
                 BehaviourOutcome::Continue => Vec::new(),
@@ -290,7 +315,7 @@ impl MempoolState {
     /// a locally-produced tx the wrapper has validated against its own
     /// ledger view, or a test fixture.  Bypasses the
     /// `on_tx_received` → `ValidateTx` → `on_tx_validated` dance.
-    pub fn admit_validated(&mut self, tx_id: TxId, body: Vec<u8>, size: u32) -> Vec<MempoolEffect> {
+    pub fn admit_validated(&mut self, tx_id: TxId, body: TxBody, size: u32) -> Vec<MempoolEffect> {
         if self.contains(&tx_id) {
             return vec![MempoolEffect::TxRejected {
                 tx_id,
@@ -361,7 +386,7 @@ impl MempoolState {
     /// mempool sizes this prototype targets keep it acceptable.  Used
     /// by the LeiosFetch BlockTxs server (via the `TxBodyResolver`
     /// trait in the consumer's wrapper) to resolve manifest entries.
-    pub fn get_body_by_id(&self, id: &TxId) -> Option<Vec<u8>> {
+    pub fn get_body_by_id(&self, id: &TxId) -> Option<TxBody> {
         if let Some(body) = self
             .txs
             .iter()
@@ -594,7 +619,7 @@ impl MempoolState {
     /// wrapper hashes incoming bodies and matches against the manifest
     /// before calling here.  No-op if the tx is already known via
     /// `txs` or `eb_pinned`.
-    pub fn merge_eb_body(&mut self, tx_id: &TxId, body: Vec<u8>, size: u32) {
+    pub fn merge_eb_body(&mut self, tx_id: &TxId, body: TxBody, size: u32) {
         if self.contains(tx_id) || self.eb_pinned.contains_key(tx_id) {
             return;
         }
@@ -619,12 +644,12 @@ impl MempoolState {
     /// returns bodies for every requested index whose body is locally
     /// resolvable.  Out-of-range indices and indices whose body is
     /// missing are silently dropped (partial response).
-    pub fn get_eb_bodies<I>(&self, eb_key: &EbKey, indices: I) -> Option<Vec<Vec<u8>>>
+    pub fn get_eb_bodies<I>(&self, eb_key: &EbKey, indices: I) -> Option<Vec<TxBody>>
     where
         I: IntoIterator<Item = u32>,
     {
         let manifest = self.eb_manifests.get(eb_key)?;
-        let bodies: Vec<Vec<u8>> = indices
+        let bodies: Vec<TxBody> = indices
             .into_iter()
             .filter_map(|i| {
                 let tx_id = manifest.get(i as usize)?;
@@ -686,7 +711,7 @@ impl MempoolState {
         fx
     }
 
-    fn admit_internal(&mut self, tx_id: TxId, body: Vec<u8>, size: u32) -> Vec<MempoolEffect> {
+    fn admit_internal(&mut self, tx_id: TxId, body: TxBody, size: u32) -> Vec<MempoolEffect> {
         let mut fx = Vec::new();
         if self.txs.len() >= self.capacity {
             if let Some(old) = self.txs.pop_front() {
@@ -744,8 +769,8 @@ mod tests {
         PeerId(n)
     }
 
-    fn tx(id: u8, size: u32) -> (TxId, Vec<u8>, u32) {
-        (TxId::new_with_slice(&[id; 32]), vec![0u8; size as usize], size)
+    fn tx(id: u8, size: u32) -> (TxId, TxBody, u32) {
+        (TxId::new_with_slice(&[id; 32]), TxBody::new_with_vec(vec![0u8; size as usize]), size)
     }
 
     fn admit(state: &mut MempoolState, id: u8, size: u32) -> Vec<MempoolEffect> {
@@ -1137,12 +1162,12 @@ mod tests {
         assert_eq!(s.missing_eb_indices(&eb), vec![0, 1]);
 
         // Merge the second body first (out-of-order delivery is fine).
-        s.merge_eb_body(&id_b, vec![0xB0], 1);
+        s.merge_eb_body(&id_b, TxBody::new_with_vec(vec![0xB0]), 1);
         assert_eq!(s.missing_eb_indices(&eb), vec![0]);
         assert!(s.has_tx(&id_b));
 
         // Then the first.
-        s.merge_eb_body(&id_a, vec![0xA0], 1);
+        s.merge_eb_body(&id_a, TxBody::new_with_vec(vec![0xA0]), 1);
         assert!(s.missing_eb_indices(&eb).is_empty());
     }
 
@@ -1153,13 +1178,13 @@ mod tests {
         let eb = eb_key(30, 0x33);
         s.record_eb_manifest(eb, ids.clone());
         // Only bodies for indices 1 and 3 are locally available.
-        s.merge_eb_body(&ids[1], vec![0x11], 1);
-        s.merge_eb_body(&ids[3], vec![0x33], 1);
+        s.merge_eb_body(&ids[1], TxBody::new_with_vec(vec![0x11]), 1);
+        s.merge_eb_body(&ids[3], TxBody::new_with_vec(vec![0x33]), 1);
 
         // Server gets a bitmap request for [0, 1, 2, 3, 4]; returns only the
         // bodies it has, in ascending index order.
         let got = s.get_eb_bodies(&eb, 0..5).unwrap();
-        assert_eq!(got, vec![vec![0x11], vec![0x33]]);
+        assert_eq!(got, vec![TxBody::new_with_vec(vec![0x11]), TxBody::new_with_vec(vec![0x33])]);
     }
 
     #[test]
@@ -1174,10 +1199,10 @@ mod tests {
         let mut s = MempoolState::new(10);
         let id = TxId::new_with_slice(&[0xCCu8; 32]);
         s.record_eb_manifest(eb_key(40, 0x40), vec![id.clone()]);
-        s.merge_eb_body(&id, vec![0xCC], 1);
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xCC]), 1);
         // Second call with a different (faked) body must not overwrite.
-        s.merge_eb_body(&id, vec![0xFF], 1);
-        assert_eq!(s.get_body_by_id(&id), Some(vec![0xCC]));
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xFF]), 1);
+        assert_eq!(s.get_body_by_id(&id), Some(TxBody::new_with_vec(vec![0xCC])));
     }
 
     #[test]
@@ -1199,7 +1224,7 @@ mod tests {
         let evicted_id = TxId::new_with_slice(&[0xAAu8; 32]);
         let evictions_initial = s.record_eb_manifest(old_eb, vec![evicted_id.clone()]);
         assert!(evictions_initial.is_empty(), "no evictions on first record");
-        s.merge_eb_body(&evicted_id, vec![0xAA], 1);
+        s.merge_eb_body(&evicted_id, TxBody::new_with_vec(vec![0xAA]), 1);
         assert!(s.has_tx(&evicted_id));
         assert!(s.get_eb_manifest(&old_eb).is_some());
 
@@ -1228,7 +1253,7 @@ mod tests {
         // Old EB with a pinned body.
         let old_id = TxId::new_with_slice(&[0xAAu8; 32]);
         let _ = s.record_eb_manifest(eb_key(1, 0x01), vec![old_id.clone()]);
-        s.merge_eb_body(&old_id, vec![0xAA], 1);
+        s.merge_eb_body(&old_id, TxBody::new_with_vec(vec![0xAA]), 1);
 
         // Produce a new EB far past the retention window — the
         // producer-side path also evicts the aged closure.
@@ -1252,7 +1277,7 @@ mod tests {
         let id = TxId::new_with_slice(&[0xCCu8; 32]);
         s.record_eb_manifest(eb_key(1, 0x01), vec![id.clone()]);
         s.record_eb_manifest(eb_key(95, 0x02), vec![id.clone()]);
-        s.merge_eb_body(&id, vec![0xCC], 1);
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xCC]), 1);
         // Bump max so the slot=1 EB falls out of the window but slot=95 stays.
         s.record_eb_manifest(eb_key(99, 0x03), vec![]);
         assert!(s.get_eb_manifest(&eb_key(1, 0x01)).is_none());

@@ -54,7 +54,7 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
 
     PendingTx {
         tx_id: TxId::new_with_array(hash),
-        body: TxBody(body_buf),
+        body: TxBody::new_with_vec(body_buf),
         size: size as u32,
     }
 }

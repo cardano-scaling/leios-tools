@@ -62,7 +62,7 @@ impl minicbor::Encode<()> for TxBody {
         e: &mut Encoder<W>,
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
-        e.bytes(&self.0)?;
+        e.bytes(self.0.get_slice())?;
         Ok(())
     }
 }
@@ -76,7 +76,7 @@ impl<'a> minicbor::Decode<'a, ()> for TxBody {
                 raw.len()
             )));
         }
-        Ok(TxBody(raw.to_vec()))
+        Ok(TxBody::new_with_vec(raw.to_vec()))
     }
 }
 
@@ -273,7 +273,7 @@ mod tests {
     }
 
     fn make_tx_body(payload: &[u8]) -> TxBody {
-        TxBody(payload.to_vec())
+        TxBody::new_with_vec(payload.to_vec())
     }
 
     #[test]
@@ -426,14 +426,14 @@ mod tests {
         let body_a: Vec<u8> = (0..200).map(|i| (i * 7) as u8).collect();
         let body_b: Vec<u8> = (0..1500).map(|i| (i * 31) as u8).collect();
         let msg = Message::MsgReplyTxs {
-            txs: vec![TxBody(body_a.clone()), TxBody(body_b.clone())],
+            txs: vec![TxBody::new_with_vec(body_a.clone()), TxBody::new_with_vec(body_b.clone())],
         };
         let decoded = round_trip(&msg);
         match decoded {
             Message::MsgReplyTxs { txs } => {
                 assert_eq!(txs.len(), 2);
-                assert_eq!(txs[0].0, body_a);
-                assert_eq!(txs[1].0, body_b);
+                assert_eq!(txs[0], TxBody::new_with_vec(body_a));
+                assert_eq!(txs[1], TxBody::new_with_vec(body_b));
             }
             other => panic!("expected MsgReplyTxs, got {other:?}"),
         }

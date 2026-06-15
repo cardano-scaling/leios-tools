@@ -25,6 +25,7 @@ pub use shared_consensus::pipeline::PipelineConfig;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 use net_core::protocols::txsubmission::TxId;
+use shared_consensus::mempool::TxBody;
 use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
 use crate::production::decode_overflow_eb;
 use crate::telemetry::NodeEvent;
@@ -281,17 +282,15 @@ impl LeiosConsensus {
     /// Verify a `LeiosBlockTxsReceived` response against the cached
     /// manifest.  Bodies are blake2b-hashed here (the wire-format body
     /// hash) before being matched, since shared-consensus is format-agnostic.
-    pub fn match_eb_tx_response(&mut self, point: &Point, bodies: &[Vec<u8>]) -> EbTxMatchOutcome {
-        let bodies_with_hashes: Vec<(Vec<u8>, shared_consensus::mempool::TxId)> = bodies
+    pub fn match_eb_tx_response(&mut self, point: &Point, bodies: &[TxBody]) -> EbTxMatchOutcome {
+        let bodies_with_hashes: Vec<(TxBody, shared_consensus::mempool::TxId)> = bodies
             .iter()
             .map(|body| {
-                let h = blake2b_simd::Params::new().hash_length(32).hash(body);
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(h.as_bytes());
+                let hash = body.get_blake2b_256();
                 (body.clone(), shared_consensus::mempool::TxId::new_with_slice(&hash))
             })
             .collect();
-        self.state.match_eb_tx_response(point, &bodies_with_hashes)
+        self.state.match_eb_tx_response(point, bodies_with_hashes.as_slice())
     }
 
     /// Re-issue a `FetchLeiosBlockTxs` for the still-missing indices.
@@ -881,6 +880,7 @@ mod tests {
 
     use net_core::protocols::leios_fetch::bitmap as bitmap_helpers;
     use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId};
+    use crate::consensus;
 
     /// Build the manifest bytes that the producer would emit for a given
     /// list of 32-byte tx hashes at `slot`. Returns the same CBOR shape as
@@ -943,7 +943,7 @@ mod tests {
     fn push_tx_with_id(mempool: &crate::mempool::SharedMempool, id: TxId) {
         let tx = PendingTx {
             tx_id: id,
-            body: TxBody(vec![]),
+            body: TxBody::new_with_vec(vec![]),
             size: 0,
         };
         mempool.lock().unwrap().push(tx);
@@ -1078,12 +1078,12 @@ mod tests {
         let mut leios = test_leios_with_mempool(tx, validator, mempool);
 
         // Three bodies, request all three, server returns only the middle one.
-        let body0 = b"alpha".to_vec();
-        let body1 = b"bravo".to_vec();
-        let body2 = b"charlie".to_vec();
-        let h0 = TxId::new_with_array_ref(&body_hash(&body0));
-        let h1 = TxId::new_with_array_ref(&body_hash(&body1));
-        let h2 = TxId::new_with_array_ref(&body_hash(&body2));
+        let body0 = shared_consensus::mempool::TxBody::new_with_vec(b"alpha".to_vec());
+        let body1 = shared_consensus::mempool::TxBody::new_with_vec(b"bravo".to_vec());
+        let body2 = shared_consensus::mempool::TxBody::new_with_vec(b"charlie".to_vec());
+        let h0 = TxId::new_with_array(body0.get_blake2b_256());
+        let h1 = TxId::new_with_array(body1.get_blake2b_256());
+        let h2 = TxId::new_with_array(body2.get_blake2b_256());
 
         let (manifest, eb_hash) = make_manifest(20, &[h0, h1, h2]);
         let eb_point = Point::Specific {
@@ -1106,7 +1106,7 @@ mod tests {
         let _ = next_record_cmd(&mut rx).await;
         let _ = next_fetch_cmd(&mut rx).await;
 
-        let outcome = leios.match_eb_tx_response(&eb_point, std::slice::from_ref(&body1));
+        let outcome = leios.match_eb_tx_response(&eb_point, &[body1.clone()]);
         assert_eq!(outcome.matched_bodies, vec![body1]);
         assert_eq!(outcome.requested, 3);
         let remaining: Vec<u32> = bitmap_helpers::iter_indices(&outcome.remaining_bitmap).collect();

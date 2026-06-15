@@ -18,7 +18,7 @@ use clap::Parser;
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
 use tokio::io::AsyncBufReadExt;
 use tracing::{info, warn};
-
+use net_core::protocols::txsubmission::TxBody;
 use telemetry::NodeEvent;
 
 #[derive(Parser)]
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     // Transaction validator (validates received txs before mempool entry).
-    let (tx_valid_tx, tx_valid_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+    let (tx_valid_tx, tx_valid_rx) = tokio::sync::mpsc::channel::<TxBody>(1024);
     let _tx_valid_handle = mempool::spawn_tx_validator(
         config.validation.tx_validation_ms,
         config.validation.tx_validation_ms_per_byte,
@@ -440,7 +440,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         // the wire format gives no per-body index, so the
                         // server's response order can't be trusted alone.
                         if let NetworkEvent::LeiosBlockTxsReceived { point, transactions } = &event {
-                            let outcome = consensus.match_eb_tx_response(point, transactions);
+                            let transactions = Vec::from_iter(transactions.iter().map(|tx| tx.get_con_tx_body().clone()));
+                            let outcome = consensus.match_eb_tx_response(point, &transactions);
                             if outcome.requested > 0 && outcome.matched_bodies.len() < outcome.requested {
                                 tracing::warn!(
                                     node_id = %node_id,
@@ -459,11 +460,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             {
                                 let mut pool = mempool.lock().unwrap();
                                 for body in &outcome.matched_bodies {
-                                    pool.merge_eb_body(body.clone());
+                                    pool.merge_eb_body(TxBody::new_with_txbody(body.clone()));
                                 }
                             }
                             for body in &outcome.matched_bodies {
-                                let _ = tx_valid_tx.try_send(body.clone());
+                                let _ = tx_valid_tx.try_send(TxBody::new_with_txbody(body.clone()));
                             }
                             if !outcome.remaining_bitmap.is_empty() {
                                 consensus

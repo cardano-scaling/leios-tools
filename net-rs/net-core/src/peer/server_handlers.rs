@@ -434,7 +434,7 @@ pub async fn serve_txsubmission(
                                             .send((
                                                 peer_id,
                                                 PeerEvent::TransactionReceived {
-                                                    body: tx.0.clone(),
+                                                    body: tx.clone(),
                                                 },
                                             ))
                                             .await;
@@ -466,7 +466,7 @@ pub async fn serve_txsubmission(
                             let _ = event_sender
                                 .send((
                                     peer_id,
-                                    PeerEvent::TransactionReceived { body: tx.0.clone() },
+                                    PeerEvent::TransactionReceived { body: tx.clone() },
                                 ))
                                 .await;
                         }
@@ -632,7 +632,7 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocols::txsubmission::TxId;
+    use crate::protocols::txsubmission::{TxBody, TxId};
     use crate::bearer::mem::MemBearer;
     use crate::mux::scheduler::{RoundRobin, TrafficClass};
     use crate::mux::{Mux, MuxConfig, ProtocolConfig, MODE_INITIATOR, MODE_RESPONDER};
@@ -973,7 +973,7 @@ mod tests {
         let point = Point::Specific { slot: 50, hash };
         // Each tx body is a single valid CBOR value (a 3-byte bytestring,
         // 0x43 = bytes(3)) — the codec passes txs through as raw CBOR.
-        let txs: Vec<Vec<u8>> = (0..100u8).map(|i| vec![0x43, i, i, i]).collect();
+        let txs: Vec<TxBody> = (0..100u8).map(|i| TxBody::new_with_vec(vec![0x43, i, i, i])).collect();
         store.inject_block_txs_full(point.clone(), txs);
 
         let server_handle =
@@ -988,10 +988,10 @@ mod tests {
 
         // Server returns those four in ascending order.
         assert_eq!(got.len(), 4);
-        assert_eq!(got[0], vec![0x43, 0, 0, 0]);
-        assert_eq!(got[1], vec![0x43, 5, 5, 5]);
-        assert_eq!(got[2], vec![0x43, 64, 64, 64]);
-        assert_eq!(got[3], vec![0x43, 99, 99, 99]);
+        assert_eq!(got[0], TxBody::new_with_vec(vec![0x43, 0, 0, 0]));
+        assert_eq!(got[1], TxBody::new_with_vec(vec![0x43, 5, 5, 5]));
+        assert_eq!(got[2], TxBody::new_with_vec(vec![0x43, 64, 64, 64]));
+        assert_eq!(got[3], TxBody::new_with_vec(vec![0x43, 99, 99, 99]));
 
         let _ = leios_fetch::done(&mut client).await;
         server_handle.await.ok();
@@ -1004,9 +1004,9 @@ mod tests {
         use crate::store::leios_store::TxBodyResolver;
         use std::sync::Arc;
 
-        struct StubResolver(std::collections::HashMap<TxId, Vec<u8>>);
+        struct StubResolver(std::collections::HashMap<TxId, TxBody>);
         impl TxBodyResolver for StubResolver {
-            fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>> {
+            fn resolve_body(&self, tx_id: &TxId) -> Option<TxBody> {
                 self.0.get(tx_id).cloned()
             }
         }
@@ -1028,9 +1028,9 @@ mod tests {
         // 0x41 = bytes(1)) — txs pass through the codec as raw CBOR.
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(
             [
-                (h0.clone(), vec![0x41, 0xB0]),
-                (h1.clone(), vec![0x41, 0xB1]),
-                (h2.clone(), vec![0x41, 0xB2]),
+                (h0.clone(), TxBody::new_with_vec(vec![0x41, 0xB0])),
+                (h1.clone(), TxBody::new_with_vec(vec![0x41, 0xB1])),
+                (h2.clone(), TxBody::new_with_vec(vec![0x41, 0xB2])),
             ]
             .into_iter()
             .collect(),
@@ -1050,7 +1050,7 @@ mod tests {
         let got = leios_fetch::fetch_block_txs(&mut client, point, bitmap)
             .await
             .expect("server should respond");
-        assert_eq!(got, vec![vec![0x41u8, 0xB0], vec![0x41u8, 0xB2]]);
+        assert_eq!(got, vec![TxBody::new_with_vec(vec![0x41u8, 0xB0]), TxBody::new_with_vec(vec![0x41u8, 0xB2])]);
 
         let _ = leios_fetch::done(&mut client).await;
         server_handle.await.ok();

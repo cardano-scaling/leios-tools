@@ -334,7 +334,7 @@ impl BlockProducer {
         // tx_bodies: `[* transaction_body]` per Cardano CDDL.
         let _ = minicbor::Encoder::new(&mut block_inner).array(txs.len() as u64);
         for tx in txs.iter() {
-            let _ = minicbor::Encoder::new(&mut block_inner).bytes(&tx.body.0);
+            let _ = minicbor::Encoder::new(&mut block_inner).bytes(tx.body.get_slice());
         }
         // tx_witnesses: `[* transaction_witness_set]` per Cardano CDDL.
         let _ = minicbor::Encoder::new(&mut block_inner).array(0);
@@ -486,7 +486,7 @@ mod tests {
     fn make_test_tx(id: u8, size: usize) -> PendingTx {
         PendingTx {
             tx_id: TxId::new_with_array([id; 32]),
-            body: TxBody(vec![id; size]),
+            body: TxBody::new_with_vec(vec![id; size]),
             size: size as u32,
         }
     }

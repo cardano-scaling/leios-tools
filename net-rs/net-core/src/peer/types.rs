@@ -8,10 +8,9 @@ use std::time::Duration;
 use std::collections::BTreeMap;
 
 use std::sync::Arc;
-
 use crate::mux::MuxStats;
 use crate::protocols::peersharing::PeerAddress;
-use crate::protocols::txsubmission::PendingTx;
+use crate::protocols::txsubmission::{PendingTx, TxBody};
 use crate::types::{BlockBody, Point, Tip, Vote, WrappedHeader};
 
 // ---------------------------------------------------------------------------
@@ -47,7 +46,7 @@ pub enum PeerEvent {
     PeersDiscovered { peers: Vec<PeerAddress> },
 
     /// TxSubmission server: received a transaction from a client.
-    TransactionReceived { body: Vec<u8> },
+    TransactionReceived { body: TxBody },
 
     /// TxSubmission client: peer requested `count` tx ids (blocking mode).
     TxsRequested { count: u16 },
@@ -70,7 +69,7 @@ pub enum PeerEvent {
     /// LeiosFetch: requested transactions for an EB arrived.
     LeiosBlockTxsFetched {
         point: Point,
-        transactions: Vec<Vec<u8>>,
+        transactions: Vec<TxBody>,
     },
 
     /// BlockFetch: peer responded with NoBlocks for a requested range.

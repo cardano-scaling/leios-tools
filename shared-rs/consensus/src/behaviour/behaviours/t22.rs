@@ -48,7 +48,7 @@ use crate::peer::PeerId;
 use crate::types::Point;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use crate::mempool::TxId;
+use crate::mempool::{TxBody, TxId};
 
 #[derive(Debug, Default)]
 pub struct T22ThreatBehaviour {
@@ -140,7 +140,7 @@ impl Behaviour for T22ThreatBehaviour {
         &mut self,
         _state: &crate::mempool::MempoolState,
         _tx_id: &crate::mempool::TxId,
-        _body: &[u8],
+        _body: &TxBody,
     ) -> BehaviourOutcome<crate::mempool::MempoolEffect> {
         BehaviourOutcome::Continue
     }

@@ -6,7 +6,7 @@ use std::time::Duration;
 use shared_consensus::mempool::TxId;
 use crate::peer::{ConnectionMode, PeerId};
 use crate::protocols::peersharing::PeerAddress;
-use crate::protocols::txsubmission::PendingTx;
+use crate::protocols::txsubmission::{PendingTx, TxBody};
 use crate::types::{BlockBody, Point, Tip, Vote, WrappedHeader};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ pub enum NetworkEvent {
     PeersDiscovered { peers: Vec<PeerAddress> },
 
     /// A transaction was received from an inbound peer (via TxSubmission server).
-    TransactionReceived { peer_id: PeerId, body: Vec<u8> },
+    TransactionReceived { peer_id: PeerId, body: TxBody },
 
     /// TxSubmission client: a peer requested `count` tx ids (blocking mode).
     TxsRequested { peer_id: PeerId, count: u16 },
@@ -91,7 +91,7 @@ pub enum NetworkEvent {
     /// Leios: fetched transactions for an EB arrived.
     LeiosBlockTxsReceived {
         point: Point,
-        transactions: Vec<Vec<u8>>,
+        transactions: Vec<TxBody>,
     },
 
     /// Response to `QueryPeers`: snapshot of all connected peers.
@@ -169,7 +169,7 @@ pub enum NetworkCommand {
     /// (for responder peers to serve via `MsgLeiosBlockTxsRequest`).
     InjectLeiosBlockTxs {
         point: Point,
-        transactions: Vec<Vec<u8>>,
+        transactions: Vec<TxBody>,
     },
 
     /// Record the ordered tx-hash list of an EB whose body the receiver

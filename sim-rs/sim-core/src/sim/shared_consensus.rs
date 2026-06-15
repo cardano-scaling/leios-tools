@@ -83,7 +83,7 @@ use shared_consensus::{
     types::Point,
     committee,
 };
-
+use shared_consensus::mempool::TxBody;
 use crate::{
     clock::{Clock, Timestamp},
     config::{NodeConfiguration, NodeId, RelayStrategy, SimConfiguration},
@@ -619,7 +619,7 @@ impl NodeImpl for SharedConsensus {
         // linear_leios's `generate_tx → propagate_tx → mempool` shape.
         // CpuTask scheduling for validation happens for *peer-sent*
         // txs only, in `handle_message::Tx`.
-        let fx = self.mempool.admit_validated(id, vec![], tx.bytes as u32);
+        let fx = self.mempool.admit_validated(id, TxBody::new_with_vec(Vec::new()), tx.bytes as u32);
         self.apply_mempool_effects(&mut out, fx);
         // Announce to every consumer. linear_leios announces only to
         // consumers (downstream peers); we mirror that here.
@@ -716,7 +716,7 @@ impl NodeImpl for SharedConsensus {
                 self.pending_from.remove(&key);
                 let fx = self.mempool.admit_validated(
                     key.clone(),
-                    vec![],
+                    TxBody::new_with_vec(vec![]),
                     tx.bytes as u32,
                 );
                 let admitted = !fx

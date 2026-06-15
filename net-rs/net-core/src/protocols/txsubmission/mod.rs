@@ -46,9 +46,6 @@ pub const TX_ID_SIZE: usize = 32;
 pub struct TxId(shared_consensus::mempool::TxId);
 
 impl TxId {
-}
-
-impl TxId {
     pub fn vec_from_consensus_txid(tx_vec: Vec<shared_consensus::mempool::TxId>) -> Vec<Self> {
         tx_vec.into_iter().map(|tx| Self(tx)).collect()
     }
@@ -74,11 +71,6 @@ impl TxId {
         Self(shared_consensus::mempool::TxId::new_with_array(p0))
     }
 
-    /// TODO: simd gives 64 byte output, but TxId is 32 bytes — need to truncate or something.
-    pub fn new_with_blake2b(hash: &[u8; 64]) -> TxId {
-        Self::new_with_array_ref(&hash[0..32].try_into().expect("slice with incorrect length"))
-    }
-
     pub fn get_con_tx_id(&self) -> &shared_consensus::mempool::TxId {
         &self.0
     }
@@ -86,7 +78,33 @@ impl TxId {
 
 /// Opaque transaction body stored as raw CBOR bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxBody(pub Vec<u8>);
+pub struct TxBody(shared_consensus::mempool::TxBody);
+
+impl TxBody {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn new_with_txbody(tx_body: shared_consensus::mempool::TxBody) -> TxBody {
+        Self(tx_body)
+    }
+
+    pub fn get_con_tx_body(&self) -> shared_consensus::mempool::TxBody {
+        self.0.clone()
+    }
+
+    pub fn new_with_vec(vec: Vec<u8>) -> Self {
+        Self(shared_consensus::mempool::TxBody::new_with_vec(vec))
+    }
+
+    pub fn get_slice(&self) -> &[u8] {
+        self.0.get_slice()
+    }
+
+    pub fn get_blake2b_256(&self) -> [u8; 32] {
+        self.0.get_blake2b_256()
+    }
+}
 
 /// A transaction ID paired with its serialized size (for flow control).
 #[derive(Debug, Clone)]
@@ -542,7 +560,7 @@ mod tests {
     fn make_test_tx(id_byte: u8, size: usize) -> PendingTx {
         PendingTx {
             tx_id: TxId::new_with_array([id_byte; 32]),
-            body: TxBody(vec![id_byte; size]),
+            body: TxBody::new_with_vec(vec![id_byte; size]),
             size: size as u32,
         }
     }

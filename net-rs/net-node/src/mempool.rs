@@ -36,7 +36,7 @@ fn to_con_pid(id: PeerId) -> shared_consensus::peer::PeerId {
 fn from_con_tx(tx: shared_consensus::mempool::MempoolTx) -> PendingTx {
     PendingTx {
         tx_id: TxId::new_with_tx(tx.tx_id),
-        body: TxBody(tx.body),
+        body: TxBody::new_with_txbody(tx.body),
         size: tx.size,
     }
 }
@@ -44,6 +44,7 @@ fn from_con_tx(tx: shared_consensus::mempool::MempoolTx) -> PendingTx {
 /// Pad/truncate a `Vec<u8>` tx-id into the wrapper's 32-byte hash form.
 /// shared-consensus's `TxId = Vec<u8>` is hash-scheme-agnostic; net-rs's wire
 /// format pins it at Blake2b-256.
+#[allow(dead_code)]
 fn to_hash_32(id: Vec<u8>) -> [u8; 32] {
     let mut h = [0u8; 32];
     let n = id.len().min(32);
@@ -141,7 +142,7 @@ impl Mempool {
         use shared_consensus::mempool::{MempoolEffect, TxRejectReason};
         let effects = self
             .state
-            .admit_validated(tx.tx_id.get_con_tx_id().clone(), tx.body.0.clone(), tx.size);
+            .admit_validated(tx.tx_id.get_con_tx_id().clone(), tx.body.get_con_tx_body().clone(), tx.size);
         let admitted = !effects.iter().any(|e| {
             matches!(
                 e,
@@ -182,8 +183,8 @@ impl Mempool {
         self.state.forget_peer(to_con_pid(peer_id));
     }
 
-    pub fn get_body_by_id(&self, id: &TxId) -> Option<Vec<u8>> {
-        self.state.get_body_by_id(id.get_con_tx_id())
+    pub fn get_body_by_id(&self, id: &TxId) -> Option<TxBody> {
+        self.state.get_body_by_id(id.get_con_tx_id()).map(TxBody::new_with_txbody)
     }
 
     /// Run the CIP-0164 overflow rule.  Returns the body path the next
@@ -241,9 +242,9 @@ impl Mempool {
     /// `peek_unannounced_for_peer` iterates, so no admit-fanout
     /// notification fires here — peers fetch these via LeiosFetch
     /// BlockTxs, not TxSubmission.
-    pub fn merge_eb_body(&mut self, body: Vec<u8>) {
+    pub fn merge_eb_body(&mut self, body: TxBody) {
         let tx = tx_from_received_bytes(body);
-        self.state.merge_eb_body(tx.tx_id.get_con_tx_id(), tx.body.0, tx.size);
+        self.state.merge_eb_body(tx.tx_id.get_con_tx_id(), tx.body.get_con_tx_body(), tx.size);
     }
 
     /// Mark a tx as advertised to the given peer; returns `true` iff
@@ -282,20 +283,19 @@ impl MempoolTxBodyResolver {
 }
 
 impl net_core::store::leios_store::TxBodyResolver for MempoolTxBodyResolver {
-    fn resolve_body(&self, tx_id: &TxId) -> Option<Vec<u8>> {
+    fn resolve_body(&self, tx_id: &TxId) -> Option<TxBody> {
         self.0.lock().unwrap().get_body_by_id(tx_id)
     }
 }
 
 /// Build a `PendingTx` from raw bytes received from a peer.
 /// The tx_id is derived by hashing the body with Blake2b-256.
-pub fn tx_from_received_bytes(body: Vec<u8>) -> PendingTx {
-    let hash = blake2b_simd::Params::new().hash_length(32).hash(&body);
-    let hash_array: &[u8; 64] = hash.as_array(); // TODO: 64 => 32!
+pub fn tx_from_received_bytes(body: TxBody) -> PendingTx {
+    let hash = body.get_blake2b_256();
     let size = body.len() as u32;
     PendingTx {
-        tx_id: TxId::new_with_blake2b(hash_array),
-        body: TxBody(body),
+        tx_id: TxId::new_with_array(hash),
+        body,
         size,
     }
 }
@@ -369,7 +369,7 @@ pub fn spawn_tx_validator(
     tx_validation_ms: f64,
     tx_validation_ms_per_byte: f64,
     mempool: SharedMempool,
-    mut rx: mpsc::Receiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<TxBody>,
 ) -> tokio::task::JoinHandle<()> {
     let sem = Arc::new(tokio::sync::Semaphore::new(256));
     tokio::spawn(async move {
@@ -397,7 +397,7 @@ pub fn spawn_tx_validator(
 fn make_fake_tx(rng: &mut StdRng, size: usize) -> PendingTx {
     let mut body_buf = vec![0u8; size];
     rng.fill(&mut body_buf[..]);
-    tx_from_received_bytes(body_buf)
+    tx_from_received_bytes(TxBody::new_with_vec(body_buf))
 }
 
 /// Sample an exponential inter-arrival time: `-ln(U) / lambda`.
@@ -413,7 +413,7 @@ mod tests {
     fn make_tx_with_id(id: u8, size: usize) -> PendingTx {
         PendingTx {
             tx_id: TxId::new_with_array([id; 32]),
-            body: TxBody(vec![0; size]),
+            body: TxBody::new_with_vec(vec![0; size]),
             size: size as u32,
         }
     }
@@ -424,7 +424,7 @@ mod tests {
         // so that EB manifest matching works on the receiver side.
         let mut rng = StdRng::seed_from_u64(7);
         let tx = make_fake_tx(&mut rng, 256);
-        let recomputed = tx_from_received_bytes(tx.body.0.clone());
+        let recomputed = tx_from_received_bytes(tx.body.clone());
         assert_eq!(tx.tx_id, recomputed.tx_id);
     }
 
@@ -432,14 +432,14 @@ mod tests {
     fn make_fake_tx_correct_size() {
         let mut rng = StdRng::seed_from_u64(42);
         let tx = make_fake_tx(&mut rng, 500);
-        assert_eq!(tx.body.0.len(), 500);
+        assert_eq!(tx.body.len(), 500);
         assert_eq!(tx.size, 500);
         assert_eq!(tx.tx_id.get_con_tx_id().get_bytes().len(), 32);
     }
 
     #[test]
     fn tx_from_received_bytes_deterministic() {
-        let body = vec![0xAA; 100];
+        let body = TxBody::new_with_vec(vec![0xAA; 100]);
         let tx1 = tx_from_received_bytes(body.clone());
         let tx2 = tx_from_received_bytes(body);
         assert_eq!(tx1.tx_id, tx2.tx_id);
@@ -448,8 +448,8 @@ mod tests {
 
     #[test]
     fn tx_from_received_bytes_different_inputs() {
-        let tx1 = tx_from_received_bytes(vec![0xAA; 100]);
-        let tx2 = tx_from_received_bytes(vec![0xBB; 100]);
+        let tx1 = tx_from_received_bytes(TxBody::new_with_vec(vec![0xAA; 100]));
+        let tx2 = tx_from_received_bytes(TxBody::new_with_vec(vec![0xBB; 100]));
         assert_ne!(tx1.tx_id, tx2.tx_id);
     }
 
@@ -484,22 +484,22 @@ mod tests {
             let mut p = pool.lock().unwrap();
             p.push(PendingTx {
                 tx_id: TxId::new_with_array([0xCC; 32]),
-                body: TxBody(vec![0xDE, 0xAD]),
+                body: TxBody::new_with_vec(vec![0xDE, 0xAD]),
                 size: 2,
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0xCC; 32])), Some(vec![0xDE, 0xAD]));
+        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0xCC; 32])), Some(TxBody::new_with_vec(vec![0xDE, 0xAD])));
         assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0x99; 32])), None);
     }
 
     #[tokio::test]
     async fn validator_pushes_received_body_into_mempool_with_hash_id() {
         let pool = new_mempool(100);
-        let (tx, rx) = mpsc::channel::<Vec<u8>>(8);
+        let (tx, rx) = mpsc::channel::<TxBody>(8);
         let _h = spawn_tx_validator(0.0, 0.0, pool.clone(), rx);
 
-        let body = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let body = TxBody::new_with_vec(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         tx.send(body.clone()).await.unwrap();
 
         for _ in 0..50 {
@@ -513,7 +513,7 @@ mod tests {
         let expected = tx_from_received_bytes(body);
         assert_eq!(
             pool_locked.get_body_by_id(&expected.tx_id),
-            Some(expected.body.0)
+            Some(expected.body)
         );
     }
 

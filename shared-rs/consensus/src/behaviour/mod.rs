@@ -49,7 +49,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::leios::{LeiosEffect, LeiosState, VoteDecision};
-use crate::mempool::{MempoolEffect, MempoolState, TxId};
+use crate::mempool::{MempoolEffect, MempoolState, TxBody, TxId};
 use crate::peer::PeerId;
 use crate::praos::{PraosEffect, PraosState};
 use crate::production::BodyPath;
@@ -287,7 +287,7 @@ pub trait Behaviour: Send + Sync {
         &mut self,
         _state: &MempoolState,
         _tx_id: &TxId,
-        _body: &[u8],
+        _body: &TxBody,
     ) -> BehaviourOutcome<MempoolEffect> {
         BehaviourOutcome::Continue
     }
@@ -566,7 +566,7 @@ impl Behaviour for CompositeBehaviour {
         &mut self,
         state: &MempoolState,
         tx_id: &TxId,
-        body: &[u8],
+        body: &TxBody,
     ) -> BehaviourOutcome<MempoolEffect> {
         for c in self.children.iter_mut() {
             let out = c.on_tx_received(state, tx_id, body);

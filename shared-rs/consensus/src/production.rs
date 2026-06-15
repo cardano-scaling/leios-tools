@@ -142,14 +142,14 @@ mod tests {
     use crate::config::CommitteeSelection;
     use crate::elections::{Elections, ElectionsConfig};
     use crate::leios::VotingConfig;
-    use crate::mempool::{EbKey, MempoolState, TxId};
+    use crate::mempool::{EbKey, MempoolState, TxBody, TxId};
     use crate::pipeline::PipelineConfig;
     use std::collections::BTreeMap;
 
     fn pending(id: u8, size: u32) -> MempoolTx {
         MempoolTx {
             tx_id: TxId::new_with_slice(&[id; 32]),
-            body: vec![0u8; size as usize],
+            body: TxBody::new_with_vec(vec![0u8; size as usize]),
             size,
         }
     }
