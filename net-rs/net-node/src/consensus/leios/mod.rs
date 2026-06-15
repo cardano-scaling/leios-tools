@@ -104,8 +104,8 @@ impl LeiosConsensus {
         let vote_eval_reason = match (stake > 0, total_stake > 0) {
             (true, true) => "enabled",
             (false, true) => "disabled: own stake=0 (non-producer)",
-            (true, false) => "disabled: empty stake registry (cannot weight votes)",
-            (false, false) => "disabled: own stake=0 and empty stake registry",
+            (true, false) => "disabled: total_stake=0 (cannot weight votes)",
+            (false, false) => "disabled: own stake=0 and total_stake=0",
         };
         let voting_config = VotingConfig {
             committee_selection: committee_selection.clone(),
