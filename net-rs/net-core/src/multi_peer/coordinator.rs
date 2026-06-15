@@ -195,11 +195,10 @@ struct Coordinator {
 
     /// High-water mark of any peer's reported tip — informational only.
     /// Updated when a `HeaderAnnounced`'s tip strictly exceeds the
-    /// current value; never lowered on rollback. Used to gate the
-    /// "best peer tip advanced" log and not for chain selection — that
-    /// responsibility lives in Praos (`shared_consensus::praos`), which
-    /// drives `chain_store` mutations via `NetworkCommand::InjectBlock`
-    /// / `InjectRollback`.
+    /// current value; never lowered on rollback. Not used for chain
+    /// selection — that responsibility lives in Praos
+    /// (`shared_consensus::praos`), which drives `chain_store` mutations
+    /// via `NetworkCommand::InjectBlock` / `InjectRollback`.
     best_tip: Option<Tip>,
     /// Pending block fetch requests: point → peer that's fetching it.
     pending_fetches: HashMap<Point, PeerId>,
