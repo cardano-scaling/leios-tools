@@ -41,7 +41,7 @@ pub const MAX_TX_ID_SIZE: usize = 128;
 
 pub const TX_ID_SIZE: usize = 32;
 
-// Opaque TxId, stored as CBor
+/// Opaque transaction ID (fixed 32-byte hash).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxId(shared_consensus::mempool::TxId);
 
