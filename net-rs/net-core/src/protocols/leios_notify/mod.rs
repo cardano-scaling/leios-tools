@@ -114,8 +114,12 @@ impl Protocol for LeiosNotify {
 pub enum LeiosNotifyEvent {
     /// An RB header announcing an EB.
     BlockAnnouncement { header: WrappedHeader },
-    /// An endorser block is available for download.
-    BlockOffer { point: Point },
+    /// An endorser block is available for download.  `eb_size` is the
+    /// EB byte size as declared by the offerer; redundant with the
+    /// header's `announced_eb` tuple but useful as live telemetry for
+    /// operators (e.g. comparing against `rb_body_max_bytes` to spot
+    /// producers overflowing more aggressively than expected).
+    BlockOffer { point: Point, eb_size: u32 },
     /// An EB's transactions are available for download.
     BlockTxsOffer { point: Point },
     /// Votes delivered inline (no fetch needed).
@@ -134,10 +138,8 @@ pub async fn request_next(
         Message::MsgLeiosBlockAnnouncement { header } => {
             Ok(LeiosNotifyEvent::BlockAnnouncement { header })
         }
-        // `eb_size` is consumed here: the CDDL marks it as redundant with
-        // the announcement, and the fetch path keys on the point alone.
-        Message::MsgLeiosBlockOffer { point, eb_size: _ } => {
-            Ok(LeiosNotifyEvent::BlockOffer { point })
+        Message::MsgLeiosBlockOffer { point, eb_size } => {
+            Ok(LeiosNotifyEvent::BlockOffer { point, eb_size })
         }
         Message::MsgLeiosBlockTxsOffer { point } => Ok(LeiosNotifyEvent::BlockTxsOffer { point }),
         Message::MsgLeiosVotes { votes } => Ok(LeiosNotifyEvent::Votes { votes }),
@@ -392,7 +394,7 @@ mod tests {
             // 2. Block offer
             let event = request_next(&mut runner).await.unwrap();
             match event {
-                LeiosNotifyEvent::BlockOffer { point } => {
+                LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                     assert_eq!(
                         point,
                         Point::Specific {
@@ -400,6 +402,7 @@ mod tests {
                             hash: test_hash,
                         }
                     );
+                    assert_eq!(eb_size, 1234);
                 }
                 other => panic!("expected BlockOffer, got {other:?}"),
             }

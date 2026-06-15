@@ -1937,10 +1937,16 @@ impl SharedConsensus {
         let hash = synthesize_rb_hash(id);
         self.rb_hash_to_id.insert(hash, id);
         let parsed = parsed_header_from_rb(&rb);
-        let tx_count = rb.transactions.len() as u32;
+        // Sim doesn't ship wire-format bodies, so the wrapper feeds in
+        // logical args only: tx_count from the rb model, the rest of
+        // ParsedBodyInfo defaults to zero/None.
+        let parsed_body = shared_consensus::praos::ParsedBodyInfo {
+            tx_count: rb.transactions.len() as u32,
+            ..Default::default()
+        };
         let fx = self
             .praos
-            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), tx_count);
+            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
         self.dispatch_praos_effects(out, fx);
     }
 
@@ -2282,6 +2288,10 @@ fn parsed_header_from_rb(rb: &LinearRankingBlock) -> ParsedHeaderInfo {
         slot: h.id.slot,
         prev_hash: h.parent.map(synthesize_rb_hash),
         announced_eb_hash: h.eb_announcement.map(synthesize_eb_hash),
+        // The sim model doesn't track per-EB byte sizes — sim EBs are
+        // logical handles, not wire-encoded.  Leaving `None` keeps the
+        // sim's chain-tracking semantics unchanged.
+        announced_eb_size: None,
         certified_eb: rb.endorsement.is_some(),
         // CIP-0164 equivocation detection keys on (slot, issuer).
         // Sim doesn't have signing keys, so encode `NodeId` (a u64

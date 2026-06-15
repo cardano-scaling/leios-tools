@@ -111,27 +111,95 @@ impl HeaderInfo {
         // Field 9: protocol_version — skip
         d.skip()?;
 
-        // CIP-0164 Leios extensions — optional trailing fields.
-        // The array length alone determines which are present:
-        //   10 = base only (no Leios)
-        //   11 = +1 field: certified_eb (bool)
-        //   12 = +2 fields: announced_eb (hash32 + uint32 pair)
-        //   13 = +3 fields: announced_eb pair + certified_eb
-        let extra = body_len - HEADER_BODY_BASE_FIELDS;
-
-        let announced_eb = if extra >= 2 {
-            let eb_hash = parse_hash32(&mut d)?;
-            let eb_size = d.u32()?;
-            Some((eb_hash, eb_size))
-        } else {
-            None
-        };
-
-        let certified_eb = if extra == 1 || extra == 3 {
-            Some(d.bool()?)
-        } else {
-            None
-        };
+        // CIP-0164 Leios extensions — optional trailing fields.  Be
+        // liberal about layout: array length alone isn't enough because
+        // implementations disagree on how to group `announced_eb`.  The
+        // CIP draft we follow encodes it as two flat fields (hash, size),
+        // so a 12-element body means "10 base + announced_eb (flat)";
+        // the leios-prototype dev relay (and likely a later draft)
+        // encodes it as a single tuple `[hash, size]`, so an 11-element
+        // body can mean "10 base + announced_eb (as tuple)" instead of
+        // the "10 base + certified_eb bool" we'd otherwise assume.
+        //
+        // Dispatch on the CBOR datatype of each trailing field rather
+        // than its position:
+        //
+        //   bool          → certified_eb           (consumes 1 element)
+        //   array(2)      → announced_eb tuple     (consumes 1 element)
+        //   bytes(32)     → announced_eb flat hash; the next element is
+        //                   the u32 size            (consumes 2 elements)
+        //
+        // Any other shape falls through as an error rather than being
+        // silently misread.
+        let mut announced_eb: Option<([u8; 32], u32)> = None;
+        let mut certified_eb: Option<bool> = None;
+        let mut remaining = body_len - HEADER_BODY_BASE_FIELDS;
+        while remaining > 0 {
+            match d.datatype()? {
+                minicbor::data::Type::Bool => {
+                    if certified_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate certified_eb extension in header_body",
+                        ));
+                    }
+                    certified_eb = Some(d.bool()?);
+                    remaining -= 1;
+                }
+                minicbor::data::Type::Array | minicbor::data::Type::ArrayIndef => {
+                    // Tuple shape `[hash, size]`.  Accept both definite
+                    // and indefinite encodings to stay liberal; the
+                    // indefinite form needs the trailing break marker
+                    // (CBOR 0xff) explicitly consumed.
+                    if announced_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate announced_eb extension in header_body",
+                        ));
+                    }
+                    let arr_len = d.array()?;
+                    let eb_hash = parse_hash32(&mut d)?;
+                    let eb_size = d.u32()?;
+                    match arr_len {
+                        Some(2) => {}
+                        Some(other) => {
+                            return Err(DecodeError::message(format!(
+                                "announced_eb tuple expected array(2), got array({other})"
+                            )));
+                        }
+                        None => {
+                            if d.datatype()? != minicbor::data::Type::Break {
+                                return Err(DecodeError::message(
+                                    "announced_eb indefinite tuple has more than 2 elements",
+                                ));
+                            }
+                            d.skip()?;
+                        }
+                    }
+                    announced_eb = Some((eb_hash, eb_size));
+                    remaining -= 1;
+                }
+                minicbor::data::Type::Bytes => {
+                    if announced_eb.is_some() {
+                        return Err(DecodeError::message(
+                            "duplicate announced_eb extension in header_body",
+                        ));
+                    }
+                    if remaining < 2 {
+                        return Err(DecodeError::message(
+                            "flat announced_eb expects hash followed by size, only 1 slot left",
+                        ));
+                    }
+                    let eb_hash = parse_hash32(&mut d)?;
+                    let eb_size = d.u32()?;
+                    announced_eb = Some((eb_hash, eb_size));
+                    remaining -= 2;
+                }
+                other => {
+                    return Err(DecodeError::message(format!(
+                        "unexpected header_body extension field type: {other:?}"
+                    )));
+                }
+            }
+        }
 
         Ok(HeaderInfo {
             era,
@@ -452,6 +520,189 @@ mod tests {
 
         let info = HeaderInfo::parse(&raw).expect("should parse");
         assert_eq!(info.announced_eb, None);
+        assert_eq!(info.certified_eb, Some(true));
+    }
+
+    /// Build a header where `announced_eb` is encoded as a single
+    /// `array(2)` tuple `[hash, size]` rather than two flat trailing
+    /// fields.  This matches the layout sent by the public Leios dev
+    /// relay (leios-prototype) and a later CIP-0164 draft; we accept it
+    /// liberally via CBOR type dispatch.
+    fn build_test_header_eb_tuple(
+        era: u8,
+        block_number: u64,
+        slot: u64,
+        prev_hash: Option<[u8; 32]>,
+        issuer_vkey: [u8; 32],
+        body_size: u32,
+        block_body_hash: [u8; 32],
+        announced_eb: ([u8; 32], u32),
+        certified_eb: Option<bool>,
+    ) -> Vec<u8> {
+        use minicbor::encode::Error as EncodeError;
+        use std::io::Write as _;
+        let field_count = HEADER_BODY_BASE_FIELDS + 1 + if certified_eb.is_some() { 1 } else { 0 };
+
+        let mut body_buf = Vec::new();
+        let mut be = Encoder::new(&mut body_buf);
+        be.array(field_count).unwrap();
+        be.u64(block_number).unwrap();
+        be.u64(slot).unwrap();
+        match prev_hash {
+            Some(h) => {
+                be.bytes(&h).unwrap();
+            }
+            None => {
+                be.null().unwrap();
+            }
+        }
+        be.bytes(&issuer_vkey).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.array(2).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.u32(body_size).unwrap();
+        be.bytes(&block_body_hash).unwrap();
+        be.array(4).unwrap();
+        be.bytes(&[0u8; 32]).unwrap();
+        be.u64(0).unwrap();
+        be.u64(0).unwrap();
+        be.bytes(&[0u8; 64]).unwrap();
+        be.array(2).unwrap();
+        be.u32(10).unwrap();
+        be.u32(0).unwrap();
+
+        // announced_eb as tuple [hash, size]
+        be.array(2).unwrap();
+        be.bytes(&announced_eb.0).unwrap();
+        be.u32(announced_eb.1).unwrap();
+        if let Some(cert) = certified_eb {
+            be.bool(cert).unwrap();
+        }
+
+        let mut inner_buf = Vec::new();
+        let mut ie = Encoder::new(&mut inner_buf);
+        ie.array(2).unwrap();
+        ie.writer_mut()
+            .write_all(&body_buf)
+            .map_err(EncodeError::write)
+            .unwrap();
+        ie.bytes(&[0u8; 64]).unwrap();
+
+        let mut outer_buf = Vec::new();
+        let mut oe = Encoder::new(&mut outer_buf);
+        oe.array(2).unwrap();
+        oe.u32(era as u32).unwrap();
+        oe.tag(minicbor::data::Tag::new(24)).unwrap();
+        oe.bytes(&inner_buf).unwrap();
+        outer_buf
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_as_tuple() {
+        // Relay variant: announced_eb encoded as array(2) → header_body is
+        // array(11).  Without type dispatch we'd misread the trailing
+        // array as a (non-existent) certified_eb bool and fail.
+        let eb_hash = [0x77; 32];
+        let raw = build_test_header_eb_tuple(
+            7,
+            49907,
+            1_001_160,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            2048,
+            [0xCC; 32],
+            (eb_hash, 65536),
+            None,
+        );
+
+        let info = HeaderInfo::parse(&raw).expect("tuple-encoded announced_eb must parse");
+        assert_eq!(info.block_number, 49907);
+        assert_eq!(info.announced_eb, Some((eb_hash, 65536)));
+        assert_eq!(info.certified_eb, None);
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_as_indefinite_tuple() {
+        // A peer using indefinite-length CBOR for the tuple sends
+        // 0x9f <hash> <size> 0xff instead of 0x82 <hash> <size>.
+        // The trailing 0xff break must be consumed; otherwise the next
+        // `Decoder::array()` (for the outer inner array) would see it
+        // and fail.  Patch a known-good tuple-encoded header byte-by-
+        // byte: locate the 0x82 (definite array(2)) for the announced
+        // tuple, replace with 0x9f (indefinite), and append a 0xff
+        // before the trailing body_signature.
+        let eb_hash = [0x99; 32];
+        let mut raw = build_test_header_eb_tuple(
+            7,
+            49907,
+            1_001_160,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            2048,
+            [0xCC; 32],
+            (eb_hash, 65536),
+            None,
+        );
+
+        // Find the announced_eb tuple's 0x82 marker — the only
+        // standalone 0x82 followed by 0x58 0x20 0x99... (bytes(32) of
+        // 0x99) in the buffer.  Replace the 0x82 with 0x9f and
+        // insert a 0xff break after the u32 size.
+        let needle = [0x82u8, 0x58, 0x20, 0x99, 0x99];
+        let idx = raw
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .expect("must find tuple marker");
+        raw[idx] = 0x9f;
+        // After 0x82 we have: 0x58 0x20 + 32-byte hash + u32 size (1a XX XX XX XX = 5 bytes).
+        // Insert 0xff break after that.
+        let after_tuple = idx + 1 + 2 + 32 + 5;
+        raw.insert(after_tuple, 0xff);
+
+        // The outer #6.24-wrapped bstr length needs to grow by 1 too.
+        // Locate the inner bstr length prefix (5903 7f ... or 5903 81 ...
+        // since these tests use 0x5903XX two-byte lengths) and bump it.
+        // Skip outer `[era, ...]`: bytes 0..2 are array(2)+era. Bytes 2..3
+        // are 0xd8 0x18 (tag 24). Bytes 4..7 are 0x59 <len_hi> <len_lo>
+        // (or 0x58 <len> for shorter). Bump whichever applies.
+        match raw[4] {
+            0x58 => {
+                raw[5] = raw[5].wrapping_add(1);
+            }
+            0x59 => {
+                let len = u16::from_be_bytes([raw[5], raw[6]]) + 1;
+                raw[5] = (len >> 8) as u8;
+                raw[6] = (len & 0xff) as u8;
+            }
+            other => panic!("unexpected bstr length prefix {other:#04x}"),
+        }
+
+        let info = HeaderInfo::parse(&raw)
+            .expect("indefinite-length tuple-encoded announced_eb must parse");
+        assert_eq!(info.block_number, 49907);
+        assert_eq!(info.announced_eb, Some((eb_hash, 65536)));
+        assert_eq!(info.certified_eb, None);
+    }
+
+    #[test]
+    fn parse_header_with_announced_eb_tuple_plus_certified_eb() {
+        // 12-field array: 10 base + announced_eb tuple + certified_eb bool.
+        let eb_hash = [0x88; 32];
+        let raw = build_test_header_eb_tuple(
+            7,
+            50000,
+            1_001_500,
+            Some([0xAA; 32]),
+            [0xBB; 32],
+            4096,
+            [0xCC; 32],
+            (eb_hash, 32768),
+            Some(true),
+        );
+
+        let info = HeaderInfo::parse(&raw).expect("tuple + cert layout must parse");
+        assert_eq!(info.announced_eb, Some((eb_hash, 32768)));
         assert_eq!(info.certified_eb, Some(true));
     }
 
