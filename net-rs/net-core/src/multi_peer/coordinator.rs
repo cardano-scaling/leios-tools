@@ -469,12 +469,26 @@ impl Coordinator {
                     self.sync_fragment_size(peer_id, len);
                 }
 
-                // Update best tip tracker.
+                // Update best tip tracker.  Log every advance — gives operators
+                // a clear "the relay is at block X" line without having to probe
+                // out-of-band with chain-sync. Fires once per new block the
+                // peer produces (or once at start if a new peer's tip dominates).
                 let dominated = match &self.best_tip {
                     None => false,
                     Some(best) => tip.block_no <= best.block_no,
                 };
                 if !dominated {
+                    let (tip_slot, tip_hash) = match &tip.point {
+                        Point::Specific { slot, hash } => (Some(*slot), Some(*hash)),
+                        Point::Origin => (None, None),
+                    };
+                    tracing::info!(
+                        peer = peer_id.0,
+                        tip_block_no = tip.block_no,
+                        tip_slot,
+                        tip_hash = ?tip_hash.map(|h| format!("{:02x}{:02x}", h[30], h[31])),
+                        "best peer tip advanced"
+                    );
                     self.best_tip = Some(tip.clone());
                 }
 

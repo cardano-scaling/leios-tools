@@ -582,12 +582,44 @@ async fn next_outbound_notification(
     peer: PeerId,
     subscription: &mut tokio::sync::watch::Receiver<u64>,
 ) -> Option<LnMsg> {
+    use crate::store::leios_store::LeiosNotification;
     loop {
         let pending = store.notifications_after(read_index);
         for entry in &pending {
             *read_index += 1;
             if entry.source == Some(peer) {
+                tracing::debug!(
+                    peer = peer.0,
+                    "leios_notify: skipping no-echo offer back to source"
+                );
                 continue;
+            }
+            match &entry.notification {
+                LeiosNotification::BlockOffer { point, eb_size } => {
+                    tracing::info!(
+                        peer = peer.0,
+                        %point,
+                        eb_size,
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving EB offer"
+                    );
+                }
+                LeiosNotification::BlockTxsOffer { point } => {
+                    tracing::info!(
+                        peer = peer.0,
+                        %point,
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving EB-txs offer"
+                    );
+                }
+                LeiosNotification::Votes { votes } => {
+                    tracing::debug!(
+                        peer = peer.0,
+                        count = votes.len(),
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving votes"
+                    );
+                }
             }
             return Some(notification_to_ln_msg(&entry.notification));
         }
