@@ -153,6 +153,7 @@ mod tests {
             non_persistent_vote_bytes: 180,
             persistent_seats: 0,
             retry_vote_in_window: true,
+            evaluate_votes: true,
         };
         let leios = LeiosState::new("t".to_string(), elections, voting, pipeline);
         let praos = PraosState::new("t".to_string(), 2160);
