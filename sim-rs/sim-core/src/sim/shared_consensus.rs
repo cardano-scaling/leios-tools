@@ -586,9 +586,7 @@ impl NodeImpl for SharedConsensus {
         // self.leios is borrowed mutably.
         let mempool = &self.mempool;
         let tx_arcs = &self.tx_arcs;
-        let tx_known = |key: &TxId| {
-            mempool.has_tx(&key) || tx_arcs.contains_key(&key)
-        };
+        let tx_known = |key: &TxId| mempool.has_tx(key) || tx_arcs.contains_key(key);
         let leios_fx = self.leios.on_slot(slot, &tx_known);
         self.apply_leios_effects(&mut out, leios_fx);
         // Praos RB lottery — shared formula with net-rs.  Threshold lives
