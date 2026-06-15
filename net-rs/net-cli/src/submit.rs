@@ -177,22 +177,3 @@ pub async fn run(
 
     result.map_err(|e| e.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serialize_hash() {
-        let mut rng = StdRng::from_entropy();
-
-        let mut hash = [0u8; 32];
-        rng.fill(&mut hash);
-        let mut id_buf = Vec::new();
-        let mut enc = minicbor::Encoder::new(&mut id_buf);
-        enc.bytes(&hash).expect("CBOR encode tx id");
-
-        println!("Hash: {:02x?}", hash);
-        println!("CBOR: {:02x?}", id_buf);
-    }
-}

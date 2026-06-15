@@ -260,9 +260,10 @@ impl Mempool {
     /// EB-pinned bodies.  Used by the CIP-0164 `MissingTX` voting
     /// predicate.
     pub fn all_known_tx_ids(&self) -> HashSet<TxId> {
-        let mut ids = HashSet::from_iter(TxId::vec_from_consensus_txid(self.state.txs.iter().map(|t| t.tx_id.clone()).collect()).into_iter());
-        ids.extend(TxId::vec_from_consensus_txid(self.state.eb_pinned.keys().cloned().collect()));
-        ids
+        let txs_list = self.state.txs.iter().map(|t| &t.tx_id);
+        let pinned_list = self.state.eb_pinned.keys();
+
+        HashSet::from_iter(txs_list.chain(pinned_list).map(|x| TxId::new_with_tx(x.clone())))
     }
 }
 
