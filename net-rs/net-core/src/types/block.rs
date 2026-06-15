@@ -281,33 +281,49 @@ impl BlockBody {
         let trailing = block_len.saturating_sub(2 + base_remaining);
 
         let mut eb_certificate = None;
+        let mut eb_certificate_pending = false;
+        let mut peras_cert_pending = false;
 
         // Trailing optional 1: `eb_certificate` (CIP-0164 `leios_certificate`).
-        // Encoded via Haskell `encodeNullStrictMaybe` upstream — CBOR `null`
-        // means absent; otherwise the cert array. A malformed cert bubbles
-        // up as a parse failure so the caller's diagnostic dump surfaces
-        // the bytes; we don't paper over unknown shapes.
+        // Three observed shapes:
+        //   - CBOR `null` (`f6`)   → Absent. Older `encodeNullStrictMaybe`
+        //     style from era-7 Dijkstra producers.
+        //   - CBOR `array(0)` (`80`) → Pending. The leios-prototype's
+        //     "unit" placeholder (Sebastian, 2026-06-15): "there is a
+        //     cert here but the encoding isn't finished yet". Counted
+        //     separately from Absent — both leave eb_certificate as
+        //     None but `eb_certificate_pending` flips.
+        //   - `array(4) [slot, hash, signers, sig]` → real cert.
+        //   - anything else → parse failure (surfaced via caller's
+        //     hex dump).
         if trailing >= 1 {
-            if inner.datatype()? == minicbor::data::Type::Null {
-                inner.skip()?; // consume null sentinel — eb_certificate absent
-            } else {
-                eb_certificate = Some(try_decode_leios_cert(&mut inner)?);
+            match classify_cert_slot(&mut inner)? {
+                CertSlotState::Absent => {}
+                CertSlotState::Pending => {
+                    eb_certificate_pending = true;
+                }
+                CertSlotState::Other => {
+                    eb_certificate = Some(try_decode_leios_cert(&mut inner)?);
+                }
             }
         }
 
-        // Trailing optional 2: `peras_cert`.  We don't yet know its CDDL
-        // shape (cardano-ledger's `DijkstraBlockBody` declares the slot
-        // but the dev relay has never populated it in our sample). Expect
-        // CBOR `null`; fail the whole body parse otherwise so the caller's
-        // parse-failure hex dump surfaces an unknown layout rather than
-        // silently misinterpreting it.
+        // Trailing optional 2: `peras_cert`. We don't yet know its CDDL
+        // shape. Accept the same Absent (`null`) / Pending (`[]`)
+        // sentinels as the eb_certificate slot; anything else fails
+        // the parse so an unknown layout surfaces in the WARN's hex
+        // dump rather than getting silently misinterpreted.
         if trailing >= 2 {
-            if inner.datatype()? == minicbor::data::Type::Null {
-                inner.skip()?; // consume null sentinel — peras_cert absent
-            } else {
-                return Err(DecodeError::message(
-                    "peras_cert slot is non-null; layout not yet known",
-                ));
+            match classify_cert_slot(&mut inner)? {
+                CertSlotState::Absent => {}
+                CertSlotState::Pending => {
+                    peras_cert_pending = true;
+                }
+                CertSlotState::Other => {
+                    return Err(DecodeError::message(
+                        "peras_cert slot has unknown shape; layout not yet known",
+                    ));
+                }
             }
         }
 
@@ -315,6 +331,8 @@ impl BlockBody {
             tx_count,
             field_count,
             eb_certificate,
+            eb_certificate_pending,
+            peras_cert_pending,
         })
     }
 
@@ -431,6 +449,46 @@ fn hex_prefix(bytes: Option<&[u8]>) -> String {
             s
         }
         None => "none".to_string(),
+    }
+}
+
+/// Three-state classification of a trailing-optional cert slot on
+/// the dev-relay's Leios-prototype chain.
+enum CertSlotState {
+    /// CBOR `null` (`f6`) — no cert declared at this slot.
+    Absent,
+    /// CBOR `array(0)` (`80`) — the "unit" placeholder per
+    /// Sebastian (2026-06-15): block asserts a cert exists at
+    /// this slot but the cert encoding isn't implemented yet.
+    /// Counted separately from `Absent` so we can see how often
+    /// this signal fires on the chain.
+    Pending,
+    /// Anything else: a real cert (or an unknown shape that the
+    /// caller will decode / fail on).
+    Other,
+}
+
+/// Classify and conditionally consume the next CBOR item.  `Absent`
+/// and `Pending` consume the sentinel and leave the decoder pointing
+/// at the next field; `Other` leaves the decoder where it was so the
+/// caller can attempt a structured decode.
+fn classify_cert_slot(d: &mut Decoder<'_>) -> Result<CertSlotState, DecodeError> {
+    use minicbor::data::Type;
+    match d.datatype()? {
+        Type::Null => {
+            d.skip()?;
+            Ok(CertSlotState::Absent)
+        }
+        Type::Array | Type::ArrayIndef => {
+            let mut probe = d.probe();
+            if let Ok(Some(0)) = probe.array() {
+                d.array()?; // consume the `array(0)` from the real decoder
+                Ok(CertSlotState::Pending)
+            } else {
+                Ok(CertSlotState::Other)
+            }
+        }
+        _ => Ok(CertSlotState::Other),
     }
 }
 
@@ -868,10 +926,10 @@ mod tests {
         assert!(info.eb_certificate.is_none());
     }
 
-    #[test]
-    fn praos_inspect_accepts_null_peras_slot() {
-        // fc=7 with both trailing optionals as CBOR null — the canonical
-        // dev-relay shape post-345600. Parser should accept silently.
+    /// Build a Dijkstra-style fc=7 block where each trailing optional
+    /// is encoded from raw CBOR bytes (so callers can splice null,
+    /// `array(0)`, or arbitrary other shapes).
+    fn fc7_block_with_raw_trailing(cert_bytes: &[u8], peras_bytes: &[u8]) -> BlockBody {
         use std::io::Write as _;
         let mut block_buf = Vec::new();
         let mut be = Encoder::new(&mut block_buf);
@@ -881,8 +939,8 @@ mod tests {
         be.array(0).unwrap();
         be.null().unwrap();
         be.array(0).unwrap();
-        be.null().unwrap(); // eb_certificate absent
-        be.null().unwrap(); // peras_cert absent
+        be.writer_mut().write_all(cert_bytes).unwrap();
+        be.writer_mut().write_all(peras_bytes).unwrap();
 
         let mut inner_buf = Vec::new();
         let mut ie = Encoder::new(&mut inner_buf);
@@ -895,42 +953,47 @@ mod tests {
         oe.tag(minicbor::data::Tag::new(24)).unwrap();
         oe.bytes(&inner_buf).unwrap();
 
-        let body = BlockBody::new(outer_buf);
+        BlockBody::new(outer_buf)
+    }
+
+    #[test]
+    fn praos_inspect_accepts_null_trailing_optionals() {
+        // fc=7 with both trailing optionals as CBOR null — the
+        // `encodeNullStrictMaybe` shape from era-7 Dijkstra producers.
+        // Counts as Absent (not Pending).
+        let body = fc7_block_with_raw_trailing(&[0xf6], &[0xf6]);
         let info = body.praos_inspect();
         assert_eq!(info.tx_count, 0);
         assert_eq!(info.field_count, 7);
         assert!(info.eb_certificate.is_none());
+        assert!(!info.eb_certificate_pending);
+        assert!(!info.peras_cert_pending);
     }
 
     #[test]
-    fn praos_inspect_rejects_non_null_peras_slot() {
-        // peras_cert layout is unknown — any non-null value should fail
-        // the body parse rather than be silently misinterpreted.
-        use std::io::Write as _;
-        let mut block_buf = Vec::new();
-        let mut be = Encoder::new(&mut block_buf);
-        be.array(7).unwrap();
-        be.bytes(&[0x80]).unwrap();
-        be.array(0).unwrap();
-        be.array(0).unwrap();
-        be.null().unwrap();
-        be.array(0).unwrap();
-        be.null().unwrap();
-        // peras_cert: anything non-null — here, an empty array.
-        be.array(0).unwrap();
+    fn praos_inspect_flags_unit_array_trailing_optionals() {
+        // fc=7 with both trailing optionals as `array(0)` — the
+        // "unit" placeholder used by era-8 producers (Sebastian
+        // 2026-06-15): "cert intent declared, encoding TBD". Should
+        // count as Pending (separate from Absent).
+        let body = fc7_block_with_raw_trailing(&[0x80], &[0x80]);
+        let info = body.praos_inspect();
+        assert_eq!(info.tx_count, 0);
+        assert_eq!(info.field_count, 7);
+        assert!(info.eb_certificate.is_none());
+        assert!(info.eb_certificate_pending);
+        assert!(info.peras_cert_pending);
+    }
 
-        let mut inner_buf = Vec::new();
-        let mut ie = Encoder::new(&mut inner_buf);
-        ie.array(2).unwrap();
-        ie.u32(7).unwrap();
-        ie.writer_mut().write_all(&block_buf).unwrap();
-
-        let mut outer_buf = Vec::new();
-        let mut oe = Encoder::new(&mut outer_buf);
-        oe.tag(minicbor::data::Tag::new(24)).unwrap();
-        oe.bytes(&inner_buf).unwrap();
-
-        let body = BlockBody::new(outer_buf);
+    #[test]
+    fn praos_inspect_rejects_unknown_peras_slot() {
+        // peras_cert layout is unknown — anything that isn't `null` or
+        // `array(0)` should fail the body parse so an unknown shape
+        // surfaces rather than getting silently misinterpreted.
+        //
+        // Splice in `array(1) [u32(42)]` for the peras slot:
+        //   0x81 = array(1); 0x18 0x2a = u8(42).
+        let body = fc7_block_with_raw_trailing(&[0xf6], &[0x81, 0x18, 0x2a]);
         let info = body.praos_inspect();
         // Parse failure ⇒ default (field_count=0).
         assert_eq!(info.field_count, 0);

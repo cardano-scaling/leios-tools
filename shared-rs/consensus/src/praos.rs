@@ -923,6 +923,8 @@ impl PraosState {
                 .as_ref()
                 .map(|c| hex32(&c.eb_hash))
                 .unwrap_or_else(|| "none".to_string()),
+            body_cert_pending = parsed_body.eb_certificate_pending,
+            body_peras_pending = parsed_body.peras_cert_pending,
             eb_announced = %announced_eb_hash
                 .as_ref()
                 .map(hex32)
@@ -2112,6 +2114,17 @@ pub struct ParsedBodyInfo {
     /// aggregated_signature : leios_bls_signature]` where
     /// `leios_bls_signature = bytes .size 48`.
     pub eb_certificate: Option<LeiosCertSummary>,
+    /// True when the `eb_certificate` slot is present as the unit
+    /// placeholder (`array(0)`, i.e. `[]`).  Per Sebastian
+    /// (2026-06-15) the leios-prototype emits this when the block
+    /// asserts "there *is* a cert here" but the cert encoding isn't
+    /// finished yet — distinct from CBOR-null "no cert at this
+    /// slot".  Mutually exclusive with `eb_certificate`.
+    pub eb_certificate_pending: bool,
+    /// True when the second trailing optional (`peras_cert`) slot is
+    /// present as the same `[]` unit placeholder.  Same intent
+    /// signalling as `eb_certificate_pending` but for Peras.
+    pub peras_cert_pending: bool,
 }
 
 /// Compact view of a CIP-0164 `leios_certificate` extracted from a
