@@ -26,7 +26,21 @@ const UNKNOWN_CERT_FIELD_PROBE_BYTES: usize = 96;
 /// shape on first contact, not to repeat the same hex every block.
 const SHAPE_MISMATCH_WARN_BUDGET: usize = 5;
 
+/// Soft cap on the number of `praos_inspect` parse-failure WARN lines
+/// emitted per process.  Without this, `praos_inspect()` silently
+/// returns `ParsedBodyInfo::default()` on any decode error and the
+/// failure is invisible — see the dev-relay's post-slot-1309596
+/// EB-announcing blocks for the original motivation.
+const BODY_PARSE_FAIL_WARN_BUDGET: usize = 5;
+
+/// Bytes to capture from the start of a failing body for hex dump.
+/// Large enough to expose the CBOR tag, era field, top-level array
+/// length, and the first few merged_block fields — enough to identify
+/// an unrecognised wire shape on first contact.
+const BODY_PARSE_FAIL_PROBE_BYTES: usize = 256;
+
 static SHAPE_MISMATCH_WARNS: AtomicUsize = AtomicUsize::new(0);
+static BODY_PARSE_FAIL_WARNS: AtomicUsize = AtomicUsize::new(0);
 
 // --- LeiosBlockInfo ---
 
@@ -185,7 +199,30 @@ impl BlockBody {
     /// `tx_references_count` is `Some(n)` iff field 6 decodes as an
     /// array of length `n` (the CDDL `[* tx_reference]`).
     pub fn praos_inspect(&self) -> ParsedBodyInfo {
-        self.try_praos_inspect().unwrap_or_default()
+        match self.try_praos_inspect() {
+            Ok(info) => info,
+            Err(e) => {
+                // `praos_inspect()`'s contract is best-effort, but a
+                // body we can't decode is otherwise invisible to
+                // operators (returns `field_count=0` and looks like an
+                // empty block).  Dump a hex prefix so an unrecognised
+                // wire shape can be identified on first contact.
+                // Throttled like the trailing-optional shape mismatch
+                // above — process-global, not per-peer.
+                if BODY_PARSE_FAIL_WARNS.fetch_add(1, Ordering::Relaxed)
+                    < BODY_PARSE_FAIL_WARN_BUDGET
+                {
+                    let take = self.raw.len().min(BODY_PARSE_FAIL_PROBE_BYTES);
+                    warn!(
+                        body_bytes = self.raw.len(),
+                        error = %e,
+                        raw_prefix_hex = %hex_prefix(Some(&self.raw[..take])),
+                        "praos body parse failed; dumping raw prefix"
+                    );
+                }
+                ParsedBodyInfo::default()
+            }
+        }
     }
 
     fn try_praos_inspect(&self) -> Result<ParsedBodyInfo, DecodeError> {

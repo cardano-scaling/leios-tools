@@ -912,6 +912,7 @@ impl PraosState {
         info!(
             node_id = %self.node_id,
             %point,
+            block_hash = %hex32(&hash),
             block_no,
             body_bytes = body_bytes_len,
             body_field_count = parsed_body.field_count,
