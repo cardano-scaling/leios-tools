@@ -610,7 +610,7 @@ impl Coordinator {
                 let fresh = self.leios_offer_dedup.fresh_votes(peer_id, votes);
                 if !fresh.is_empty() {
                     if let Some(ref store) = self.leios_store {
-                        store.inject_votes(fresh.clone());
+                        store.inject_votes(fresh.clone(), Some(peer_id));
                     }
                     self.emit_event(NetworkEvent::LeiosVotesReceived {
                         peer_id,
@@ -624,7 +624,7 @@ impl Coordinator {
                 // the consensus layer clears the entry on `on_eb_received`.
                 // Populate leios store for responder peers.
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point.clone(), block.clone());
+                    store.inject_block(point.clone(), block.clone(), Some(peer_id));
                 }
                 self.emit_event(NetworkEvent::LeiosBlockReceived { point, block });
             }
@@ -654,7 +654,7 @@ impl Coordinator {
                             })
                             .collect();
                         if !indexed.is_empty() {
-                            store.inject_block_txs(point.clone(), indexed);
+                            store.inject_block_txs(point.clone(), indexed, Some(peer_id));
                         }
                     }
                 }
@@ -851,7 +851,7 @@ impl Coordinator {
 
             NetworkCommand::InjectLeiosBlock { point, block } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point, block);
+                    store.inject_block(point, block, None);
                 }
             }
 
@@ -864,19 +864,25 @@ impl Coordinator {
                     // ordered body list. Receiver-side merging from
                     // partial fetches happens in the LeiosBlockTxsFetched
                     // handler, not here.
-                    store.inject_block_txs_full(point, transactions);
+                    store.inject_block_txs_full(point, transactions, None);
                 }
             }
 
             NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, tx_hashes);
+                    // Source is None here: the upstream peer isn't
+                    // carried on the LeiosEffect::RecordLeiosEbManifest
+                    // path, so the resulting BlockTxsOffer can still be
+                    // echoed back to the EB's source. Acceptable
+                    // (BlockTxsOffer has no eb_size — no crash); the
+                    // narrower BlockOffer reflection is what mattered.
+                    store.record_eb_manifest(point, tx_hashes, None);
                 }
             }
 
             NetworkCommand::InjectLeiosVotes { votes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_votes(votes);
+                    store.inject_votes(votes, None);
                 }
             }
 
@@ -2786,7 +2792,7 @@ mod tests {
             slot: 12,
             hash: eb_hash,
         };
-        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         // Simulate a partial response from an upstream peer: indices 0
         // and 2 only. Order is reversed to confirm we don't rely on

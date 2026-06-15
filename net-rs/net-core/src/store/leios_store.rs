@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
+use shared_consensus::PeerId;
+
 use crate::protocols::leios_fetch::bitmap;
 use crate::types::{Point, Vote};
 
@@ -27,12 +29,24 @@ pub trait TxBodyResolver: Send + Sync {
 /// A notification about available Leios data, served by LeiosNotify.
 #[derive(Debug, Clone)]
 pub enum LeiosNotification {
-    /// An endorser block is available for download.
-    BlockOffer { point: Point },
+    /// An endorser block is available for download. `eb_size` is the
+    /// byte length of the encoded EB body — required by CIP-0164 so a
+    /// peer can pre-size its fetch buffer; advertising `0` makes the
+    /// dev relay drop the connection.
+    BlockOffer { point: Point, eb_size: u32 },
     /// An EB's transactions are available for download.
     BlockTxsOffer { point: Point },
     /// Votes delivered inline (no offer/fetch round-trip).
     Votes { votes: Vec<Vote> },
+}
+
+/// A queued notification with the peer it came from (`None` when this
+/// node produced the data locally). `serve_leios_notify` consults
+/// `source` to skip re-offering data back to the peer that supplied it.
+#[derive(Debug, Clone)]
+pub struct NotificationEntry {
+    pub source: Option<PeerId>,
+    pub notification: LeiosNotification,
 }
 
 /// Key for block lookups.
@@ -62,7 +76,7 @@ struct LeiosStoreInner {
     /// alongside the slot-window eviction of the other maps so
     /// long-running connections don't accumulate notifications for
     /// data that no longer lives in the store.
-    notifications: VecDeque<LeiosNotification>,
+    notifications: VecDeque<NotificationEntry>,
     /// Total notifications popped off `notifications`' front so far —
     /// used to translate `notifications_after`'s logical cursor into
     /// the deque's local index.  Subscribers track a monotonically
@@ -192,17 +206,27 @@ impl LeiosStore {
 
     /// Inject an endorser block. Generates a BlockOffer notification.
     ///
+    /// `source` is the peer that delivered the block (`None` for locally
+    /// produced EBs); `serve_leios_notify` filters its notification
+    /// stream to that peer so we don't re-offer the block back to its
+    /// origin.
+    ///
     /// The `point` must be `Point::Specific { slot, hash }`. If `Point::Origin`
     /// is passed, the block is silently dropped.
-    pub fn inject_block(&self, point: Point, block: Vec<u8>) {
+    pub fn inject_block(&self, point: Point, block: Vec<u8>, source: Option<PeerId>) {
         let (slot, hash) = match &point {
             Point::Specific { slot, hash } => (*slot, *hash),
             Point::Origin => return,
         };
+        let eb_size = block.len() as u32;
         let mut inner = self.inner.lock().unwrap();
         inner.blocks.insert(BlockKey { slot, hash }, block);
         inner.max_slot = inner.max_slot.max(slot);
-        Self::push_notification(&mut inner, LeiosNotification::BlockOffer { point });
+        Self::push_notification(
+            &mut inner,
+            source,
+            LeiosNotification::BlockOffer { point, eb_size },
+        );
         self.bump_version(&mut inner);
     }
 
@@ -219,7 +243,16 @@ impl LeiosStore {
     ///
     /// The `point` must be `Point::Specific { slot, hash }`. If
     /// `Point::Origin` is passed, the transactions are silently dropped.
-    pub fn inject_block_txs(&self, point: Point, indexed: BTreeMap<u32, Vec<u8>>) {
+    ///
+    /// `source` tags the resulting `BlockTxsOffer` with the peer that
+    /// supplied the bodies (`None` for locally produced) so
+    /// `serve_leios_notify` can skip re-offering them back to that peer.
+    pub fn inject_block_txs(
+        &self,
+        point: Point,
+        indexed: BTreeMap<u32, Vec<u8>>,
+        source: Option<PeerId>,
+    ) {
         let (slot, hash) = match &point {
             Point::Specific { slot, hash } => (*slot, *hash),
             Point::Origin => return,
@@ -232,7 +265,11 @@ impl LeiosStore {
         }
         inner.max_slot = inner.max_slot.max(slot);
         if first_injection {
-            Self::push_notification(&mut inner, LeiosNotification::BlockTxsOffer { point });
+            Self::push_notification(
+                &mut inner,
+                source,
+                LeiosNotification::BlockTxsOffer { point },
+            );
         }
         self.bump_version(&mut inner);
     }
@@ -240,18 +277,27 @@ impl LeiosStore {
     /// Convenience for the producer path: inject a complete ordered body
     /// list, indices `0..bodies.len()`. Equivalent to constructing a
     /// `BTreeMap` and calling `inject_block_txs`.
-    pub fn inject_block_txs_full(&self, point: Point, bodies: Vec<Vec<u8>>) {
+    pub fn inject_block_txs_full(
+        &self,
+        point: Point,
+        bodies: Vec<Vec<u8>>,
+        source: Option<PeerId>,
+    ) {
         let indexed: BTreeMap<u32, Vec<u8>> = bodies
             .into_iter()
             .enumerate()
             .map(|(i, b)| (i as u32, b))
             .collect();
-        self.inject_block_txs(point, indexed);
+        self.inject_block_txs(point, indexed, source);
     }
 
     /// Inject votes for inline re-serving. Generates a `Votes` notification
     /// carrying the full vote bodies (deduped by `(slot, eb_hash, voter_id)`).
-    pub fn inject_votes(&self, votes: Vec<Vote>) {
+    ///
+    /// `source` tags the notification with the peer that sent these
+    /// votes (`None` if locally produced); `serve_leios_notify` filters
+    /// the connection's stream to skip echoing them back.
+    pub fn inject_votes(&self, votes: Vec<Vote>, source: Option<PeerId>) {
         if votes.is_empty() {
             return;
         }
@@ -263,7 +309,7 @@ impl LeiosStore {
                 .insert((vote.slot, vote.eb_hash, vote.voter_id), vote.clone());
         }
         inner.max_slot = inner.max_slot.max(max_in_batch);
-        Self::push_notification(&mut inner, LeiosNotification::Votes { votes });
+        Self::push_notification(&mut inner, source, LeiosNotification::Votes { votes });
         self.bump_version(&mut inner);
     }
 
@@ -280,7 +326,12 @@ impl LeiosStore {
     /// `BlockTxsOffer` notification so this node advertises tx availability
     /// to downstream peers — that's how epidemic flooding extends beyond
     /// the original producer.
-    pub fn record_eb_manifest(&self, point: Point, tx_hashes: Vec<[u8; 32]>) {
+    pub fn record_eb_manifest(
+        &self,
+        point: Point,
+        tx_hashes: Vec<[u8; 32]>,
+        source: Option<PeerId>,
+    ) {
         let (slot, hash) = match &point {
             Point::Specific { slot, hash } => (*slot, *hash),
             Point::Origin => return,
@@ -290,7 +341,11 @@ impl LeiosStore {
             .eb_tx_hashes
             .insert(BlockKey { slot, hash }, tx_hashes);
         inner.max_slot = inner.max_slot.max(slot);
-        Self::push_notification(&mut inner, LeiosNotification::BlockTxsOffer { point });
+        Self::push_notification(
+            &mut inner,
+            source,
+            LeiosNotification::BlockTxsOffer { point },
+        );
         self.bump_version(&mut inner);
     }
 
@@ -348,14 +403,14 @@ impl LeiosStore {
         // Each ring-buffer slot costs sizeof(LeiosNotification);
         // `notification_heap_bytes` adds only the extra `Votes` payload
         // on top, so the enum size isn't counted twice.
-        let per_entry_overhead = std::mem::size_of::<LeiosNotification>();
+        let per_entry_overhead = std::mem::size_of::<NotificationEntry>();
         let notifications_bytes_estimate = inner.notifications.len() * per_entry_overhead
             + inner
                 .notifications
                 .iter()
-                .map(notification_heap_bytes)
+                .map(|e| notification_heap_bytes(&e.notification))
                 .sum::<usize>()
-            + std::mem::size_of::<VecDeque<LeiosNotification>>();
+            + std::mem::size_of::<VecDeque<NotificationEntry>>();
         LeiosStoreStats {
             blocks: inner.blocks.len(),
             block_txs: inner.block_txs.len(),
@@ -376,7 +431,7 @@ impl LeiosStore {
     /// increments stay aligned with the logical position of items the
     /// caller actually consumes.  Index `0` still means "from the
     /// earliest still-retained notification".
-    pub fn notifications_after(&self, after: &mut usize) -> Vec<LeiosNotification> {
+    pub fn notifications_after(&self, after: &mut usize) -> Vec<NotificationEntry> {
         let inner = self.inner.lock().unwrap();
         if *after < inner.notifications_pruned_count {
             *after = inner.notifications_pruned_count;
@@ -442,10 +497,17 @@ impl LeiosStore {
     /// already past retention has to be filtered at the source.  Caller
     /// must have updated `max_slot` already so the cutoff reflects the
     /// post-inject state.
-    fn push_notification(inner: &mut LeiosStoreInner, notif: LeiosNotification) {
+    fn push_notification(
+        inner: &mut LeiosStoreInner,
+        source: Option<PeerId>,
+        notif: LeiosNotification,
+    ) {
         let cutoff = inner.max_slot.saturating_sub(inner.retention_slots);
         if cutoff == 0 || !notification_evictable(&notif, cutoff) {
-            inner.notifications.push_back(notif);
+            inner.notifications.push_back(NotificationEntry {
+                source,
+                notification: notif,
+            });
         }
     }
 
@@ -467,7 +529,7 @@ impl LeiosStore {
             // front — `pop_front` is both safe and O(evicted) without
             // scanning the whole deque.
             while let Some(front) = inner.notifications.front() {
-                if notification_evictable(front, cutoff) {
+                if notification_evictable(&front.notification, cutoff) {
                     inner.notifications.pop_front();
                     inner.notifications_pruned_count += 1;
                 } else {
@@ -533,12 +595,11 @@ impl LeiosStore {
 /// evicted from the slot-window-pruned maps and can never be served.
 fn notification_evictable(n: &LeiosNotification, cutoff: u64) -> bool {
     match n {
-        LeiosNotification::BlockOffer { point } | LeiosNotification::BlockTxsOffer { point } => {
-            match point {
-                Point::Specific { slot, .. } => *slot < cutoff,
-                Point::Origin => true,
-            }
-        }
+        LeiosNotification::BlockOffer { point, .. }
+        | LeiosNotification::BlockTxsOffer { point } => match point {
+            Point::Specific { slot, .. } => *slot < cutoff,
+            Point::Origin => true,
+        },
         LeiosNotification::Votes { votes } => votes.iter().all(|v| v.slot < cutoff),
     }
 }
@@ -567,7 +628,7 @@ mod tests {
         let block = vec![1, 2, 3, 4];
         let point = Point::Specific { slot: 42, hash };
 
-        store.inject_block(point, block.clone());
+        store.inject_block(point, block.clone(), None);
 
         assert_eq!(store.get_block(42, &hash), Some(block));
         assert_eq!(store.get_block(99, &hash), None);
@@ -580,7 +641,7 @@ mod tests {
         let txs = vec![vec![10, 20], vec![30, 40]];
         let point = Point::Specific { slot: 42, hash };
 
-        store.inject_block_txs_full(point, txs.clone());
+        store.inject_block_txs_full(point, txs.clone(), None);
 
         let bitmap = bitmap::select_all(txs.len() as u32);
         assert_eq!(store.get_block_txs(42, &hash, &bitmap), Some(txs));
@@ -594,7 +655,7 @@ mod tests {
         let txs = vec![vec![10, 20], vec![30, 40]];
         let point = Point::Specific { slot: 42, hash };
 
-        store.inject_block_txs_full(point, txs);
+        store.inject_block_txs_full(point, txs, None);
 
         let bitmap = BTreeMap::new();
         assert_eq!(store.get_block_txs(42, &hash, &bitmap), Some(Vec::new()));
@@ -607,7 +668,7 @@ mod tests {
         let txs: Vec<Vec<u8>> = (0..70u8).map(|i| vec![i]).collect();
         let point = Point::Specific { slot: 1, hash };
 
-        store.inject_block_txs_full(point, txs);
+        store.inject_block_txs_full(point, txs, None);
 
         // Pick out-of-order indices spanning two segments to check ordering.
         let bitmap = bitmap::from_indices(&[65, 0, 63]);
@@ -640,7 +701,7 @@ mod tests {
             slot: 5,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point, vec![h0, h1, h2]);
+        store.record_eb_manifest(point, vec![h0, h1, h2], None);
 
         // Bitmap selects indices 0 and 2.
         let bitmap = bitmap::from_indices(&[0, 2]);
@@ -662,7 +723,7 @@ mod tests {
             slot: 7,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point, vec![h0, h1]);
+        store.record_eb_manifest(point, vec![h0, h1], None);
 
         let bitmap = bitmap::from_indices(&[0, 1]);
         let got = store.get_block_txs(7, &eb_hash, &bitmap).unwrap();
@@ -680,10 +741,10 @@ mod tests {
             slot: 1,
             hash: eb_hash,
         };
-        store.inject_block_txs_full(point.clone(), vec![vec![100u8], vec![200u8]]);
+        store.inject_block_txs_full(point.clone(), vec![vec![100u8], vec![200u8]], None);
         // Pretend we also have manifest hashes (would normally be set
         // separately; here we make sure the block_txs path wins).
-        store.record_eb_manifest(point, vec![[0; 32], [0; 32]]);
+        store.record_eb_manifest(point, vec![[0; 32], [0; 32]], None);
 
         let bitmap = bitmap::from_indices(&[0, 1]);
         let got = store.get_block_txs(1, &eb_hash, &bitmap).unwrap();
@@ -704,7 +765,7 @@ mod tests {
         let hash = [0xAA; 32];
         let txs = vec![vec![1u8], vec![2u8]];
         let point = Point::Specific { slot: 5, hash };
-        store.inject_block_txs_full(point, txs);
+        store.inject_block_txs_full(point, txs, None);
 
         // Bit 99 is past the available 2 txs; should be silently dropped.
         let bitmap = bitmap::from_indices(&[0, 99]);
@@ -722,13 +783,13 @@ mod tests {
         let mut first = BTreeMap::new();
         first.insert(0u32, vec![0xA0]);
         first.insert(2u32, vec![0xA2]);
-        store.inject_block_txs(point.clone(), first);
+        store.inject_block_txs(point.clone(), first, None);
 
         // Second batch: indices 1 and 3.
         let mut second = BTreeMap::new();
         second.insert(1u32, vec![0xA1]);
         second.insert(3u32, vec![0xA3]);
-        store.inject_block_txs(point, second);
+        store.inject_block_txs(point, second, None);
 
         let bitmap = bitmap::from_indices(&[0, 1, 2, 3]);
         let got = store.get_block_txs(7, &hash, &bitmap).unwrap();
@@ -743,17 +804,17 @@ mod tests {
 
         let mut a = BTreeMap::new();
         a.insert(0u32, vec![0xB0]);
-        store.inject_block_txs(point.clone(), a);
+        store.inject_block_txs(point.clone(), a, None);
 
         let mut b = BTreeMap::new();
         b.insert(1u32, vec![0xB1]);
-        store.inject_block_txs(point, b);
+        store.inject_block_txs(point, b, None);
 
         // One BlockTxsOffer notification, not two.
         let txs_offers = store
             .notifications_after(&mut 0)
             .into_iter()
-            .filter(|n| matches!(n, LeiosNotification::BlockTxsOffer { .. }))
+            .filter(|e| matches!(e.notification, LeiosNotification::BlockTxsOffer { .. }))
             .count();
         assert_eq!(txs_offers, 1);
     }
@@ -766,12 +827,12 @@ mod tests {
 
         let mut a = BTreeMap::new();
         a.insert(0u32, vec![0xC0]);
-        store.inject_block_txs(point.clone(), a);
+        store.inject_block_txs(point.clone(), a, None);
 
         // Conflicting body for index 0 — first writer wins.
         let mut b = BTreeMap::new();
         b.insert(0u32, vec![0xFF]);
-        store.inject_block_txs(point, b);
+        store.inject_block_txs(point, b, None);
 
         let bitmap = bitmap::from_indices(&[0]);
         let got = store.get_block_txs(9, &hash, &bitmap).unwrap();
@@ -794,12 +855,12 @@ mod tests {
             slot: 11,
             hash: eb_hash,
         };
-        store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         let mut partial = BTreeMap::new();
         partial.insert(0u32, vec![0xD0]);
         partial.insert(2u32, vec![0xD2]);
-        store.inject_block_txs(point, partial);
+        store.inject_block_txs(point, partial, None);
 
         let bitmap = bitmap::from_indices(&[0, 1, 2]);
         let got = store.get_block_txs(11, &eb_hash, &bitmap).unwrap();
@@ -815,7 +876,7 @@ mod tests {
             hash: eb_hash,
         };
         let manifest = vec![[0xAA; 32], [0xBB; 32]];
-        store.record_eb_manifest(point, manifest.clone());
+        store.record_eb_manifest(point, manifest.clone(), None);
 
         assert_eq!(store.get_eb_manifest(13, &eb_hash), Some(manifest));
         assert_eq!(store.get_eb_manifest(99, &eb_hash), None);
@@ -834,16 +895,39 @@ mod tests {
     #[test]
     fn inject_votes_stores_and_dedups() {
         let (store, _rx) = LeiosStore::new(100);
-        store.inject_votes(vec![vote(100, 1), vote(101, 2)]);
+        store.inject_votes(vec![vote(100, 1), vote(101, 2)], None);
         assert_eq!(store.stats().votes, 2);
 
         // Re-injecting the same votes is idempotent (keyed by slot/eb/voter).
-        store.inject_votes(vec![vote(100, 1)]);
+        store.inject_votes(vec![vote(100, 1)], None);
         assert_eq!(store.stats().votes, 2);
 
         // A distinct voter at the same slot is a new entry.
-        store.inject_votes(vec![vote(100, 3)]);
+        store.inject_votes(vec![vote(100, 3)], None);
         assert_eq!(store.stats().votes, 3);
+    }
+
+    #[test]
+    fn inject_block_records_eb_size_and_source_on_notification() {
+        // The BlockOffer the responder emits must carry the real EB
+        // byte length (so the peer can pre-size its fetch buffer; the
+        // dev relay rejects 0-sized offers) and the source peer (so
+        // serve_leios_notify can skip echoing the offer back).
+        let (store, _rx) = LeiosStore::new(100);
+        let point = Point::Specific {
+            slot: 5,
+            hash: [0x11; 32],
+        };
+        let block = vec![0xAB; 1234];
+        store.inject_block(point, block, Some(PeerId(7)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source, Some(PeerId(7)));
+        match entries[0].notification {
+            LeiosNotification::BlockOffer { eb_size, .. } => assert_eq!(eb_size, 1234),
+            ref other => panic!("expected BlockOffer, got {other:?}"),
+        }
     }
 
     #[test]
@@ -852,18 +936,22 @@ mod tests {
         let hash = [0u8; 32];
         let point = Point::Specific { slot: 1, hash };
 
-        store.inject_block(point, vec![0x01]);
-        store.inject_votes(vec![vote(10, 2)]);
+        store.inject_block(point, vec![0x01], None);
+        store.inject_votes(vec![vote(10, 2)], None);
 
         let all = store.notifications_after(&mut 0);
         assert_eq!(all.len(), 2);
         assert!(matches!(
-            all[0],
+            all[0].notification,
             LeiosNotification::BlockOffer {
-                point: Point::Specific { slot: 1, .. }
+                point: Point::Specific { slot: 1, .. },
+                ..
             }
         ));
-        assert!(matches!(all[1], LeiosNotification::Votes { .. }));
+        assert!(matches!(
+            all[1].notification,
+            LeiosNotification::Votes { .. }
+        ));
 
         let after_first = store.notifications_after(&mut 1);
         assert_eq!(after_first.len(), 1);
@@ -879,13 +967,14 @@ mod tests {
 
         // Inject votes/blocks at slot 1, then advance the clock far past
         // the retention window. Old entries must be evicted.
-        store.inject_votes(vec![vote(1, 0xAA)]);
+        store.inject_votes(vec![vote(1, 0xAA)], None);
         store.inject_block(
             Point::Specific {
                 slot: 1,
                 hash: [0x11; 32],
             },
             vec![0xB0],
+            None,
         );
         store.record_eb_manifest(
             Point::Specific {
@@ -893,6 +982,7 @@ mod tests {
                 hash: [0x22; 32],
             },
             vec![[0xCC; 32]],
+            None,
         );
 
         // Pre-eviction sanity.
@@ -907,6 +997,7 @@ mod tests {
                 hash: [0x33; 32],
             },
             vec![0xD0],
+            None,
         );
 
         assert_eq!(
@@ -941,6 +1032,7 @@ mod tests {
                 hash: [0x11; 32],
             },
             vec![0xB0],
+            None,
         );
         store.inject_block(
             Point::Specific {
@@ -948,8 +1040,9 @@ mod tests {
                 hash: [0x12; 32],
             },
             vec![0xB1],
+            None,
         );
-        store.inject_votes(vec![vote(1, 0xAA)]);
+        store.inject_votes(vec![vote(1, 0xAA)], None);
         assert_eq!(store.notification_count(), 3);
 
         // Inject a recent block to push max_slot past the retention
@@ -961,6 +1054,7 @@ mod tests {
                 hash: [0x33; 32],
             },
             vec![0xD0],
+            None,
         );
 
         // The slot-1 notifications were front-pruned; only the
@@ -972,9 +1066,10 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(cursor, 3, "cursor advanced past the prune frontier");
         assert!(matches!(
-            pending[0],
+            pending[0].notification,
             LeiosNotification::BlockOffer {
-                point: Point::Specific { slot: 100, .. }
+                point: Point::Specific { slot: 100, .. },
+                ..
             }
         ));
     }
@@ -992,6 +1087,7 @@ mod tests {
                 hash: [0xAA; 32],
             },
             vec![0xA0],
+            None,
         );
         let count_before = store.notification_count();
 
@@ -1001,6 +1097,7 @@ mod tests {
                 hash: [0xBB; 32],
             },
             vec![0xB0],
+            None,
         );
 
         // Notification was filtered at the source — count unchanged.
@@ -1016,6 +1113,7 @@ mod tests {
                 hash: [0u8; 32],
             },
             vec![0xA0],
+            None,
         );
 
         // Overshoot: only 1 notification exists (next-write index 1)
@@ -1057,6 +1155,7 @@ mod tests {
                 hash: [0x11; 32],
             },
             vec![0xB0],
+            None,
         );
         assert!(store.get_block(1, &[0x11; 32]).is_some());
 
@@ -1080,7 +1179,7 @@ mod tests {
             let mut hash = [0u8; 32];
             hash[0] = (i & 0xff) as u8;
             hash[1] = ((i >> 8) & 0xff) as u8;
-            store.inject_block(Point::Specific { slot: 10, hash }, vec![0xAB]);
+            store.inject_block(Point::Specific { slot: 10, hash }, vec![0xAB], None);
         }
 
         let stats = store.stats();
@@ -1119,13 +1218,14 @@ mod tests {
         let (store, _rx) = LeiosStore::new_with_retention(10_000, None, RETENTION, 0);
 
         for slot in 0..SLOTS {
-            store.inject_votes(vec![vote(slot, (slot & 0xFFFF) as u16)]);
+            store.inject_votes(vec![vote(slot, (slot & 0xFFFF) as u16)], None);
             store.inject_block(
                 Point::Specific {
                     slot,
                     hash: [0xCC; 32],
                 },
                 vec![0xDD; 100],
+                None,
             );
             // Wall-clock leads inject slots; exercises tick_slot eviction.
             if slot % 7 == 0 {
@@ -1176,6 +1276,7 @@ mod tests {
                 hash: [0u8; 32],
             },
             vec![0x01],
+            None,
         );
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), sub.changed()).await;
