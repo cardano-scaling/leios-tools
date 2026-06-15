@@ -348,7 +348,10 @@ impl LeiosConsensus {
                 LeiosEffect::RecordLeiosEbManifest { point, tx_hashes } => {
                     let _ = self
                         .commands
-                        .send(NetworkCommand::RecordLeiosEbManifest { point, tx_hashes })
+                        .send(NetworkCommand::RecordLeiosEbManifest {
+                            point,
+                            tx_hashes: TxId::vec_from_consensus_txid(tx_hashes)
+                        })
                         .await;
                 }
                 LeiosEffect::EmitVote {
@@ -880,7 +883,6 @@ mod tests {
 
     use net_core::protocols::leios_fetch::bitmap as bitmap_helpers;
     use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId};
-    use crate::consensus;
 
     /// Build the manifest bytes that the producer would emit for a given
     /// list of 32-byte tx hashes at `slot`. Returns the same CBOR shape as
@@ -1061,14 +1063,6 @@ mod tests {
     }
 
     // -- Response matching tests --------------------------------------------
-
-    /// Helper: hash a tx body the same way `tx_from_received_bytes` does.
-    fn body_hash(body: &[u8]) -> [u8; 32] {
-        let h = blake2b_simd::Params::new().hash_length(32).hash(body);
-        let mut buf = [0u8; 32];
-        buf.copy_from_slice(h.as_bytes());
-        buf
-    }
 
     #[tokio::test]
     async fn match_eb_tx_response_partial_emits_remaining_bitmap() {

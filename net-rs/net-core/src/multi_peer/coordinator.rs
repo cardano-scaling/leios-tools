@@ -863,7 +863,7 @@ impl Coordinator {
 
             NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, TxId::vec_from_consensus_txid(tx_hashes));
+                    store.record_eb_manifest(point, tx_hashes);
                 }
             }
 
@@ -2573,8 +2573,8 @@ mod tests {
             .send(NetworkCommand::RecordLeiosEbManifest {
                 point,
                 tx_hashes: vec![
-                    shared_consensus::mempool::TxId::new_with_slice(&h0),
-                    shared_consensus::mempool::TxId::new_with_slice(&h1)
+                    TxId::new_with_array(h0),
+                    TxId::new_with_array(h1)
                 ],
             })
             .await

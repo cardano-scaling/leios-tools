@@ -3,10 +3,9 @@
 use std::collections::BTreeMap;
 
 use std::time::Duration;
-use shared_consensus::mempool::TxId;
 use crate::peer::{ConnectionMode, PeerId};
 use crate::protocols::peersharing::PeerAddress;
-use crate::protocols::txsubmission::{PendingTx, TxBody};
+use crate::protocols::txsubmission::{PendingTx, TxId, TxBody};
 use crate::types::{BlockBody, Point, Tip, Vote, WrappedHeader};
 
 // ---------------------------------------------------------------------------
