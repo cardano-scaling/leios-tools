@@ -917,13 +917,12 @@ impl PraosState {
             body_bytes = body_bytes_len,
             body_field_count = parsed_body.field_count,
             tx_count = parsed_body.tx_count,
-            body_cert_eb_slot = ?parsed_body.leios_cert.as_ref().map(|c| c.eb_slot),
+            body_cert_eb_slot = ?parsed_body.eb_certificate.as_ref().map(|c| c.eb_slot),
             body_cert_eb_hash = %parsed_body
-                .leios_cert
+                .eb_certificate
                 .as_ref()
                 .map(|c| hex32(&c.eb_hash))
                 .unwrap_or_else(|| "none".to_string()),
-            body_tx_refs = ?parsed_body.tx_references_count,
             eb_announced = %announced_eb_hash
                 .as_ref()
                 .map(hex32)
@@ -2102,16 +2101,17 @@ pub struct ParsedBodyInfo {
     pub tx_count: u32,
     /// Outer `merged_block` array length, e.g. 5 for the Conway+ base
     /// `[header, tx_bodies, tx_witness_sets, aux_data_set,
-    /// invalid_transactions]` and 7 when both CIP-0164 Leios trailing
-    /// extensions are present.
+    /// invalid_transactions]` and 7 when both Leios+Peras trailing
+    /// optional slots are present (per cardano-ledger leios-prototype
+    /// `DijkstraBlockBody`).
     pub field_count: u32,
-    /// Summary of the `leios_certificate` decoded from the body's first
-    /// trailing optional field, when present and shape-matches the
-    /// CIP-0164 CDDL `[slot_no, eb_hash, signers, agg_sig]`.
-    pub leios_cert: Option<LeiosCertSummary>,
-    /// Number of `tx_references` in the body's `eb_tx_references`
-    /// trailing optional, when present and decodes as `[* tx_reference]`.
-    pub tx_references_count: Option<u32>,
+    /// Summary of the `eb_certificate` decoded from the body's first
+    /// trailing optional field (CIP-0164 `leios_certificate`), when
+    /// present and shape-matches the CDDL
+    /// `[slot_no, endorser_block_hash, signers : bytes,
+    /// aggregated_signature : leios_bls_signature]` where
+    /// `leios_bls_signature = bytes .size 48`.
+    pub eb_certificate: Option<LeiosCertSummary>,
 }
 
 /// Compact view of a CIP-0164 `leios_certificate` extracted from a
