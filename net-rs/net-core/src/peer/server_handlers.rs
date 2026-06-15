@@ -850,7 +850,7 @@ mod tests {
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
         let event = leios_notify::request_next(&mut client).await.unwrap();
         match event {
-            leios_notify::LeiosNotifyEvent::BlockOffer { point } => {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                 assert_eq!(
                     point,
                     Point::Specific {
@@ -858,6 +858,10 @@ mod tests {
                         hash: [0xAB; 32]
                     }
                 );
+                // The server emits offers with eb_size=0 since the store
+                // doesn't track per-EB byte sizes (see
+                // `notification_to_ln_msg` above).
+                assert_eq!(eb_size, 0);
             }
             other => panic!("expected BlockOffer, got {other:?}"),
         }

@@ -818,7 +818,7 @@ impl PraosState {
         header_bytes: Vec<u8>,
         body_bytes: Vec<u8>,
         parsed_header: Option<ParsedHeaderInfo>,
-        tx_count: u32,
+        parsed_body: ParsedBodyInfo,
     ) -> Vec<PraosEffect> {
         use crate::behaviour::BehaviourOutcome;
         let appended: Vec<PraosEffect> =
@@ -844,13 +844,14 @@ impl PraosState {
             return fx;
         }
         let header_was_parsed = parsed_header.is_some();
-        let (block_no, slot, prev_hash, announced_eb_hash, certified_eb, issuer) =
+        let (block_no, slot, prev_hash, announced_eb_hash, announced_eb_size, certified_eb, issuer) =
             match parsed_header {
                 Some(info) => (
                     info.block_number,
                     info.slot,
                     info.prev_hash,
                     info.announced_eb_hash,
+                    info.announced_eb_size,
                     info.certified_eb,
                     info.issuer,
                 ),
@@ -861,6 +862,7 @@ impl PraosState {
                         _ => 0,
                     },
                     self.chain_tree.prev_hash(&hash),
+                    None,
                     None,
                     false,
                     Vec::new(),
@@ -882,11 +884,12 @@ impl PraosState {
                 block_no,
                 slot,
                 prev_hash,
-                tx_count,
+                parsed_body.tx_count,
                 announced_eb_hash,
                 certified_eb,
             );
         }
+        let body_bytes_len = body_bytes.len();
         self.block_cache.insert(
             hash,
             CachedBlock {
@@ -899,10 +902,33 @@ impl PraosState {
                 certified_eb,
             },
         );
+        // The block-receive line carries enough of the cached block's
+        // shape for an operator to read off the producer's body-path
+        // decision: `body_bytes` and `tx_count` describe the inline
+        // portion; `eb_announced` / `eb_announced_bytes` describe the
+        // fresh-EB portion; `eb_certified` is the CIP-0164 header bit.
+        // `eb_announced_bytes` cross-references the LeiosNotify gossip
+        // log so the two streams pair by hash and size.
         info!(
             node_id = %self.node_id,
             %point,
             block_no,
+            body_bytes = body_bytes_len,
+            body_field_count = parsed_body.field_count,
+            tx_count = parsed_body.tx_count,
+            body_cert_eb_slot = ?parsed_body.leios_cert.as_ref().map(|c| c.eb_slot),
+            body_cert_eb_hash = %parsed_body
+                .leios_cert
+                .as_ref()
+                .map(|c| hex32(&c.eb_hash))
+                .unwrap_or_else(|| "none".to_string()),
+            body_tx_refs = ?parsed_body.tx_references_count,
+            eb_announced = %announced_eb_hash
+                .as_ref()
+                .map(hex32)
+                .unwrap_or_else(|| "none".to_string()),
+            eb_announced_bytes = announced_eb_size.unwrap_or(0),
+            eb_certified = certified_eb,
             "block received and cached"
         );
         self.try_switch_and_execute_internal(hash, &mut fx);
@@ -2008,6 +2034,19 @@ impl PraosState {
     }
 }
 
+/// Encode a 32-byte hash as a 64-char lowercase hex string with one
+/// allocation.  Used on the per-block log path; avoids the per-byte
+/// `format!` allocations the naive `iter().map(format!).collect()`
+/// pattern incurs.
+fn hex32(h: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
+    for b in h {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
 // ---------------------------------------------------------------------------
 // Logical header info passed in by the I/O wrapper
 // ---------------------------------------------------------------------------
@@ -2021,6 +2060,13 @@ pub struct ParsedHeaderInfo {
     pub prev_hash: Option<[u8; 32]>,
     /// EB hash this header announces, if any (CIP-0164 Leios extension).
     pub announced_eb_hash: Option<[u8; 32]>,
+    /// Byte size of the announced EB as declared in the header
+    /// (CIP-0164 Leios extension: the `eb_size` field on the
+    /// `announced_eb` tuple).  `None` when `announced_eb_hash` is
+    /// `None`.  Useful as operator telemetry to compare against
+    /// `rb_body_max_bytes` and confirm the producer overflowed
+    /// correctly.
+    pub announced_eb_size: Option<u32>,
     /// CIP-0164 Leios extension: whether this RB certifies the parent
     /// RB's announced EB.  The EB being certified is the parent's
     /// `announced_eb_hash`; chain context (`parent_announced_eb`)
@@ -2034,6 +2080,49 @@ pub struct ParsedHeaderInfo {
     /// that slot.  Empty bytes disable detection for this header
     /// (preserves behavior for callers that haven't populated it).
     pub issuer: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Logical body info passed in by the I/O wrapper
+// ---------------------------------------------------------------------------
+
+/// Body metadata extracted from a wire-format Praos `merged_block` by
+/// the I/O wrapper.  `Default::default()` represents "couldn't parse"
+/// (opaque or Byron blocks): every field is zero / None.
+///
+/// Grouping these fields into one struct keeps `on_block_received`'s
+/// signature stable as the CIP-0164 prototype evolves — adding a new
+/// per-block telemetry field is a struct edit, not a signature change
+/// rippling through every test and adapter.
+#[derive(Debug, Clone, Default)]
+pub struct ParsedBodyInfo {
+    /// Number of transaction bodies in the Praos body (`merged_block`'s
+    /// `transaction_bodies` array length).
+    pub tx_count: u32,
+    /// Outer `merged_block` array length, e.g. 5 for the Conway+ base
+    /// `[header, tx_bodies, tx_witness_sets, aux_data_set,
+    /// invalid_transactions]` and 7 when both CIP-0164 Leios trailing
+    /// extensions are present.
+    pub field_count: u32,
+    /// Summary of the `leios_certificate` decoded from the body's first
+    /// trailing optional field, when present and shape-matches the
+    /// CIP-0164 CDDL `[slot_no, eb_hash, signers, agg_sig]`.
+    pub leios_cert: Option<LeiosCertSummary>,
+    /// Number of `tx_references` in the body's `eb_tx_references`
+    /// trailing optional, when present and decodes as `[* tx_reference]`.
+    pub tx_references_count: Option<u32>,
+}
+
+/// Compact view of a CIP-0164 `leios_certificate` extracted from a
+/// Praos block body.  Carries just enough to cross-reference against
+/// earlier header-side `announced_eb` records; the heavy bitfield and
+/// BLS aggregate signature stay in the raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeiosCertSummary {
+    /// `slot_no` field of the CIP-0164 `leios_certificate`.
+    pub eb_slot: u64,
+    /// `endorser_block_hash` field of the CIP-0164 `leios_certificate`.
+    pub eb_hash: [u8; 32],
 }
 
 #[cfg(test)]
@@ -2054,6 +2143,7 @@ mod tests {
     fn hi(block_number: u64, slot: u64, prev_seed: Option<u8>) -> ParsedHeaderInfo {
         ParsedHeaderInfo {
             announced_eb_hash: None,
+            announced_eb_size: None,
             block_number,
             slot,
             prev_hash: prev_seed.map(h),
@@ -2201,6 +2291,7 @@ mod tests {
             slot,
             prev_hash: None,
             announced_eb_hash: None,
+            announced_eb_size: None,
             certified_eb: false,
             issuer: vec![issuer; 4],
         }
@@ -2214,14 +2305,14 @@ mod tests {
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
-            0,
+            ParsedBodyInfo::default(),
         );
         s.on_block_received(
             pt(100, 2),
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
-            0,
+            ParsedBodyInfo::default(),
         );
         assert!(s.is_equivocating_slot(100));
         assert!(s.equivocating_rb_slots.contains(&100));
@@ -2237,14 +2328,14 @@ mod tests {
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
-            0,
+            ParsedBodyInfo::default(),
         );
         s.on_block_received(
             pt(100, 2),
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xBB)),
-            0,
+            ParsedBodyInfo::default(),
         );
         assert!(!s.is_equivocating_slot(100));
     }
@@ -2254,8 +2345,8 @@ mod tests {
         // Pre-issuer callers (issuer = Vec::new()) get no-op detection,
         // preserving legacy behavior.
         let mut s = fresh();
-        s.on_block_received(pt(100, 1), vec![], vec![], Some(hi(100, 100, None)), 0);
-        s.on_block_received(pt(100, 2), vec![], vec![], Some(hi(100, 100, None)), 0);
+        s.on_block_received(pt(100, 1), vec![], vec![], Some(hi(100, 100, None)), ParsedBodyInfo::default());
+        s.on_block_received(pt(100, 2), vec![], vec![], Some(hi(100, 100, None)), ParsedBodyInfo::default());
         assert!(!s.is_equivocating_slot(100));
     }
 
@@ -2269,7 +2360,7 @@ mod tests {
             vec![],
             vec![],
             Some(parsed_with_issuer(100, 0xAA)),
-            0,
+            ParsedBodyInfo::default(),
         );
         // Second on_block_received with the same hash is a no-op via
         // the block_cache dedup; manually probe the tracker invariant.
@@ -2526,14 +2617,14 @@ mod tests {
     fn on_block_received_dedups_via_cache() {
         let mut s = fresh();
         install_validated_block(&mut s, 100, 1, 1, None);
-        let fx = s.on_block_received(pt(100, 1), vec![], vec![], None, 0);
+        let fx = s.on_block_received(pt(100, 1), vec![], vec![], None, ParsedBodyInfo::default());
         assert!(fx.is_empty());
     }
 
     #[test]
     fn on_block_received_origin_point_is_noop() {
         let mut s = fresh();
-        let fx = s.on_block_received(Point::Origin, vec![], vec![], None, 0);
+        let fx = s.on_block_received(Point::Origin, vec![], vec![], None, ParsedBodyInfo::default());
         assert!(fx.is_empty());
     }
 
@@ -2545,7 +2636,7 @@ mod tests {
             vec![0xAA],
             vec![0xBB],
             Some(hi(1, 100, None)),
-            0,
+            ParsedBodyInfo::default(),
         );
         assert!(fx
             .iter()
@@ -2557,7 +2648,7 @@ mod tests {
     #[test]
     fn on_block_received_opaque_header_no_chain_tree_insert() {
         let mut s = fresh();
-        let fx = s.on_block_received(pt(100, 1), vec![0xAA], vec![0xBB], None, 0);
+        let fx = s.on_block_received(pt(100, 1), vec![0xAA], vec![0xBB], None, ParsedBodyInfo::default());
         // No chain_tree entry, so try_switch fails silently.
         assert!(fx.is_empty());
         assert!(s.chain_tree.block_number(&h(1)).is_none());
