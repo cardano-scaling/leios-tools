@@ -155,8 +155,9 @@ impl BlockBody {
     /// `ParsedBodyInfo::default()` (i.e. all zeros / `None`) on any
     /// decode failure (Byron, opaque test fixtures, malformed CBOR).
     ///
-    /// CIP-0164's CDDL for `merged_block` (with the Conway-era
-    /// `invalid_transactions` field that the CIP text currently omits):
+    /// Effective `merged_block` layout on the dev-relay leios-prototype
+    /// chain (cardano-ledger `DijkstraBlockBody`); both trailing slots
+    /// are always emitted via `encodeNullStrictMaybe`-style optionality:
     ///
     /// ```text
     /// merged_block = [
@@ -166,27 +167,34 @@ impl BlockBody {
     ///   auxiliary_data_set,
     ///   invalid_transactions,
     ///   ? eb_certificate,
-    ///   ? eb_tx_references,
+    ///   ? peras_cert,
     /// ]
     /// ```
     ///
-    /// Field-count mapping (per cardano-ledger leios-prototype's
-    /// `DijkstraBlockBody`, which always emits both trailing slots via
-    /// `encodeNullStrictMaybe`):
+    /// Field-count mapping:
     ///   5 — base Conway body, no Leios/Peras trailing slots
     ///   6 — first trailing slot present (`eb_certificate`)
     ///   7 — both trailing slots present (`eb_certificate` + `peras_cert`)
     ///
-    /// `eb_certificate` is `Some` iff the first trailing optional decodes
-    /// as the CIP-0164 `leios_certificate = [slot_no, endorser_block_hash
-    /// : hash32, signers : bytes, aggregated_signature : bytes .size 48]`.
-    /// Only `slot_no` and `endorser_block_hash` are surfaced; the bitfield
-    /// and BLS signature stay in the raw bytes. A null in this slot means
-    /// absent and is silently skipped.
+    /// Each trailing slot is parsed as one of three CBOR shapes:
+    ///   - `null` (`f6`) — absent.
+    ///   - `array(0)` (`80`) — unit placeholder: "the producer's on
+    ///     this branch but the cert encoding isn't implemented yet"
+    ///     (per Sebastian 2026-06-15). Counted via the corresponding
+    ///     `*_pending` flag on `ParsedBodyInfo`.
+    ///   - For `eb_certificate` only: a real `array(4)` cert, decoded
+    ///     by `try_decode_leios_cert` into `LeiosCertSummary`.
     ///
-    /// The second trailing slot (`peras_cert`) has an unknown CDDL shape;
-    /// this parser only accepts CBOR `null` there and treats any non-null
-    /// as a parse failure (surfaced via the BODY_PARSE_FAIL WARN).
+    /// `eb_certificate` is `Some` iff the first trailing optional
+    /// decodes as the CIP-0164 `leios_certificate = [slot_no,
+    /// endorser_block_hash : hash32, signers : bytes,
+    /// aggregated_signature : bytes .size 48]`. Only `slot_no` and
+    /// `endorser_block_hash` are surfaced; the bitfield and BLS
+    /// signature stay in the raw bytes.
+    ///
+    /// `peras_cert` has no known CDDL shape beyond `null` / `array(0)`;
+    /// anything else fails the body parse (surfaced via the
+    /// BODY_PARSE_FAIL_WARN with raw-byte hex prefix).
     pub fn praos_inspect(&self) -> ParsedBodyInfo {
         match self.try_praos_inspect() {
             Ok(info) => info,
@@ -436,8 +444,9 @@ impl<'a> minicbor::Decode<'a, ()> for BlockBody {
     }
 }
 
-/// Format up to `UNKNOWN_CERT_FIELD_PROBE_BYTES` of raw bytes as a
-/// lowercase hex string, or `"none"` when the slot wasn't captured.
+/// Format the given bytes as a lowercase hex string, or `"none"` when
+/// the caller passed `None`. The caller controls the slice length;
+/// `hex_prefix` itself imposes no cap.
 fn hex_prefix(bytes: Option<&[u8]>) -> String {
     use std::fmt::Write as _;
     match bytes {
