@@ -193,7 +193,12 @@ struct Coordinator {
     /// Receives NetworkCommand from the application.
     network_commands: mpsc::Receiver<NetworkCommand>,
 
-    /// Best known tip (for deduplication).
+    /// High-water mark of any peer's reported tip — informational only.
+    /// Updated when a `HeaderAnnounced`'s tip strictly exceeds the
+    /// current value; never lowered on rollback. Not used for chain
+    /// selection — that responsibility lives in Praos
+    /// (`shared_consensus::praos`), which drives `chain_store` mutations
+    /// via `NetworkCommand::InjectBlock` / `InjectRollback`.
     best_tip: Option<Tip>,
     /// Pending block fetch requests: point → peer that's fetching it.
     pending_fetches: HashMap<Point, PeerId>,
@@ -502,15 +507,17 @@ impl Coordinator {
                     self.sync_fragment_size(peer_id, len);
                 }
 
-                // If this peer's rollback lowers our best tip, update the
-                // best tip and the local chain store. This mirrors the
-                // prior behaviour but is no longer gated on forwarding.
-                if let Some(best) = &self.best_tip {
-                    if tip.block_no < best.block_no {
-                        self.best_tip = Some(tip.clone());
-                        self.chain_store.rollback_to(&point);
-                    }
-                }
+                // `best_tip` deliberately stays as the high-water mark — a
+                // peer rollback doesn't lower it (another peer may still be
+                // at the higher tip), and `chain_store` is not touched here.
+                // Praos owns chain selection: it consumes the forwarded
+                // `NetworkEvent::RolledBack` below, runs `on_peer_rolled_back`,
+                // and only emits `PraosEffect::InjectRollback` (→
+                // `NetworkCommand::InjectRollback` → `chain_store.rollback_to`)
+                // when its chain selector actually switches off the rolled-back
+                // chain. Direct mutation here (kept until 2026-06) racing with
+                // Praos could truncate `chain_store` even when Praos stays on
+                // a still-ahead peer's chain.
 
                 // Always forward (unless deduped) so consensus can retire
                 // headers from the peer's candidate chain.
@@ -2228,6 +2235,92 @@ mod tests {
         assert!(frag.contains(&p100));
         assert!(!frag.contains(&p101));
         assert!(!frag.contains(&p102));
+    }
+
+    /// A peer rollback below `best_tip` must NOT mutate `chain_store`.
+    /// Praos owns chain selection (`PraosEffect::InjectRollback` →
+    /// `NetworkCommand::InjectRollback` → `chain_store.rollback_to`);
+    /// the coordinator forwards `NetworkEvent::RolledBack` and leaves
+    /// the store alone so a single peer's rollback can't truncate a
+    /// chain that Praos still considers adopted.
+    #[tokio::test]
+    async fn peer_rollback_does_not_truncate_chain_store() {
+        let (peer_event_sender, peer_event_receiver) = mpsc::channel(256);
+        let (net_event_sender, _net_event_receiver) = mpsc::channel(64);
+        let (_net_cmd_sender, net_cmd_receiver) = mpsc::channel(64);
+        let (chain_store, _chain_rx) = ChainStore::new(100);
+
+        // Praos has already published two blocks to chain_store.
+        let p100 = Point::Specific {
+            slot: 100,
+            hash: [1u8; 32],
+        };
+        let p101 = Point::Specific {
+            slot: 101,
+            hash: [2u8; 32],
+        };
+        chain_store.append_block(
+            p100.clone(),
+            WrappedHeader::opaque(vec![0xA0]),
+            crate::types::BlockBody::opaque(vec![0xB0]),
+            100,
+        );
+        chain_store.append_block(
+            p101.clone(),
+            WrappedHeader::opaque(vec![0xA1]),
+            crate::types::BlockBody::opaque(vec![0xB1]),
+            101,
+        );
+        let adopted_tip_before = chain_store.tip();
+
+        let mut coordinator = Coordinator::new(
+            CoordinatorConfig::default(),
+            peer_event_sender,
+            peer_event_receiver,
+            net_event_sender,
+            net_cmd_receiver,
+            chain_store.clone(),
+            None,
+        );
+        let peer_a = PeerId(0);
+        insert_peer(&mut coordinator, peer_a, None);
+
+        // Peer reports its tip is at block 101 — sets best_tip to 101.
+        coordinator
+            .handle_peer_event(
+                peer_a,
+                PeerEvent::HeaderAnnounced {
+                    header: WrappedHeader::opaque(vec![0xA1]),
+                    tip: Tip {
+                        point: p101.clone(),
+                        block_no: 101,
+                    },
+                },
+            )
+            .await;
+
+        // Peer rolls back to p100 with a lower tip — would previously
+        // have triggered chain_store.rollback_to(p100).
+        coordinator
+            .handle_peer_event(
+                peer_a,
+                PeerEvent::RolledBack {
+                    point: p100.clone(),
+                    tip: Tip {
+                        point: p100.clone(),
+                        block_no: 100,
+                    },
+                },
+            )
+            .await;
+
+        // chain_store is untouched.
+        assert_eq!(
+            chain_store.tip(),
+            adopted_tip_before,
+            "coordinator-level rollback must not mutate chain_store"
+        );
+        assert_eq!(chain_store.stored_count(), 2, "blocks remain stored");
     }
 
     #[tokio::test]
