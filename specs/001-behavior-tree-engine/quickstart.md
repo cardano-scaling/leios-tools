@@ -25,8 +25,8 @@ Expected: tests pass, including —
 - a Selector root runs the honest fallback when the attack Sequence's condition is
   false, and switches to the attack branch once `cardano.current_slot >= env.trigger_slot`
   (SC-002);
-- every ticked node returns exactly one `NodeStatus` (FR-001);
-- malformed configs (unknown node type, dangling child, cyclic include, mistyped env
+- every ticked behaviour returns exactly one `Status` (FR-001);
+- malformed configs (unknown behaviour type, dangling child, cyclic include, mistyped env
   ref) are rejected at load with a precise error (SC-004);
 - two ticks of the same config + seed produce identical effect sequences (SC-003).
 
@@ -46,7 +46,7 @@ cargo run -p net-node -- \
 
 Expected (from `node0-events.jsonl` / logs):
 - before slot 50: honest behaviour, no equivocation events;
-- at the first tick with slot ≥ 50: the BT activates the configured `BehaviourSpec`
+- at the first tick with slot ≥ 50: the BT activates the configured `ActionSpec`
   and adversarial events appear (e.g. duplicate `RBGenerated` for the equivocator);
 - the loaded strategy name + revision are logged at startup (US1-1).
 

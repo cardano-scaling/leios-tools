@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Add a Behavior Tree (BT) engine to net-rs (and possibly sim-rs) that drives adversarial node behavior. Trees are described in TOML, ticked from the node's own slot updates, return SUCCESS/FAILURE/RUNNING, support composite nodes (Selector, Sequence, Parallel), Condition nodes, and Rust-implemented leaf Action nodes ('behaviors'). Configs carry a metadata block (incl. a reproducibility seed), an env parameter block, node definitions, and may include sub-behavior TOML files. A net-node can load a static config from the command line (MVP, top priority); a net-cluster coordinator can distribute and mutate configs and env parameters across a federation of adversarial net-nodes over a REST API. A later fuzzer feature will mutate env parameters and reproduce failure states."
+**Input**: User description: "Add a Behavior Tree (BT) engine to net-rs (and possibly sim-rs) that drives adversarial node behavior. Trees are described in TOML, ticked from the node's own slot updates, return SUCCESS/FAILURE/RUNNING, support composite nodes (Selector, Sequence, Parallel), Condition behaviours, and Rust-implemented leaf Action behaviours ('behaviors'). Configs carry a metadata block (incl. a reproducibility seed), an env parameter block, behaviour definitions, and may include sub-behavior TOML files. A net-node can load a static config from the command line (MVP, top priority); a net-cluster coordinator can distribute and mutate configs and env parameters across a federation of adversarial net-nodes over a REST API. A later fuzzer feature will mutate env parameters and reproduce failure states."
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -41,7 +41,7 @@ leaf actions, with no REST API or coordinator involved.
 3. **Given** a Selector root with an attack sequence and an honest fallback, **When**
    the attack sequence's conditions are not met, **Then** the honest fallback action
    runs and the root reports SUCCESS.
-4. **Given** a slot advance, **When** the engine ticks the tree, **Then** every node
+4. **Given** a slot advance, **When** the engine ticks the tree, **Then** every behaviour
    ticked returns exactly one of SUCCESS, FAILURE, or RUNNING to its parent.
 5. **Given** a malformed or self-contradictory config (unknown node type, missing
    child reference, cyclic include), **When** the node starts, **Then** it refuses to
@@ -165,22 +165,22 @@ single-file config.
 #### Behavior tree model & execution
 
 - **FR-001**: The system MUST execute a behavior tree by ticking from the root toward
-  the leaves, where each ticked node returns exactly one status: SUCCESS, FAILURE, or
+  the leaves, where each ticked behaviour returns exactly one status: SUCCESS, FAILURE, or
   RUNNING.
 - **FR-002**: A tick MUST be driven by the node's own slot progression: when the node
   detects the chain has advanced to a new slot, exactly one tick MUST be delivered to
   the root for that advance.
-- **FR-003**: The system MUST support composite node types: a Selector (succeeds when
+- **FR-003**: The system MUST support composite behaviour types: a Selector (succeeds when
   any child succeeds, tries children in order), a Sequence (succeeds only when all
   children succeed in order), and a Parallel (ticks multiple children with a
   configurable success policy, e.g., "All").
-- **FR-004**: The system MUST support Condition nodes that evaluate a boolean expression
+- **FR-004**: The system MUST support Condition behaviours that evaluate a boolean expression
   over available `env` parameters and node `state` and return SUCCESS or FAILURE.
-- **FR-005**: The system MUST support leaf Action nodes ("behaviors") that are
+- **FR-005**: The system MUST support leaf Action behaviours ("behaviors") that are
   implemented in code by engineers and registered by a type name referenced from the
   TOML (e.g., a network-shaping action, a transaction-generator action, an honest-node
   action).
-- **FR-006**: A node returning RUNNING MUST be re-entered on subsequent ticks according
+- **FR-006**: A behaviour returning RUNNING MUST be re-entered on subsequent ticks according
   to documented, consistent semantics so that multi-tick actions can make progress.
 
 #### Configuration format
@@ -194,15 +194,15 @@ single-file config.
   randomized decisions made during execution are deterministic and reproducible for a
   given seed (a prerequisite for the later fuzzer feature).
 - **FR-010**: A configuration MUST contain an `env` block of named parameters that are
-  readable by Condition and Action nodes and writable by both configuration files and
+  readable by Condition and Action behaviours and writable by both configuration files and
   the REST API.
 - **FR-011**: Node `state` (e.g., current slot, current epoch, mempool transaction
-  count, connected peers) MUST be readable by Condition and Action nodes.
+  count, connected peers) MUST be readable by Condition and Action behaviours.
 - **FR-012**: Configurations MUST support including other configuration files by relative
   path to compose reusable sub-behaviors, with well-defined merge and parameter-
   precedence rules and cycle detection.
 - **FR-013**: The system MUST validate a configuration before activating it, rejecting
-  unknown node types, dangling child/include references, cycles, and references to
+  unknown behaviour types, dangling child/include references, cycles, and references to
   missing or mistyped `env`/`state` fields, with precise error messages.
 
 #### Single-node operation (MVP)
@@ -245,18 +245,18 @@ single-file config.
 ### Key Entities
 
 - **Behavior Configuration**: A TOML document defining a strategy — metadata (name,
-  revision), a seed, an `env` parameter block, the set of nodes, and optional includes.
+  revision), a seed, an `env` parameter block, the set of behaviours, and optional includes.
 - **Behavior Tree**: The effective tree assembled from a root configuration plus any
-  included sub-behaviors; rooted at a single node; ticked as a unit.
-- **Node**: A tree element with a type and an id. Composite nodes (Selector, Sequence,
-  Parallel) reference children by id; Condition nodes hold an expression; Action nodes
-  ("behaviors") reference a registered behavior type and its parameters.
-- **Node Status**: The result of ticking a node — SUCCESS, FAILURE, or RUNNING.
+  included sub-behaviors; rooted at a single behaviour; ticked as a unit.
+- **Behaviour**: A tree element with a type and an id. Composite behaviours (Selector, Sequence,
+  Parallel) reference children by id; Condition behaviours hold an expression; Action behaviours
+  reference a registered action type (from the action registry) and its parameters.
+- **Status**: The result of ticking a behaviour — SUCCESS, FAILURE, or RUNNING.
 - **Env (Dynamic Parameters)**: Named, externally mutable values (via config or REST)
   read by conditions and actions, e.g., trigger slot, target peer, flood rate, shaping
   delay/drop.
-- **Node State (Native Chain State)**: Read-only-to-the-tree metrics owned by the node,
-  e.g., current slot, current epoch, mempool transaction count, connected peers.
+- **Chain State (Native Chain State)**: Read-only-to-the-tree metrics owned by the
+  net-node, e.g., current slot, current epoch, mempool transaction count, connected peers.
 - **Behavior (Leaf Action)**: A code-implemented unit registered under a type name that
   performs an adversarial or honest effect when ticked and reports a status.
 - **Coordinator**: The federation controller that distributes configurations and
@@ -292,8 +292,8 @@ single-file config.
   designed to be reusable by `sim-rs` later, but no `sim-rs` integration is delivered
   here.
 - **MVP behavior catalog (confirmed)**: The MVP (US1) delivers the engine, the TOML
-  format, slot-driven ticking, the composite and condition node types, and a small set of
-  functional leaf behaviors — an `HonestNodeAction` plus one or two simple, real
+  format, slot-driven ticking, the composite and condition behaviour types, and a small set of
+  functional leaf behaviors — an `HonestAction` plus one or two simple, real
   adversarial actions (e.g., a basic transaction generator and/or a logging network-shape
   action) — sufficient to demonstrate an honest-vs-adversarial switch end-to-end. The full
   catalog of production-grade adversarial behaviors (real packet shaping, invalid-Plutus
@@ -306,7 +306,7 @@ single-file config.
   for adversarial behaviour. The existing `Behaviour` hook trait (and its
   `BehaviourOutcome`/`DecisionOutcome`/`CompositeBehaviour` flow control) is **replaced**
   by a BT whose slot tick produces a typed `Directives` value; mechanical actuators read
-  it. The `BehaviourSpec` registry is **retained** as the leaf-action lookup. See
+  it. The `ActionSpec` registry is **retained** as the leaf-action lookup. See
   `design/unified-tick-model.md` for the full decision record.
 - **Control plane (confirmed)**: the MVP control plane is **static config only**
   (`--config` / `--behaviour-tree`). The REST control surface (US2/US3) and runtime env

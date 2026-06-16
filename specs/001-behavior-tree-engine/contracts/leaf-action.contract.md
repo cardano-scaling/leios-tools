@@ -1,6 +1,6 @@
-# Contract: Node / Leaf-Action Interface (Model B)
+# Contract: Behaviour / Leaf-Action Interface (Model B)
 
-The internal Rust contract every BT node honors, and the recipe engineers follow to add
+The internal Rust contract every behaviour honors, and the recipe engineers follow to add
 a new leaf action. Implements **Model B** — see
 [`../design/unified-tick-model.md`](../design/unified-tick-model.md). The old
 `Behaviour` hook trait is removed; leaves are **directive contributors**.
@@ -11,14 +11,14 @@ a new leaf action. Implements **Model B** — see
 /// Tick the tree once (one slot advance). Pure w.r.t. I/O: reads env + read-only chain
 /// state, mutates internal Running memory, returns a status and the slot's Directives.
 /// No clock reads, no thread_rng. This is the ONLY place decisions are made.
-fn tick(&mut self, ctx: &TickCtx) -> (NodeStatus, Directives);
+fn tick(&mut self, ctx: &TickCtx) -> (Status, Directives);
 ```
 
 Guarantees:
-- Returns exactly one `NodeStatus` (FR-001).
+- Returns exactly one `Status` (FR-001).
 - Produces exactly one `Directives` for the slot, accumulated from the active leaves in
   deterministic order (parent policy order; `BTreeMap`/`BTreeSet` for map-derived order).
-- A node that returned `Running` is resumed per the composite memory rules
+- A behaviour that returned `Running` is resumed per the composite memory rules
   (data-model.md §"State transitions").
 - The engine performs **no I/O and makes no consensus calls** — it only computes
   `Directives`. The net-node wrapper applies + publishes it; the consensus/I-O actuators
@@ -30,11 +30,11 @@ Guarantees:
 trait LeafAction {
     /// When this leaf's branch is active this tick, write its slice of the slot's
     /// Directives and return a status. Contributes only; never branches on consensus.
-    fn contribute(&mut self, ctx: &TickCtx, out: &mut Directives) -> NodeStatus;
+    fn contribute(&mut self, ctx: &TickCtx, out: &mut Directives) -> Status;
 }
 ```
 
-**House rule (gating style)**: all flow gating lives in explicit `Condition` nodes; a
+**House rule (gating style)**: all flow gating lives in explicit `Condition` behaviours; a
 leaf returns `Running` the whole time it is meant to be active and does **not** branch
 its status on `env`/`state`. ("Stop when the mempool is full" is a `Condition` guarding
 the action, not a leaf that inspects state and returns `Success`.) The honest fallback
@@ -62,7 +62,7 @@ field, the tick reconciles deterministically — the actuator never combines.
 
 ## Determinism (non-negotiable — inherited from shared-consensus)
 
-- No `Instant::now()` / `SystemTime::now()` in node logic; drive timing off
+- No `Instant::now()` / `SystemTime::now()` in behaviour logic; drive timing off
   `ctx.state.current_slot`.
 - Randomness only via the config `seed` threaded through `blake2b_simd`
   (`child_seed`/`seed_from_node_id`); never `thread_rng`/`from_entropy`.

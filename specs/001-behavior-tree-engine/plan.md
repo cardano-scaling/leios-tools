@@ -8,8 +8,8 @@
 
 Add a Behavior Tree (BT) engine that is the **single abstraction** for adversarial
 node behaviour. Trees are described in TOML, ticked once per slot advance from the
-node's existing `SlotClock`, and return `Success`/`Failure`/`Running`. Composite nodes
-(`Selector`, `Sequence`, `Parallel`) and `Condition` nodes gate leaf `Action` nodes.
+node's existing `SlotClock`, and return `Success`/`Failure`/`Running`. Composite behaviours
+(`Selector`, `Sequence`, `Parallel`) and `Condition` behaviours gate leaf `Action` behaviours.
 
 **Architecture decision (Model B — see
 [`design/unified-tick-model.md`](./design/unified-tick-model.md))**: we replace the
@@ -30,7 +30,7 @@ This deletes the hook-return flow control (`BehaviourOutcome`/`DecisionOutcome`)
 structure becomes the sole locus of control; `Directives` is the typed seam between
 "decided" and "applied."
 
-**What we keep**: the **registry** (`BehaviourSpec`-style tagged enum + `build(kind,
+**What we keep**: the **registry** (`ActionSpec`-style tagged enum + `build(kind,
 params, seed)`) is retained as the **leaf-action lookup**, so a BT config names a leaf
 by `kind` and we know how to construct its directive contributor. The shipped attack
 mechanics (equivocation variant routing, reorg, inbound reset, vote abstention, T22
@@ -102,12 +102,12 @@ Constitution v1.0.0 principles applied to this plan:
   manual-confirmation candidates are live multi-node cluster demos (quickstart.md);
   those will be recorded and human-confirmed, not asserted silently.
 - **III. Adversarial Red-Team Focus**: PASS. The feature *is* adversarial tooling.
-  Tests will include malformed/hostile configs (unknown node types, dangling child
+  Tests will include malformed/hostile configs (unknown behaviour types, dangling child
   refs, cyclic includes, mistyped env refs), slot-skip and RUNNING-across-ticks edge
   cases, and reproduced honest→adversarial transitions.
-- **IV. Idiomatic Rust**: PASS. Retains the `BehaviourSpec` registry idiom for leaf
+- **IV. Idiomatic Rust**: PASS. Retains the `ActionSpec` registry idiom for leaf
   lookup; replaces dynamic-dispatch hooks with a plain `Directives` value (simpler to
-  reason about); type-driven node model; `Result` for validation; documented `unsafe` =
+  reason about); type-driven behaviour model; `Result` for validation; documented `unsafe` =
   none expected. Follows net-rs `CLAUDE.md` "no panics / simplicity over concision". The
   Model B refactor **removes** code (the hook trait, outcome types, `CompositeBehaviour`,
   `invoke_hook`); each removal is guarded by first porting its behaviour's existing tests
@@ -144,17 +144,17 @@ specs/001-behavior-tree-engine/
 
 ```text
 shared-rs/consensus/src/behaviour/
-├── mod.rs                 # REMOVE Behaviour trait + BehaviourOutcome/DecisionOutcome + CompositeBehaviour
-├── registry.rs            # KEEP as leaf-action lookup: kind -> build(kind, params, seed) -> contributor
+├── mod.rs                 # REMOVE old Behaviour hook trait + BehaviourOutcome/DecisionOutcome + CompositeBehaviour
+├── registry.rs            # KEEP as the ACTION REGISTRY (BehaviourSpec -> ActionSpec): kind -> build(kind, params, seed) -> LeafAction
 ├── tree/                  # NEW: behaviour-tree engine (sans-IO, deterministic)
-│   ├── mod.rs             # BehaviourTree, tick() -> (NodeStatus, Directives), NodeStatus
-│   ├── node.rs            # NodeKind: Selector | Sequence | Parallel | Condition | Action
-│   ├── config.rs          # BtConfig: [metadata] (name, revision, seed), [env], [[nodes]], includes
+│   ├── mod.rs             # BehaviourTree, tick() -> (Status, Directives), Status
+│   ├── behaviour.rs       # Behaviour { id, kind }; BehaviourKind: Selector | Sequence | Parallel | Condition | Action
+│   ├── config.rs          # BtConfig: [run] (name/seed/root), [env]/[env.<owner>], [behaviours.<id>], includes; uniform deep-merge
 │   ├── env.rs             # DynamicEnv + EnvHandle (Arc<RwLock<DynamicEnv>>); NativeChainState; TickCtx
 │   ├── condition.rs       # minimal expression: comparisons, and/or/not, membership
-│   ├── directives.rs      # Directives + VotePolicy/OutboundDirective/TxFilterPolicy (the seam)
+│   ├── directives.rs      # Directives { praos, leios, mempool } (the seam)
 │   └── actions.rs         # leaf actions as directive contributors (honest + re-homed catalogue)
-└── behaviours/            # re-expressed as directive contributors (mechanics re-homed, not redesigned)
+└── actions/               # the action catalogue (formerly behaviours/): re-homed as directive contributors
 
 shared-rs/consensus/src/
 ├── leios.rs               # vote/EB paths read Directives policy fields (no decide_vote/on_* hooks)
@@ -180,7 +180,7 @@ net-rs/net-cluster/
 ```
 
 **Structure Decision**: Add the BT engine as a `tree/` submodule of the existing
-`behaviour/` subsystem (it reuses the `BehaviourSpec` registry for leaf lookup and the
+`behaviour/` subsystem (it reuses the `ActionSpec` registry for leaf lookup and the
 crate's determinism rules), and **delete** the `Behaviour` hook trait, its outcome
 types, and `CompositeBehaviour`. The consensus state machines (`leios`/`praos`/`mempool`)
 and the I/O actuators (`production.rs`, `server_handlers.rs`) read `Directives` instead
@@ -191,11 +191,11 @@ sim-rs-ready" decision and Model B's "single decision path" goal.
 ## Design Approach (high level)
 
 1. **Engine core (`tree/`)** — pure data + `tick(&mut self, ctx: &TickCtx) ->
-   (NodeStatus, Directives)`. The tick is the *only* place decisions happen: it
+   (Status, Directives)`. The tick is the *only* place decisions happen: it
    evaluates `Condition`s over env/state, resolves the active leaf set per composite
    semantics, and accumulates each active leaf's contribution into one `Directives`
    value. Composites carry `Running` memory across ticks. Validation
-   (`BtConfig::validate`) rejects unknown node types, dangling child/include refs,
+   (`BtConfig::validate`) rejects unknown behaviour types, dangling child/include refs,
    cycles, and mistyped env/state refs *before* activation. Seeded RNG from `[metadata]
    seed`.
 2. **Directives seam (`directives.rs`)** — a plain value the tick emits and the actuators
@@ -205,9 +205,15 @@ sim-rs-ready" decision and Model B's "single decision path" goal.
    deleted hook trait. Each sub-struct is owned by its actuator domain; a behaviour that
    reuses an existing capability never edits it. Conflicts between two active leaves on
    the same field are reconciled deterministically in the tick — never by the actuator.
-3. **Config + includes** — `BtConfig` parses the `[metadata]`/`[env]`/`[[nodes]]` shape
-   from the spec's example, plus `includes = ["a.toml", ...]` resolved relative to the
-   including file, with cycle detection and root-overrides-include precedence.
+3. **Config + includes** — `BtConfig` parses a `[run]` block (`name`/`seed`/`root`),
+   `[env]`/`[env.<owner>]`, optional `[metadata.<owner>]`, and id-keyed `[behaviours.<id>]`
+   (or `[behaviours.<owner>.<local>]`) tables, plus `includes = ["a.toml", ...]`. Composition is
+   **one uniform rule** (research D11–D13): deep-merge the document and its includes
+   table-by-table, closer-to-root wins (no per-section special handling). The only
+   singleton is `[run]` (validated: exactly one, root-owned `seed`+`root`); `[env]` overlay
+   precedence is load → `--set` → later REST; a referenced-but-undefined `env.X` is a hard
+   load-time error; env is owner-namespaced (`[env.<owner>]`) with a shared tier; cycles
+   detected. See the canonical worked example in `contracts/bt-config.schema.md`.
 4. **Env guarding** — `DynamicEnv` behind `EnvHandle = Arc<std::sync::RwLock<DynamicEnv>>`
    (std, not tokio — sans-IO). The tick reads it; a later REST surface writes it. For the
    MVP env is set at startup. `NativeChainState` is rebuilt each tick and passed by `&`
@@ -219,7 +225,7 @@ sim-rs-ready" decision and Model B's "single decision path" goal.
    file**; adding a behaviour touches no other behaviour. Leaves are looked up by `kind`
    via the retained registry (`build`). MVP leaves: an honest contributor (empty
    directives) plus 1–2 re-homed real ones (e.g. `rb-header-equivocator`, `lazy-voter`).
-   **Gating house rule**: all flow gating lives in explicit `Condition` nodes; a leaf
+   **Gating house rule**: all flow gating lives in explicit `Condition` behaviours; a leaf
    returns `Running` while active and never branches its status on `env`/`state` (the
    honest fallback returns `Success`).
 6. **Actuators read Directives (no hooks)** — the net-node wrapper applies `Directives`

@@ -13,12 +13,12 @@ structs the user supplied; names are aligned to the existing crate conventions.
 
 ## Core status & seam types
 
-### `NodeStatus`
+### `Status`
 The standard BT return value (spec FR-001).
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeStatus { Success, Failure, Running }
+pub enum Status { Success, Failure, Running }
 ```
 
 ### `Directives` — the decision→actuation seam
@@ -93,19 +93,26 @@ actuator in `net-core/server_handlers.rs` can read the latest without locking th
 ### `DynamicEnv` + `EnvHandle`
 Externally mutable parameters (config + REST), read by conditions/actions (FR-010).
 
+`DynamicEnv` is the **resolved env**: a name-keyed map of typed values, not a fixed
+struct. A map (rather than named fields) is what lets arbitrary params (`trigger_slot`,
+`packet_delay`, …) be declared in TOML, overlaid across includes, addressed generically
+by REST `:key`, and type-checked by name at load. Keys may be dotted to namespace
+behaviour-owned params (`network_shape.packet_delay`) vs. shared ones (`trigger_slot`)
+— see `contracts/bt-config.schema.md` §"Env ownership tiers".
+
 ```rust
-#[derive(Debug, Clone)]
-pub struct DynamicEnv {
-    pub trigger_slot: u64,            // Cardano slot to trigger on
-    pub trigger_mempool_tx_count: u64 // mempool tx-count threshold to trigger on
-    // extended as new strategies need parameters; every field is REST-addressable
-}
+#[derive(Debug, Clone, Default)]
+pub struct DynamicEnv(pub std::collections::BTreeMap<String, EnvValue>);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvValue { U64(u64), F64(f64), Str(String), Bool(bool) }
 
 pub type EnvHandle = std::sync::Arc<std::sync::RwLock<DynamicEnv>>;
 ```
 
-`EnvHandle` mirrors the existing `BehaviourHandle = Arc<Mutex<…>>` pattern. The REST
-handler takes the write lock briefly (never across an `.await`).
+`EnvHandle` mirrors the existing `BehaviourHandle = Arc<Mutex<…>>` pattern. A (deferred)
+REST handler takes the write lock briefly (never across an `.await`) to overwrite one
+key's resolved value; a type-mismatched write is rejected, leaving the env unchanged.
 
 ### `NativeChainState`
 Read-only-to-the-tree node metrics, rebuilt each tick and passed by `&` (FR-011, D5).
@@ -127,12 +134,12 @@ The effective, validated tree, ticked as a unit.
 
 ```rust
 pub struct BehaviourTree {
-    name: String,
-    revision: u32,
-    seed: u64,
-    root: NodeId,
-    nodes: BTreeMap<NodeId, Node>,   // id -> node (ordered, deterministic)
-    // per-node Running memory lives here or inside Node, see tick() contract
+    name: String,                    // from [run].name
+    seed: u64,                       // from [run].seed (the one reproducibility seed)
+    root: BehaviourId,                    // from [run].root
+    behaviours: BTreeMap<BehaviourId, Behaviour>,  // id -> behaviour (ordered, deterministic; ids may be dotted)
+    // per-behaviour Running memory lives here or inside Behaviour, see tick() contract
+    // (per-module `revision` lives in module metadata, not at tree level)
 }
 
 /// Everything a tick may read. Pure inputs — no I/O, no clock.
@@ -145,21 +152,21 @@ pub struct TickCtx<'a> {
 impl BehaviourTree {
     /// The ONLY place decisions happen. Evaluates conditions, resolves the active
     /// leaf set, accumulates each active leaf's contribution into one Directives.
-    pub fn tick(&mut self, ctx: &TickCtx) -> (NodeStatus, Directives);
+    pub fn tick(&mut self, ctx: &TickCtx) -> (Status, Directives);
 }
 ```
 
-`NodeId` is the string `id` from TOML (newtype wrapper for clarity).
+`BehaviourId` is the string `id` from TOML (newtype wrapper for clarity).
 
-### `Node` and `NodeKind`
+### `Behaviour` and `BehaviourKind`
 
 ```rust
-pub struct Node { pub id: NodeId, pub kind: NodeKind }
+pub struct Behaviour { pub id: BehaviourId, pub kind: BehaviourKind }
 
-pub enum NodeKind {
-    Selector { children: Vec<NodeId> },                 // first child to succeed
-    Sequence { children: Vec<NodeId> },                 // all children in order
-    Parallel { success_policy: SuccessPolicy, children: Vec<NodeId> },
+pub enum BehaviourKind {
+    Selector { children: Vec<BehaviourId> },                 // first child to succeed
+    Sequence { children: Vec<BehaviourId> },                 // all children in order
+    Parallel { success_policy: SuccessPolicy, children: Vec<BehaviourId> },
     Condition { expr: ConditionExpr },                  // -> Success/Failure
     Action(ActionKind),                                 // leaf; contributes to Directives when active
 }
@@ -184,26 +191,27 @@ demo actions. Leaf `kind`s are looked up via the retained registry (`build`).
 pub enum ActionKind {
     /// Contributes nothing — leaves Directives at default (honest). Fallback branch.
     Honest,
-    /// A re-homed catalogue behaviour, identified by its registry `kind` + params.
+    /// A re-homed catalogue action, identified by its action-registry `kind` + params.
     /// `contribute()` writes the leaf's slice of Directives (e.g. the equivocator sets
     /// `out.praos.production = Equivocate{ways}` and `out.praos.outbound =
     /// EquivocateRouting{..}`).
-    Behaviour(BehaviourSpec),
+    Registered(ActionSpec),
     // Future: NetworkShape { target, delay_ms, drop_rate }, TxGenerator { … }, …
 }
 
 // Each leaf contributes to the running Directives; no return-value flow control.
 trait LeafAction {
-    fn contribute(&mut self, ctx: &TickCtx, out: &mut Directives) -> NodeStatus;
+    fn contribute(&mut self, ctx: &TickCtx, out: &mut Directives) -> Status;
 }
 ```
 
-`Behaviour(BehaviourSpec)` reuses `shared_consensus::behaviour::registry::BehaviourSpec`
-as the **leaf-kind discriminant + parameter carrier**. Each shipped adversary
+`Registered(ActionSpec)` reuses the renamed registry (formerly `BehaviourSpec`, now
+`shared_consensus::behaviour::registry::ActionSpec` — the **action registry**) as the
+**action-kind discriminant + parameter carrier**. Each shipped adversary
 (`rb-header-equivocator`, `lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`) is
 re-expressed as a `LeafAction` whose `contribute` sets the matching `Directives` fields.
 This is the "keep registration, re-home mechanics" decision (D2 / Model B). Composition
-that used to be `BehaviourSpec::Composite` is now expressed by the BT structure itself
+that used to be `ActionSpec::Composite` is now expressed by the BT structure itself
 (`Parallel`/`Sequence`).
 
 ### `ConditionExpr`
@@ -221,42 +229,56 @@ pub enum CompareOp { Ge, Gt, Le, Lt, Eq, Ne }
 pub enum ValueRef { Env(String), Chain(String), LitU64(u64), LitStr(String) }
 ```
 
-Validation: every `Env(name)` must exist in `[env]`; every `Chain(name)` must be a
-known `NativeChainState` field; type mismatches (string vs. u64) are load-time errors.
+Validation: every `Env(name)` must resolve in the merged `[env]` (an undefined reference
+is a hard load-time error); every `Chain(name)` must be a known `NativeChainState` field;
+type mismatches (string vs. u64) are load-time errors.
 
 ## Configuration (TOML → types)
 
 ### `BtConfig`
-The on-disk form (matches the spec's example; see `contracts/bt-config.schema.md`).
+The on-disk form (see `contracts/bt-config.schema.md` for the full schema, composition
+rule, and the canonical worked example). The whole document is keyed tables; the run's
+identity + entry live in a top-level `[run]` block; behaviours are id-keyed
+(`[behaviours.<id>]`, or `[behaviours.<owner>.<local>]` for a multi-behaviour module); env
+keys may be owner-namespaced (D11).
 
 ```rust
 pub struct BtConfig {
-    pub metadata: Metadata,          // name, revision, seed
-    pub env: BTreeMap<String, EnvValue>,
-    pub nodes: Vec<RawNode>,         // [[nodes]] entries
-    pub includes: Vec<String>,       // relative paths to sub-behaviour TOMLs
+    pub run: Option<Run>,                         // exactly one resolved; supplied by the root
+    pub env: BTreeMap<String, EnvValue>,          // dotted keys: shared `x` or owner `owner.x`
+    pub behaviours: BTreeMap<BehaviourId, RawBehaviour>,    // [behaviours.<id>] (BehaviourId may be dotted)
+    pub metadata: BTreeMap<String, ModuleMeta>,   // optional per-owner docs
+    pub includes: Vec<String>,                    // relative paths to sub-behaviour TOMLs
 }
-pub struct Metadata { pub name: String, pub revision: u32, pub seed: u64 }
+pub struct Run { pub name: String, pub seed: u64, pub root: BehaviourId }
+pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
 ```
 
-- `BtConfig::load(path)` resolves `includes` relative to `path`, detects cycles, merges
-  (root overrides include for same-id nodes / same env key), then `validate()`s and
-  compiles to `BehaviourTree`.
+- `BtConfig::load(path)` resolves `includes` relative to `path` by a **single uniform
+  rule** (D13): deep-merge the document and its includes table-by-table, closer-to-root
+  wins (no per-section special handling). It detects cycles (behaviour graph + include graph),
+  then `validate()`s and compiles to `BehaviourTree`.
 - `EnvValue` is a small typed union (`U64`/`F64`/`Str`/`Bool`) so conditions can
   type-check references.
 
 ## Validation rules (spec FR-013) — all enforced at load, before activation
 
-1. Exactly one root; `root` (or first node) must resolve to a defined node.
-2. Every `children` / include reference resolves to a defined node / readable file.
-3. No cycles in the node graph or the include graph.
-4. Every node `type` is known; `Parallel` requires a valid `success_policy`.
-5. Every `Condition` references only declared `[env]` keys and known chain-state fields,
-   with matching types.
-6. Every `Action` resolves to a known leaf via the registry (e.g. a `Behaviour` action's
-   `spec` deserialises into a known `BehaviourSpec` `kind`) and its `contribute` maps to
-   representable `Directives` fields.
-7. `[metadata]` has a `seed` (reproducibility, FR-009).
+1. Exactly one resolved `[run]` carrying `seed` and `root`; `run.root` names a defined
+   behaviour (that behaviour is the root). `[run]` set in an included fragment is flagged (lint).
+2. Every `children` / include reference resolves to a defined behaviour / readable file.
+3. No cycles in the behaviour graph or the include graph.
+4. Every behaviour `type` is known; `Parallel` requires a valid `success_policy`.
+5. Every `Condition` references only env keys present in the merged `[env]` and known
+   chain-state fields, with matching types. A **referenced-but-undefined `env.X` is an
+   error** (D13).
+6. Every `Action` resolves to a known action via the registry (e.g. an `Action`
+   behaviour's `spec` deserialises into a known `ActionSpec` `kind`) and its `contribute`
+   maps to representable `Directives` fields.
+7. `run.seed` is present (reproducibility, FR-009) and root-owned.
+
+Note: a same-id behaviour or env key across files is **not** an error — it deep-merges
+(closer-to-root wins), the same overlay rule as every other key. Authors namespace by
+owner (`[behaviours.<owner>...]`, `[env.<owner>]`) to avoid unintended collisions.
 
 Failures return a precise `Result::Err` with the offending id/path/field; the node
 refuses to start (US1 scenario 5) or the REST replace is rejected while the prior tree
@@ -266,8 +288,8 @@ stays active (US2 scenario 3/4).
 
 ```text
 BtConfig --load/validate--> BehaviourTree
-BehaviourTree.nodes[id] = Node{ kind }
-NodeKind::Action(Behaviour(spec)) --registry build(kind)--> LeafAction
+BehaviourTree.behaviours[id] = Behaviour{ kind }
+BehaviourKind::Action(Registered(spec)) --action registry build(kind)--> LeafAction
 tick(ctx) --accumulates contribute()--> Directives
 net-node main loop --apply_directives--> leios/praos/mempool state (vote policy, tx filter, …)
 net-node main loop --publish--> Directives snapshot (arc-swap/watch)
@@ -276,9 +298,9 @@ EnvHandle <--writes-- net-node REST handler (DEFERRED / post-MVP, Docker)
 NativeChainState <--built each tick from-- slot_clock + mempool (net-node main loop)
 ```
 
-## State transitions (per node, across ticks)
+## State transitions (per behaviour, across ticks)
 
-- A composite holds at most one "running child index"; cleared when the node next
+- A composite holds at most one "running child index"; cleared when the behaviour next
   resolves to `Success`/`Failure`.
 - The whole-tree effect is the `Directives` produced this tick. Because the actuators
   are pure reads of the latest `Directives`, a leaf that stops being active simply stops

@@ -115,7 +115,7 @@ reason about — leaving the BT as the sole decider.
 
 ### What we keep
 
-- **The registry** (`BehaviourSpec`-style tagged enum + `build(kind, params, seed)`):
+- **The registry** (`ActionSpec`-style tagged enum + `build(kind, params, seed)`):
   retained as the **leaf-action lookup** so a BT config can name a leaf by `kind` and we
   know how to construct its directive contributor. This is the "keep registration" goal.
 - **The shipped attack mechanics** (equivocation variant routing, reorg, inbound reset,
@@ -141,7 +141,7 @@ A subtle but important rule about *who owns what*:
 
 - **A behaviour owns its config + logic + tests, in one file.** Its params struct (with
   its own `#[derive(Deserialize)]`), its `contribute()`, and its `#[cfg(test)]` block all
-  live together; the registry (`BehaviourSpec` variant + `build(kind, params, seed)`) is
+  live together; the registry (`ActionSpec` variant + `build(kind, params, seed)`) is
   the "find the leaf by name, let it parse its own params" lookup. Adding a behaviour =
   add a file + register its `kind`, with **zero edits to any other behaviour's config**.
 - **An actuator owns its directive.** The `Directives` seam is indexed by *actuation
@@ -179,12 +179,32 @@ reconciliation.
 *actuator* with its directive (sub-)struct. Behaviour ⇄ config+logic (encapsulated, one
 file). Actuator ⇄ directive (shared, reconciled in the tick).
 
+## Related config-composition decisions
+
+The config format and multi-file composition are settled in companion decisions (kept out
+of this record to keep it focused on the tick/`Directives` architecture):
+
+- **D11** — keyed tables throughout, owner-grouped with one consistent owner word across
+  `[metadata.<owner>]`/`[env.<owner>]`/`[behaviours.<owner>...]`; the run's `name`/`seed`/`root`
+  live in a top-level `[run]` block.
+- **D12** — parameters live in `[env]`/`[env.<owner>]`, referenced by name, with a
+  load→CLI→REST overlay precedence ladder.
+- **D13** — **one uniform composition rule**: deep-merge the document + its includes,
+  closer-to-root wins (no per-section special handling). `[run]` is the only singleton
+  (validated: exactly one, root-owned `seed`+`root`); an undefined `env.X` reference is a
+  hard load-time error; env is owner-namespaced with a shared tier.
+
+See [`../research.md`](../research.md) D11–D13 and the **canonical worked example** in
+[`../contracts/bt-config.schema.md`](../contracts/bt-config.schema.md) §"Worked example"
+(a shared-env file + a reusable fragment + a root strategy that includes both and overlays
+a parameter).
+
 ## Gating style (house rule)
 
-Because a node's tick-time `NodeStatus` return can influence its parent's flow, there
+Because a behaviour's tick-time `Status` return can influence its parent's flow, there
 are two possible idioms. We adopt the first as the **house rule**, for readability:
 
-- **All gating lives in explicit `Condition` nodes; leaf actions return `Running` the
+- **All gating lives in explicit `Condition` behaviours; leaf actions return `Running` the
   whole time they are meant to be active** (the honest fallback leaf returns `Success`).
   Leaves do **not** branch their status on `env`/`state`. This keeps every flow decision
   in a named, readable `Condition`, so reasoning about "why is this branch active?" means
@@ -223,7 +243,7 @@ pub struct LeiosDirectives   { pub vote: VotePolicy }       // Honest | Abstain(
 pub struct MempoolDirectives { pub tx_filter: TxFilterPolicy } // None | ChecksumThreshold{..}
 
 // The whole tree: tick decides, returns status + the slot's directives.
-fn tick(&mut self, ctx: &TickCtx) -> (NodeStatus, Directives);
+fn tick(&mut self, ctx: &TickCtx) -> (Status, Directives);
 ```
 
 The net-node wrapper applies `Directives` to the state machines once per slot and

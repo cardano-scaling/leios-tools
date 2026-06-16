@@ -16,7 +16,7 @@ summarise it; that document is canonical.
 - **Decision**: Add the BT engine as a `tree/` submodule under the existing
   `shared-rs/consensus/src/behaviour/` subsystem.
 - **Rationale**: The confirmed scope is "shared crate, net-rs wired, sim-rs-ready." The
-  BT engine reuses the **registry** (`BehaviourSpec` + `build`) as its leaf-action
+  BT engine reuses the **registry** (`ActionSpec` + `build`) as its leaf-action
   lookup and the deterministic seeding helpers (`child_seed`, `seed_from_node_id`), and
   it inherits the crate's sans-IO/determinism rules, which the BT must obey anyway.
   sim-rs can later consume the same module unchanged. (Note: the `Behaviour` *trait* and
@@ -33,7 +33,7 @@ summarise it; that document is canonical.
 - **Decision**: The BT is the **single abstraction** for adversarial behaviour. We
   *delete* the `Behaviour` hook trait, `BehaviourOutcome`/`DecisionOutcome`,
   `CompositeBehaviour`, and the `invoke_hook` plumbing. The BT `tick(&TickCtx) ->
-  (NodeStatus, Directives)` is the **only** place decisions are made. It emits a typed
+  (Status, Directives)` is the **only** place decisions are made. It emits a typed
   `Directives` value that mechanical actuators read at their interception points.
 - **The key analysis — decision vs. actuation**: the existing hooks fire at two
   cadences (slot-tick: `rb_production_strategy`, `praos_reorg`, `drop_inbound_peers`,
@@ -48,7 +48,7 @@ summarise it; that document is canonical.
   priorities are readability and a single decision path. Model B removes the
   hook-return flow control and the `CompositeBehaviour` short-circuit — the two scattered
   places flow was decided — leaving the BT structure as the sole locus of control.
-- **What we keep**: the **registry** (`BehaviourSpec`-style tagged enum + `build(kind,
+- **What we keep**: the **registry** (`ActionSpec`-style tagged enum + `build(kind,
   params, seed)`) as the leaf-action lookup, and the shipped attack **mechanics**
   (equivocation variant routing, reorg, inbound reset, vote abstention, T22 filtering),
   re-homed as directive contributors — not redesigned. Determinism is preserved.
@@ -82,14 +82,14 @@ summarise it; that document is canonical.
 
 ## D4. RUNNING semantics across ticks, and the gating house rule
 
-- **Decision**: Composite nodes remember the index of a child that returned `Running` and
-  resume there on the next tick; a node that returned `Success`/`Failure` is re-evaluated
+- **Decision**: Composite behaviours remember the index of a child that returned `Running` and
+  resume there on the next tick; a behaviour that returned `Success`/`Failure` is re-evaluated
   from the top of its parent's policy next tick (spec FR-006). **Gating house rule**: all
-  flow gating lives in explicit `Condition` nodes; a leaf action returns `Running` the
+  flow gating lives in explicit `Condition` behaviours; a leaf action returns `Running` the
   whole time it is meant to be active and does **not** branch its status on `env`/`state`
   (the honest fallback leaf returns `Success`).
 - **Rationale**: The standard BT memory model is least surprising for multi-slot actions.
-  Confining gating to named `Condition` nodes keeps every flow decision in one readable
+  Confining gating to named `Condition` behaviours keeps every flow decision in one readable
   place — "why is this branch active?" is answered by reading conditions, never leaf
   internals. Fully deterministic given the seed and slot sequence.
 - **Feedback note**: the BT still reacts to the *consequences* of actions, but only by
@@ -209,6 +209,88 @@ summarise it; that document is canonical.
   magnet, couples unrelated domains); independent per-behaviour directive structs keyed by
   behaviour-prefixed names (rejected — fails when behaviours contend for one resource, and
   moves combination logic into actuators).
+
+## D11. Config form: keyed tables throughout, owner-grouped, explicit `[run].root`
+
+- **Decision**: Author everything as **keyed tables** (no arrays except `children` /
+  `includes`): behaviours as `[behaviours.<id>]` (the table key *is* the id), env as
+  `[env]` / `[env.<owner>]`, optional module docs as `[metadata.<owner>]`. A module uses
+  **one consistent owner word** across its `[metadata.<owner>]`, `[env.<owner>]`, and
+  `[behaviours.<owner>...]` (a multi-behaviour module nests as `[behaviours.<owner>.<local>]`). The
+  run's identity + entry live in a top-level `[run]` block (`name`, `seed`, `root`).
+- **Rationale**: Keyed tables make the *whole document* deep-mergeable (D13) and make
+  duplicate ids impossible (TOML rejects duplicate keys). The consistent owner word fixes
+  the earlier `env.network_shape` vs `nodes.shape` mismatch. Unordered tables have no
+  "first behaviour," so the root is named explicitly in `[run].root` — a feature (explicit, not
+  positional).
+- **Alternatives considered**: `[[behaviours]]` array-of-tables with `id =` (rejected — arrays
+  don't deep-merge; forces bespoke union code and a special rule); owner-first nesting
+  `[network_shape.env]` / `[network_shape.behaviours.*]` (rejected for house use — makes `env.*`
+  references owner-prefixed and gives shared env an awkward home; section-first keeps
+  references uniform while still grouping by owner).
+
+## D12. Parameter overlay via `[env]`, referenced by name, with a precedence ladder
+
+- **Decision**: Overlay-able parameters live in `[env]` / `[env.<owner>]`; behaviours/conditions
+  reference them by name (`env.<name>` / `env.<owner>.<name>`), never as baked-in literals.
+  "Overlay" = re-declare the key in the closer-to-root config. Precedence (low→high):
+  deepest include → shallower includes (list order) → root `[env]` → `--set env.<name>=…`
+  CLI → REST runtime write. Layers 1–4 resolve at load into one in-memory env; REST is the
+  same ladder applied live.
+- **Rationale**: Reference-by-name means one override site changes every reader, and a
+  runtime REST update propagates to all referencing behaviours/conditions on the next tick with
+  no behaviour patching. The load-time layers are exactly the uniform deep-merge of D13.
+- **REST note**: by the time REST calls arrive, parsing/merge are done; REST just writes the
+  resolved value behind `EnvHandle` (highest precedence, runtime). Type-mismatched updates
+  are rejected, leaving the env unchanged (FR-019).
+- **Alternatives considered**: inline literal behaviour params (rejected — can't be overlaid or
+  REST-addressed cleanly, and duplicates the value across readers).
+
+## D13. Uniform composition: one deep-merge rule, with `[run]` as the only singleton
+
+- **Decision**: A config plus its `includes` composes by a **single uniform rule** —
+  **deep-merge table-by-table, closer-to-root wins** (root over its includes; includes in
+  list order). This is `figment`'s deep table merge applied to the whole document; it works
+  uniformly because every section is a keyed table (D11). There are **no per-section
+  resolution rules**. The only genuinely singular thing is the **run**: `[run]` (`seed`,
+  `root`, `name`) deep-merges like everything else, and we *validate* that the resolved
+  config has exactly one `[run]` with a `seed` and `root` (a fragment setting `[run]` is a
+  lint). A referenced-but-undefined `env.X` is a **hard load-time error**. Env is namespaced
+  by owner: top-level `[env]` (or an explicitly-included `shared-env.toml`) for cross-cutting
+  params, `[env.<owner>]` for module-local params; promotion to shared is an explicit
+  refactor.
+- **Rationale**: This is the simplification the earlier "section-aware" design was missing.
+  The special-casing of `[metadata]` was an artifact of stuffing the run's singular `seed`/
+  `root` into a section; pulling them into a distinct top-level `[run]` makes identity a
+  *validation invariant* ("a run has one seed and one entry"), not a merge quirk — so
+  composition collapses to one rule that's trivial to reason about and reproduce (key for
+  the fuzzer). A same-id behaviour/env key across files simply overlays (root wins), exactly like
+  any other key; owner-namespacing is how authors avoid unintended collisions.
+- **Alternatives considered**: section-aware resolution with metadata root-only and bespoke
+  behaviour-union (rejected — the reviewer correctly flagged the per-section special rules as a
+  smell; the uniform rule + `[run]` block supersedes it); treating same-id collisions as a
+  load error (rejected — inconsistent with `[env]`'s overlay semantics; namespacing handles
+  it); an implicit always-loaded `default_env.toml` (rejected — hidden magic; prefer an
+  explicit include for reproducibility).
+
+## D14. Terminology: tree elements are "behaviours"; the registry is the "action registry"
+
+- **Decision**: A behavior-tree element is a **behaviour** (`Behaviour` / `BehaviourKind` /
+  `BehaviourId`; TOML `[behaviours.<id>]`); the value it returns when ticked is a
+  **`Status`** (Success/Failure/Running). The leaf-action catalogue (formerly
+  `BehaviourSpec`) is the **action registry** (`ActionSpec`); its entries are **actions**.
+  So: a *behaviour tree* is a tree of *behaviours*; an *Action* behaviour is materialised
+  from the *action registry* and, when active, contributes to `Directives`; the consensus
+  *actuators* consume `Directives`.
+- **Rationale**: "node" was overloaded — net-nodes, topology nodes (the cluster graph uses
+  node/edge), and tree elements. "Behaviour" is freed up precisely because Model B deletes
+  the old `Behaviour` *hook trait* (D2), and a "behaviour tree of behaviours" is the
+  literal, idiomatic reading (cf. py_trees). Rejected: "node" (the overload), "vertex"
+  (graph-flavoured for a tree), "state" (FSM-wrong + collides with `LeiosState`/etc.),
+  "step"/"stage" (sequential bias), "phase" (collides with Leios pipeline phases), "task"
+  (collides with tokio tasks). The registry is "**action** registry," not "actuator
+  registry," because "actuator" already names the consensus-side *consumers* of
+  `Directives` — actions *produce*, actuators *consume*.
 
 ## Open items deferred (not blocking the plan)
 
