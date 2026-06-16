@@ -555,11 +555,16 @@ pub enum PartitionOp {
 /// link in `links`.  Built once at sim init from the YAML scenarios plus
 /// the topology, then cloned into each shard's coordinator.  `links` is
 /// sorted lexicographically by `(from, to)` for deterministic telemetry.
+///
+/// `links` is an `Arc<[Link]>` because it is immutable after construction
+/// and heavily shared: an Activate and its matching Heal point at the same
+/// allocation, and every per-shard clone of the schedule is a refcount
+/// bump rather than a deep copy of the (potentially ~50k-element) slice.
 #[derive(Debug, Clone)]
 pub struct PartitionScheduleEntry {
     pub timestamp: Timestamp,
     pub op: PartitionOp,
-    pub links: Vec<Link>,
+    pub links: Arc<[Link]>,
     pub scenario_name: String,
 }
 
@@ -615,12 +620,14 @@ impl PartitionScheduleEntry {
                     scenario.start_time_s,
                 );
             }
-            let links =
-                resolve_partition_links(&scenario.selector, &name_to_id, &directed, topology)?;
+            // Resolve once; the Activate and Heal entries share the slice.
+            let links: Arc<[Link]> =
+                resolve_partition_links(&scenario.selector, &name_to_id, &directed, topology)?
+                    .into();
             entries.push(PartitionScheduleEntry {
                 timestamp: Timestamp::zero() + Duration::from_secs_f64(scenario.start_time_s),
                 op: PartitionOp::Activate,
-                links: links.clone(),
+                links: Arc::clone(&links),
                 scenario_name: scenario.name.clone(),
             });
             if let Some(stop) = scenario.stop_time_s {
@@ -2139,7 +2146,7 @@ mod partition_tests {
         assert_eq!(entry.links.len(), 8);
         // Every link touches "a", and both directions are present.
         let a = id_of(&topology, "a");
-        for link in &entry.links {
+        for link in entry.links.iter() {
             assert!(link.from == a || link.to == a);
         }
         for other in ["b", "c", "d", "e"] {
@@ -2148,9 +2155,9 @@ mod partition_tests {
             assert!(entry.links.contains(&Link { from: o, to: a }));
         }
         // Sorted lexicographically by (from, to).
-        let mut sorted = entry.links.clone();
+        let mut sorted = entry.links.to_vec();
         sorted.sort();
-        assert_eq!(entry.links, sorted);
+        assert_eq!(&entry.links[..], sorted.as_slice());
     }
 
     #[test]
@@ -2169,7 +2176,7 @@ mod partition_tests {
         let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
         let a = id_of(&topology, "a");
         let b = id_of(&topology, "b");
-        assert_eq!(schedule[0].links, vec![Link { from: a, to: b }]);
+        assert_eq!(&schedule[0].links[..], &[Link { from: a, to: b }]);
     }
 
     #[test]
@@ -2188,7 +2195,7 @@ mod partition_tests {
         let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
         let a = id_of(&topology, "a");
         let b = id_of(&topology, "b");
-        assert_eq!(schedule[0].links, vec![Link { from: b, to: a }]);
+        assert_eq!(&schedule[0].links[..], &[Link { from: b, to: a }]);
     }
 
     #[test]

@@ -81,7 +81,7 @@ impl PartitionRuntime {
             }
             match entry.op {
                 PartitionOp::Activate => {
-                    for link in &entry.links {
+                    for link in entry.links.iter() {
                         *self.cut.entry(*link).or_insert(0) += 1;
                     }
                     if self.is_emitter {
@@ -89,7 +89,7 @@ impl PartitionRuntime {
                     }
                 }
                 PartitionOp::Heal => {
-                    for link in &entry.links {
+                    for link in entry.links.iter() {
                         // Decrement the refcount; the link only reopens
                         // once no overlapping scenario still cuts it.
                         match self.cut.entry(*link) {
