@@ -16,7 +16,7 @@ use crate::{
     config::{LeiosVariant, NodeId, SimConfiguration},
     events::EventTracker,
     model::Transaction,
-    network::{connection::ConnectionKind, stats::NetworkStatsCollector},
+    network::{connection::ConnectionKind, partition::PartitionRuntime, stats::NetworkStatsCollector},
     sim::{
         MiniProtocol, NodeImpl, SimMessage as _,
         common::{CpuTaskWrapper, NodeEvent, self},
@@ -224,6 +224,8 @@ pub(super) struct SequentialSimulation<N: NodeImpl> {
     network_stats: Option<Arc<NetworkStatsCollector>>,
     /// Present only in multi-shard mode.
     cross_shard: Option<CrossShardState<N::Message>>,
+    /// Network-partition runtime; `None` without `partition-scenarios`.
+    partition: Option<PartitionRuntime>,
 }
 
 impl<N: NodeImpl> SequentialSimulation<N> {
@@ -376,6 +378,14 @@ impl<N: NodeImpl> SequentialSimulation<N> {
             }
 
             self.shared_time.store(timestamp, Ordering::Release);
+
+            // Apply partition transitions due at this instant before any
+            // sends/deliveries at `timestamp` are processed.
+            // `shared_time` (which the tracker's clock reads) is now set to
+            // `timestamp`, so emitted telemetry is stamped correctly.
+            if let Some(partition) = self.partition.as_mut() {
+                partition.advance_to(timestamp, &self.tracker);
+            }
 
             // === Pop all events at this timestamp, then sort by content ===
             // BinaryHeap pop order for equal-timestamp events depends on
@@ -613,6 +623,14 @@ impl<N: NodeImpl> SequentialSimulation<N> {
     }
 
     /// Deliver a single cross-shard message into the local connection.
+    ///
+    /// No partition gate here: the cut is applied authoritatively at the
+    /// sending shard (Gate B in `apply_batch_output`) against the cut state
+    /// at the message's logical send time, which both shards compute
+    /// identically from the same replicated schedule.  Re-checking at
+    /// receive time against this shard's (later) cut state would wrongly
+    /// drop messages that were legitimately in flight when the partition
+    /// activated — contradicting the "in-flight completes normally" rule.
     fn deliver_cross_shard_msg(
         connections: &mut HashMap<Link, ConnectionKind<MiniProtocol, N::Message>>,
         pending_deliveries: &mut HashSet<Link>,
@@ -641,6 +659,21 @@ impl<N: NodeImpl> SequentialSimulation<N> {
     /// Apply the side effects from a batch of node processing.
     fn apply_batch_output(&mut self, output: BatchNodeOutput<N>, timestamp: Timestamp) {
         for (from_id, to, bytes, protocol, msg) in output.messages {
+            // Gate A (intra-shard) + Gate B (cross-shard): drop a new send
+            // while its link is partitioned, before routing decides which
+            // path it takes.  Authoritative at send time — the partition
+            // runtime was advanced to `timestamp` at the top of the loop,
+            // so this reflects the cut state as of the logical send time.
+            // In-flight messages already queued on a connection (or on the
+            // cross-shard mpsc) are unaffected.
+            if self
+                .partition
+                .as_ref()
+                .is_some_and(|p| !p.is_link_active(from_id, to))
+            {
+                continue;
+            }
+
             // Check if this is a cross-shard message
             if let Some(cs) = self.cross_shard.as_mut() {
                 let target_shard = cs.shard_lookup[&to];
@@ -1069,6 +1102,8 @@ where
             shard_idx,
             network_stats: Some(network_stats.clone()),
             cross_shard,
+            // Shard 0 is the designated partition-telemetry emitter.
+            partition: PartitionRuntime::new(config.partition_schedule.clone(), shard_idx == 0),
         });
     }
 

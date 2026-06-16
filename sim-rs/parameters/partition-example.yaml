@@ -1,0 +1,72 @@
+# Example `partition-scenarios` overlay: time-windowed
+# network-layer partitions.  Each scenario cuts a set of directed edges
+# at `start-time-s` and, if `stop-time-s` is set, heals them again.
+#
+# This file is written against the 13-node `test_data/simple.yaml`
+# topology (stake pools node-0..node-4, relays node-5..node-12) and is
+# ready to fire from sim-rs/:
+#
+#     cargo run --release -- test_data/simple.yaml /tmp/partition-demo.jsonl \
+#         -s 120 -p parameters/partition-example.yaml
+#
+# Watch the log for the runtime telemetry:
+#
+#     Network partition 'relay-mesh-split' activated: 10 edge(s) cut.
+#     Network partition 'one-way-degradation' activated: 1 edge(s) cut.
+#     Network partition 'isolate-node-7' activated: 6 edge(s) cut.
+#     Network partition 'relay-mesh-split' healed: 10 edge(s) restored.
+#     ...
+#
+# Rules of the game:
+#   * Node names are resolved against the topology at init; an unknown
+#     name is a hard error.
+#   * The selector's cartesian product is intersected with the edges
+#     that actually exist, so only real links are cut.  The true
+#     directed-edge count is reported in the PartitionStarted event.
+#   * Pass this overlay as the LAST `-p` so it layers on top of any
+#     experiment config.
+#   * Scenarios may overlap in time; each cut/heal is applied
+#     independently.
+#
+# For continent-scale cuts on the pseudo-mainnet topologies (EU vs NA
+# etc.), generate an overlay from the topology's country-code metadata
+# instead of listing nodes by hand:
+#
+#     python3 scripts/gen-partition.py \
+#         ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+#         --from EU --to NA --start 300 --stop 900 -o /tmp/eu-na.yaml
+
+partition-scenarios:
+  # 1. Symmetric split: cut every existing edge between two node sets,
+  #    in both directions.  Here the relay mesh loses the links between
+  #    {node-5, node-6} and {node-9..node-12} for 30s.
+  - name: relay-mesh-split
+    selector:
+      kind: set-to-set
+      from: ["node-5", "node-6"]
+      to: ["node-9", "node-10", "node-11", "node-12"]
+      direction: both # both | from-to | to-from (default: both)
+    start-time-s: 30
+    stop-time-s: 60
+
+  # 2. Asymmetric degradation: only the from->to direction is cut, so
+  #    node-8 stops sending to node-9 but still hears from it.
+  - name: one-way-degradation
+    selector:
+      kind: set-to-set
+      from: ["node-8"]
+      to: ["node-9"]
+      direction: from-to
+    start-time-s: 45
+    stop-time-s: 75
+
+  # 3. Isolation: cut ALL edges of the listed nodes, both ways (the
+  #    isolated set is the `from` side).  Omitting `stop-time-s` would
+  #    keep the node dark until the end of the simulation; here it
+  #    rejoins after 20s.
+  - name: isolate-node-7
+    selector:
+      kind: isolate
+      nodes: ["node-7"]
+    start-time-s: 90
+    stop-time-s: 110

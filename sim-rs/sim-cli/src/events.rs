@@ -517,6 +517,12 @@ impl EventMonitor {
                 Event::VoteReceived { .. } => {
                     vote_messages.received += 1;
                 }
+                Event::PartitionStarted { name, link_count, .. } => {
+                    info!("Network partition '{name}' activated: {link_count} edge(s) cut.");
+                }
+                Event::PartitionHealed { name, link_count } => {
+                    info!("Network partition '{name}' healed: {link_count} edge(s) restored.");
+                }
             }
         }
 
