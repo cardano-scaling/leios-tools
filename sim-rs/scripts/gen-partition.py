@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a `partition-scenarios` overlay (T27 §S2) from a topology's
+"""Generate a `partition-scenarios` overlay from a topology's
 country-code metadata.
 
 Until predicate selectors land (Phase 3), the sim-rs partition selector

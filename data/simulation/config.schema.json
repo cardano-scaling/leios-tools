@@ -323,7 +323,7 @@
       ]
     },
     "PartitionScenario": {
-      "description": "A time-windowed network-layer partition (T27 §S2).  Cuts the selected directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.  Resolved against the topology at init; only supported by Rust simulation.",
+      "description": "A time-windowed network-layer partition.  Cuts the selected directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.  Resolved against the topology at init; only supported by Rust simulation.",
       "additionalProperties": false,
       "required": ["name", "selector", "start-time-s"],
       "type": "object",
@@ -707,7 +707,7 @@
     },
     "partition-scenarios": {
       "default": [],
-      "description": "Time-windowed network-layer partitions (T27 §S2).\nEach scenario cuts a set of directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.\nResolved against the loaded topology at init; omitting the block leaves diffusion behaviour unchanged.\nOnly supported by Rust simulation.",
+      "description": "Time-windowed network-layer partitions.\nEach scenario cuts a set of directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.\nResolved against the loaded topology at init; omitting the block leaves diffusion behaviour unchanged.\nOnly supported by Rust simulation.",
       "type": "array",
       "items": { "$ref": "#/definitions/PartitionScenario" }
     },

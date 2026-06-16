@@ -1,4 +1,4 @@
-# Example `partition-scenarios` overlay (T27 §S2): time-windowed
+# Example `partition-scenarios` overlay: time-windowed
 # network-layer partitions.  Each scenario cuts a set of directed edges
 # at `start-time-s` and, if `stop-time-s` is set, heals them again.
 #

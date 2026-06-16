@@ -1,4 +1,4 @@
-//! Network-layer partition runtime (T27 §S2).
+//! Network-layer partition runtime.
 //!
 //! A [`PartitionRuntime`] holds a compiled, time-ordered partition
 //! schedule and the set of currently-cut directed links.  Both engines

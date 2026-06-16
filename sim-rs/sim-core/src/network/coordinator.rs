@@ -39,7 +39,7 @@ pub struct NetworkCoordinator<TProtocol, TMessage> {
     /// Deterministic oracle used to seed per-message loss draws when an edge
     /// has a tcp-envelope configured.
     rng_oracle: Option<Rng>,
-    /// Network-partition runtime (T27 §S2) paired with the tracker it
+    /// Network-partition runtime paired with the tracker it
     /// emits telemetry through.  `None` when no `partition-scenarios` are
     /// configured — gating then compiles to a single `is_none()` check.
     partition: Option<(PartitionRuntime, EventTracker)>,

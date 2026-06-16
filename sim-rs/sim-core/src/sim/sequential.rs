@@ -224,7 +224,7 @@ pub(super) struct SequentialSimulation<N: NodeImpl> {
     network_stats: Option<Arc<NetworkStatsCollector>>,
     /// Present only in multi-shard mode.
     cross_shard: Option<CrossShardState<N::Message>>,
-    /// Network-partition runtime (T27 §S2); `None` without `partition-scenarios`.
+    /// Network-partition runtime; `None` without `partition-scenarios`.
     partition: Option<PartitionRuntime>,
 }
 
@@ -380,7 +380,7 @@ impl<N: NodeImpl> SequentialSimulation<N> {
             self.shared_time.store(timestamp, Ordering::Release);
 
             // Apply partition transitions due at this instant before any
-            // sends/deliveries at `timestamp` are processed (T27 §S2).
+            // sends/deliveries at `timestamp` are processed.
             // `shared_time` (which the tracker's clock reads) is now set to
             // `timestamp`, so emitted telemetry is stamped correctly.
             if let Some(partition) = self.partition.as_mut() {

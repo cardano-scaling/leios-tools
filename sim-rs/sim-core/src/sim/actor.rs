@@ -128,7 +128,7 @@ impl ActorSimulation {
             additional_actors_fn,
         )?;
 
-        // Install per-shard partition runtimes (T27 §S2).  Shard 0 is the
+        // Install per-shard partition runtimes. Shard 0 is the
         // designated telemetry emitter, so each window edge fires exactly
         // one event regardless of shard count.
         if !config.partition_schedule.is_empty() {

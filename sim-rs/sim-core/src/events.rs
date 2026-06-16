@@ -336,7 +336,7 @@ pub enum Event {
         recipient: Node,
     },
 
-    /// A network-layer partition (T27 §S2) activated: `link_count`
+    /// A network-layer partition activated: `link_count`
     /// directed edges were cut at this timestamp.  Emitted once per
     /// partition window edge by the designated emitter shard (not once
     /// per shard).  `sample_links` carries up to [`PARTITION_SAMPLE_LINKS`]
@@ -996,7 +996,7 @@ impl EventTracker {
         });
     }
 
-    // -- T27 §S2 network partition telemetry ----------------------------
+    // -- Network partition telemetry ----------------------------
 
     /// Record that a partition activated, cutting `links`.  Stamped at the
     /// current virtual time (the partition's scheduled instant).  Only the

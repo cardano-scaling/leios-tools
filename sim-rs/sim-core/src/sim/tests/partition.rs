@@ -1,4 +1,4 @@
-//! Runtime tests for network-layer partitions (T27 §S2) — Checkpoint 2.
+//! Runtime tests for network-layer partitions.
 //!
 //! A minimal ping harness: every node pings all its peers each slot and
 //! records the pings it receives.  A cut link manifests as missing

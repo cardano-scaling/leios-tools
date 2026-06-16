@@ -350,7 +350,7 @@ pub struct RawParameters {
     pub late_eb_attack: Option<RawLateEBAttackConfig>,
     pub late_tx_attack: Option<RawLateTXAttackConfig>,
 
-    /// Time-windowed network-layer partitions (T27 §S2).  Each scenario
+    /// Time-windowed network-layer partitions.  Each scenario
     /// schedules a set of directed edge cuts at `start-time-s` and an
     /// optional heal at `stop-time-s`, resolved against the loaded
     /// topology at init into a flat [`PartitionScheduleEntry`] schedule.
@@ -1414,7 +1414,7 @@ pub struct SimConfiguration {
     pub(crate) sizes: BlockSizeConfig,
     pub(crate) transactions: TransactionConfig,
     pub(crate) attacks: AttackConfig,
-    /// Compiled network-partition schedule (T27 §S2), resolved once from
+    /// Compiled network-partition schedule, resolved once from
     /// `partition-scenarios` + topology at build time.  Empty when no
     /// scenarios are configured.  Cloned into each shard's partition
     /// runtime by both engines.
