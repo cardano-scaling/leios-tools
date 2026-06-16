@@ -1,0 +1,2113 @@
+➜  cargo run --release \
+  ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+  -s 1000 \
+  -p "./sim-cli/configs/mainnet.yaml"
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.06s
+     Running `target/release/sim-cli ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml -s 1000 -p ./sim-cli/configs/mainnet.yaml`
+ INFO sim_core::sim: using sequential DES engine
+ INFO sim_core::sharding: shard assignment strategy=ZeroLatencyClusters shard_sizes=[448, 448, 448, 447, 447, 447]
+ INFO sim_cli::events: Slot 0 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 0:
+  monitor.txs: 0 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 0 entries
+  monitor.votes_per_bundle: 0 entries
+  monitor.eb_votes: 0 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 0 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 0 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 0:
+  The average age of the pending transactions is NaNs (stddev NaN).
+  0 EB(s) were generated; on average there were 0.000 EB(s) per slot.
+  Each EB contained an average of NaN transaction(s) (stddev NaN). 0 EB(s) were empty.
+  0 out of 0 EBs expired before an EB from their stage reached an RB.
+  0 out of 0 transaction(s) were included in at least one EB.
+  0 total votes were generated.
+  Each stake pool produced an average of 0.000 vote(s) (stddev 0.000).
+  Each EB received an average of NaN vote(s) (stddev NaN).
+  There were 0 bundle(s) of votes. Each bundle contained NaN vote(s) (stddev NaN).
+  0 L1 block(s) had a Leios endorsement.
+  0 tx(s) (0 B) were referenced by a Leios endorsement.
+  0 tx(s) (0 B) were included directly in a Praos block.
+  Spatial efficiency: 0 B/0 B (NaN%) of Leios bytes were unique transactions.
+  0 tx(s) (NaN%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of NaNs (stddev NaN) to be included in an EB.
+  Each transaction took an average of NaNs (stddev NaN) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 0:
+  0 TX message(s) were sent. 0 of them were received (NaN%).
+  0 EB message(s) were sent. 0 of them were received (NaN%).
+  0 Vote message(s) were sent. 0 of them were received (NaN%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 0 (node 0, x2685 nodes):
+  txs:                     0 entries  ~    0.0 MB  (received: 0)
+  mempool:                 0 entries  ~    0.0 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:            0 entries  ~    0.0 MB  (tx_refs: 0)
+  ledger_states:           0 entries  ~    0.0 MB  (spent_inputs: 0)
+  leios.ebs:               0 entries  ~    0.0 MB  (tx_refs: 0)
+  leios.votes:             0 entries  ~    0.0 MB
+  leios.votes_by_eb:       0 entries  ~    0.0 MB  (voters: 0)
+  leios.eb_announce:       0 entries  ~    0.0 MB  (peers: 0)
+  leios.ebs_by_rb:         0 entries
+  leios.endorsed:          0 entries
+  leios.pruned:            0 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 0.0 MB  (x 2685 = ~ 0.0 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 0 active
+  queued messages: 0
+  queued bytes: 0.0 MB
+ INFO sim_cli::events: Slot 1 has begun.
+ INFO sim_cli::events: Slot 2 has begun.
+ INFO sim_cli::events: Slot 3 has begun.
+ INFO sim_cli::events: Slot 4 has begun.
+ INFO sim_cli::events: Slot 5 has begun.
+ INFO sim_cli::events: Slot 6 has begun.
+ INFO sim_cli::events: Slot 7 has begun.
+ INFO sim_cli::events: Slot 8 has begun.
+ INFO sim_cli::events: Slot 9 has begun.
+ INFO sim_cli::events: Slot 10 has begun.
+ INFO sim_cli::events: Slot 11 has begun.
+ INFO sim_cli::events: Slot 12 has begun.
+ INFO sim_cli::events: Slot 13 has begun.
+ INFO sim_cli::events: Slot 14 has begun.
+ INFO sim_cli::events: Slot 15 has begun.
+ INFO sim_cli::events: Slot 16 has begun.
+ INFO sim_cli::events: Slot 17 has begun.
+ INFO sim_cli::events: Slot 18 has begun.
+ INFO sim_cli::events: Slot 19 has begun.
+ INFO sim_cli::events: Slot 20 has begun.
+ INFO sim_cli::events: Pool node-105 produced a praos block in slot 20 with 0 tx(s).
+ INFO sim_cli::events: Slot 21 has begun.
+ INFO sim_cli::events: Pool node-196 produced a praos block in slot 21 with 0 tx(s).
+ INFO sim_cli::events: Slot 22 has begun.
+ INFO sim_cli::events: Slot 23 has begun.
+ INFO sim_cli::events: Slot 24 has begun.
+ INFO sim_cli::events: Slot 25 has begun.
+ INFO sim_cli::events: Slot 26 has begun.
+ INFO sim_cli::events: Slot 27 has begun.
+ INFO sim_cli::events: Slot 28 has begun.
+ INFO sim_cli::events: Slot 29 has begun.
+ INFO sim_cli::events: Slot 30 has begun.
+ INFO sim_cli::events: Slot 31 has begun.
+ INFO sim_cli::events: Slot 32 has begun.
+ INFO sim_cli::events: Slot 33 has begun.
+ INFO sim_cli::events: Slot 34 has begun.
+ INFO sim_cli::events: Slot 35 has begun.
+ INFO sim_cli::events: Slot 36 has begun.
+ INFO sim_cli::events: Slot 37 has begun.
+ INFO sim_cli::events: Slot 38 has begun.
+ INFO sim_cli::events: Slot 39 has begun.
+ INFO sim_cli::events: Slot 40 has begun.
+ INFO sim_cli::events: Slot 41 has begun.
+ INFO sim_cli::events: Slot 42 has begun.
+ INFO sim_cli::events: Slot 43 has begun.
+ INFO sim_cli::events: Slot 44 has begun.
+ INFO sim_cli::events: Slot 45 has begun.
+ INFO sim_cli::events: Slot 46 has begun.
+ INFO sim_cli::events: Slot 47 has begun.
+ INFO sim_cli::events: Slot 48 has begun.
+ INFO sim_cli::events: Slot 49 has begun.
+ INFO sim_cli::events: Slot 50 has begun.
+ INFO sim_cli::events: Slot 51 has begun.
+ INFO sim_cli::events: Slot 52 has begun.
+ INFO sim_cli::events: Slot 53 has begun.
+ INFO sim_cli::events: Slot 54 has begun.
+ INFO sim_cli::events: Slot 55 has begun.
+ INFO sim_cli::events: Slot 56 has begun.
+ INFO sim_cli::events: Slot 57 has begun.
+ INFO sim_cli::events: Slot 58 has begun.
+ INFO sim_cli::events: Pool node-99 produced a praos block in slot 58 with 0 tx(s).
+ INFO sim_cli::events: Slot 59 has begun.
+ INFO sim_cli::events: Slot 60 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 60:
+  monitor.txs: 1 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 0 entries
+  monitor.votes_per_bundle: 0 entries
+  monitor.eb_votes: 0 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 1 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 0 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 60:
+  The average age of the pending transactions is 0.000s (stddev 0.000).
+  0 EB(s) were generated; on average there were 0.000 EB(s) per slot.
+  Each EB contained an average of NaN transaction(s) (stddev NaN). 0 EB(s) were empty.
+  0 out of 0 EBs expired before an EB from their stage reached an RB.
+  0 out of 1 transaction(s) were included in at least one EB.
+  0 total votes were generated.
+  Each stake pool produced an average of 0.000 vote(s) (stddev 0.000).
+  Each EB received an average of NaN vote(s) (stddev NaN).
+  There were 0 bundle(s) of votes. Each bundle contained NaN vote(s) (stddev NaN).
+  0 L1 block(s) had a Leios endorsement.
+  0 tx(s) (0 B) were referenced by a Leios endorsement.
+  0 tx(s) (0 B) were included directly in a Praos block.
+  Spatial efficiency: 0 B/0 B (NaN%) of Leios bytes were unique transactions.
+  0 tx(s) (NaN%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of NaNs (stddev NaN) to be included in an EB.
+  Each transaction took an average of NaNs (stddev NaN) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 60:
+  0 TX message(s) were sent. 0 of them were received (NaN%).
+  0 EB message(s) were sent. 0 of them were received (NaN%).
+  0 Vote message(s) were sent. 0 of them were received (NaN%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 60 (node 0, x2685 nodes):
+  txs:                     0 entries  ~    0.0 MB  (received: 0)
+  mempool:                 0 entries  ~    0.0 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:            3 entries  ~    0.0 MB  (tx_refs: 0)
+  ledger_states:           0 entries  ~    0.0 MB  (spent_inputs: 0)
+  leios.ebs:               0 entries  ~    0.0 MB  (tx_refs: 0)
+  leios.votes:             0 entries  ~    0.0 MB
+  leios.votes_by_eb:       0 entries  ~    0.0 MB  (voters: 0)
+  leios.eb_announce:       0 entries  ~    0.0 MB  (peers: 0)
+  leios.ebs_by_rb:         0 entries
+  leios.endorsed:          0 entries
+  leios.pruned:            0 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 0.0 MB  (x 2685 = ~ 0.7 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 0 active
+  queued messages: 0
+  queued bytes: 0.0 MB
+ INFO sim_cli::events: Slot 61 has begun.
+ INFO sim_cli::events: Slot 62 has begun.
+ INFO sim_cli::events: Slot 63 has begun.
+ INFO sim_cli::events: Slot 64 has begun.
+ INFO sim_cli::events: Slot 65 has begun.
+ INFO sim_cli::events: Slot 66 has begun.
+ INFO sim_cli::events: Slot 67 has begun.
+ INFO sim_cli::events: Slot 68 has begun.
+ INFO sim_cli::events: Slot 69 has begun.
+ INFO sim_cli::events: Pool node-38 produced a praos block in slot 69 with 60 tx(s).
+ INFO sim_cli::events: Pool node-38 generated an EB with 0 IB(s) and 1139 TX(s) in slot 69.
+ INFO sim_cli::events: Slot 70 has begun.
+ INFO sim_cli::events: Slot 71 has begun.
+ INFO sim_cli::events: Slot 72 has begun.
+ INFO sim_cli::events: Slot 73 has begun.
+ INFO sim_cli::events: Slot 74 has begun.
+ INFO sim_cli::events: Slot 75 has begun.
+ INFO sim_cli::events: Slot 76 has begun.
+ INFO sim_cli::events: Slot 77 has begun.
+ INFO sim_cli::events: Slot 78 has begun.
+ INFO sim_cli::events: Pool node-57 produced a praos block in slot 78 with 60 tx(s).
+ INFO sim_cli::events: Pool node-57 generated an EB with 0 IB(s) and 2279 TX(s) in slot 78.
+ INFO sim_cli::events: Slot 79 has begun.
+ INFO sim_cli::events: Slot 80 has begun.
+ INFO sim_cli::events: Slot 81 has begun.
+ INFO sim_cli::events: Slot 82 has begun.
+ INFO sim_cli::events: Slot 83 has begun.
+ INFO sim_cli::events: Slot 84 has begun.
+ INFO sim_cli::events: Slot 85 has begun.
+ INFO sim_cli::events: Slot 86 has begun.
+ INFO sim_cli::events: Slot 87 has begun.
+ INFO sim_cli::events: Slot 88 has begun.
+ INFO sim_cli::events: Slot 89 has begun.
+ INFO sim_cli::events: Pool node-193 produced a praos block in slot 89 with 60 tx(s).
+ INFO sim_cli::events: Pool node-193 generated an EB with 0 IB(s) and 3688 TX(s) in slot 89.
+ INFO sim_cli::events: Slot 90 has begun.
+ INFO sim_cli::events: Slot 91 has begun.
+ INFO sim_cli::events: Slot 92 has begun.
+ INFO sim_cli::events: Slot 93 has begun.
+ INFO sim_cli::events: Slot 94 has begun.
+ INFO sim_cli::events: Slot 95 has begun.
+ INFO sim_cli::events: Slot 96 has begun.
+ INFO sim_cli::events: Slot 97 has begun.
+ INFO sim_cli::events: Slot 98 has begun.
+ INFO sim_cli::events: Pool node-403 produced a praos block in slot 98 with 60 tx(s).
+ INFO sim_cli::events: Pool node-403 generated an EB with 0 IB(s) and 4826 TX(s) in slot 98.
+ INFO sim_cli::events: Slot 99 has begun.
+ INFO sim_cli::events: Slot 100 has begun.
+ INFO sim_cli::events: Slot 101 has begun.
+ INFO sim_cli::events: Slot 102 has begun.
+ INFO sim_cli::events: Slot 103 has begun.
+ INFO sim_cli::events: Slot 104 has begun.
+ INFO sim_cli::events: Slot 105 has begun.
+ INFO sim_cli::events: Slot 106 has begun.
+ INFO sim_cli::events: Slot 107 has begun.
+ INFO sim_cli::events: Slot 108 has begun.
+ INFO sim_cli::events: Slot 109 has begun.
+ INFO sim_cli::events: Slot 110 has begun.
+ INFO sim_cli::events: Slot 111 has begun.
+ INFO sim_cli::events: Pool node-28 produced a praos block in slot 111 with 60 tx(s).
+ INFO sim_cli::events: Pool node-28 generated an EB with 0 IB(s) and 6498 TX(s) in slot 111.
+ INFO sim_cli::events: Slot 112 has begun.
+ INFO sim_cli::events: Slot 113 has begun.
+ INFO sim_cli::events: Slot 114 has begun.
+ INFO sim_cli::events: Slot 115 has begun.
+ INFO sim_cli::events: Slot 116 has begun.
+ INFO sim_cli::events: Slot 117 has begun.
+ INFO sim_cli::events: Slot 118 has begun.
+ INFO sim_cli::events: Slot 119 has begun.
+ INFO sim_cli::events: Slot 120 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 120:
+  monitor.txs: 8004 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 5 entries
+  monitor.votes_per_bundle: 4510 entries
+  monitor.eb_votes: 5 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 1206 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 5 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 120:
+  The average age of the pending transactions is 28.883s (stddev 16.680).
+  5 EB(s) were generated; on average there were 0.041 EB(s) per slot.
+  Each EB contained an average of 3686.000 transaction(s) (stddev 1880.096). 0 EB(s) were empty.
+  0 out of 5 EBs expired before an EB from their stage reached an RB.
+  6738 out of 8004 transaction(s) were included in at least one EB.
+  104695493770 total votes were generated.
+  Each stake pool produced an average of 38992735.110 vote(s) (stddev 88311064.390).
+  Each EB received an average of 20939098754.000 vote(s) (stddev 0.000).
+  There were 4510 bundle(s) of votes. Each bundle contained 23214078.441 vote(s) (stddev 23890189.493).
+  0 L1 block(s) had a Leios endorsement.
+  0 tx(s) (0 B) were referenced by a Leios endorsement.
+  300 tx(s) (450 kB) were included directly in a Praos block.
+  Spatial efficiency: 0 B/590.96 kB (0.000%) of Leios bytes were unique transactions.
+  0 tx(s) (NaN%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 5.426s (stddev 3.181) to be included in an EB.
+  Each transaction took an average of 28.093s (stddev 14.163) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 120:
+  21468158 TX message(s) were sent. 21465353 of them were received (99.987%).
+  13420 EB message(s) were sent. 13420 of them were received (100.000%).
+  12104840 Vote message(s) were sent. 12104840 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 120 (node 0, x2685 nodes):
+  txs:                  7998 entries  ~    1.1 MB  (received: 7997)
+  mempool:              7697 entries  ~   12.3 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:            8 entries  ~    0.0 MB  (tx_refs: 300)
+  ledger_states:           1 entries  ~    0.0 MB  (spent_inputs: 300)
+  leios.ebs:               5 entries  ~    0.1 MB  (tx_refs: 18430)
+  leios.votes:          4510 entries  ~    0.4 MB
+  leios.votes_by_eb:       5 entries  ~    0.1 MB  (voters: 4510)
+  leios.eb_announce:       5 entries  ~    0.0 MB  (peers: 242)
+  leios.ebs_by_rb:         5 entries
+  leios.endorsed:          0 entries
+  leios.pruned:            0 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 14.1 MB  (x 2685 = ~ 35977.0 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12209 active
+  queued messages: 194374
+  queued bytes: 0.6 MB
+ INFO sim_cli::events: Slot 121 has begun.
+ INFO sim_cli::events: Slot 122 has begun.
+ INFO sim_cli::events: Slot 123 has begun.
+ INFO sim_cli::events: Slot 124 has begun.
+ INFO sim_cli::events: Slot 125 has begun.
+ INFO sim_cli::events: Slot 126 has begun.
+ INFO sim_cli::events: Slot 127 has begun.
+ INFO sim_cli::events: Slot 128 has begun.
+ INFO sim_cli::events: Slot 129 has begun.
+ INFO sim_cli::events: Slot 130 has begun.
+ INFO sim_cli::events: Slot 131 has begun.
+ INFO sim_cli::events: Slot 132 has begun.
+ INFO sim_cli::events: Slot 133 has begun.
+ INFO sim_cli::events: Slot 134 has begun.
+ INFO sim_cli::events: Slot 135 has begun.
+ INFO sim_cli::events: Slot 136 has begun.
+ INFO sim_cli::events: Slot 137 has begun.
+ INFO sim_cli::events: Slot 138 has begun.
+ INFO sim_cli::events: Slot 139 has begun.
+ INFO sim_cli::events: Slot 140 has begun.
+ INFO sim_cli::events: Slot 141 has begun.
+ INFO sim_cli::events: Slot 142 has begun.
+ INFO sim_cli::events: Pool node-75 produced a praos block in slot 142 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 6498 leios tx(s) (6498 unique).
+ INFO sim_cli::events: Pool node-75 generated an EB with 0 IB(s) and 4134 TX(s) in slot 142.
+ INFO sim_cli::events: Slot 143 has begun.
+ INFO sim_cli::events: Slot 144 has begun.
+ INFO sim_cli::events: Slot 145 has begun.
+ INFO sim_cli::events: Slot 146 has begun.
+ INFO sim_cli::events: Slot 147 has begun.
+ INFO sim_cli::events: Slot 148 has begun.
+ INFO sim_cli::events: Slot 149 has begun.
+ INFO sim_cli::events: Slot 150 has begun.
+ INFO sim_cli::events: Slot 151 has begun.
+ INFO sim_cli::events: Slot 152 has begun.
+ INFO sim_cli::events: Slot 153 has begun.
+ INFO sim_cli::events: Slot 154 has begun.
+ INFO sim_cli::events: Slot 155 has begun.
+ INFO sim_cli::events: Slot 156 has begun.
+ INFO sim_cli::events: Slot 157 has begun.
+ INFO sim_cli::events: Slot 158 has begun.
+ INFO sim_cli::events: Slot 159 has begun.
+ INFO sim_cli::events: Slot 160 has begun.
+ INFO sim_cli::events: Slot 161 has begun.
+ INFO sim_cli::events: Slot 162 has begun.
+ INFO sim_cli::events: Slot 163 has begun.
+ INFO sim_cli::events: Slot 164 has begun.
+ INFO sim_cli::events: Slot 165 has begun.
+ INFO sim_cli::events: Slot 166 has begun.
+ INFO sim_cli::events: Slot 167 has begun.
+ INFO sim_cli::events: Slot 168 has begun.
+ INFO sim_cli::events: Slot 169 has begun.
+ INFO sim_cli::events: Slot 170 has begun.
+ INFO sim_cli::events: Slot 171 has begun.
+ INFO sim_cli::events: Slot 172 has begun.
+ INFO sim_cli::events: Slot 173 has begun.
+ INFO sim_cli::events: Slot 174 has begun.
+ INFO sim_cli::events: Slot 175 has begun.
+ INFO sim_cli::events: Slot 176 has begun.
+ INFO sim_cli::events: Slot 177 has begun.
+ INFO sim_cli::events: Slot 178 has begun.
+ INFO sim_cli::events: Slot 179 has begun.
+ INFO sim_cli::events: Slot 180 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 180:
+  monitor.txs: 16002 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 6 entries
+  monitor.votes_per_bundle: 5412 entries
+  monitor.eb_votes: 6 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 5070 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 5 entries
+  liveness.queue: 0 entries
+ INFO sim_core::sim::linear_leios: Memory stats at slot 180 (node 0, x2685 nodes):
+  txs:                 16002 entries  ~    2.2 MB  (received: 15998)
+  mempool:              9200 entries  ~   14.7 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:            9 entries  ~    0.0 MB  (tx_refs: 300)
+  ledger_states:           1 entries  ~    0.1 MB  (spent_inputs: 6798)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 4134)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:            5 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 17.1 MB  (x 2685 = ~ 43839.0 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12878 active
+  queued messages: 227224
+  queued bytes: 0.2 MB
+ INFO leios: sim_cli::events: Protocol stats at slot 180:
+  The average age of the pending transactions is 34.522s (stddev 19.927).
+  6 EB(s) were generated; on average there were 0.033 EB(s) per slot.
+  Each EB contained an average of 3760.667 transaction(s) (stddev 1724.387). 0 EB(s) were empty.
+  2 out of 6 EBs expired before an EB from their stage reached an RB.
+  10872 out of 16002 transaction(s) were included in at least one EB.
+  125634592524 total votes were generated.
+  Each stake pool produced an average of 46791282.132 vote(s) (stddev 105973277.268).
+  Each EB received an average of 20939098754.000 vote(s) (stddev 0.000).
+  There were 5412 bundle(s) of votes. Each bundle contained 23214078.441 vote(s) (stddev 23890189.493).
+  1 L1 block(s) had a Leios endorsement.
+  6498 tx(s) (9.75 MB) were referenced by a Leios endorsement.
+  300 tx(s) (450 kB) were included directly in a Praos block.
+  Spatial efficiency: 9.75 MB/731.49 kB (1332.489%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 9.350s (stddev 7.864) to be included in an EB.
+  Each transaction took an average of 54.402s (stddev 15.166) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 180:
+  42948121 TX message(s) were sent. 42947222 of them were received (99.998%).
+  16104 EB message(s) were sent. 16104 of them were received (100.000%).
+  14525808 Vote message(s) were sent. 14525808 of them were received (100.000%).
+ INFO sim_cli::events: Slot 181 has begun.
+ INFO sim_cli::events: Slot 182 has begun.
+ INFO sim_cli::events: Slot 183 has begun.
+ INFO sim_cli::events: Slot 184 has begun.
+ INFO sim_cli::events: Slot 185 has begun.
+ INFO sim_cli::events: Slot 186 has begun.
+ INFO sim_cli::events: Slot 187 has begun.
+ INFO sim_cli::events: Slot 188 has begun.
+ INFO sim_cli::events: Slot 189 has begun.
+ INFO sim_cli::events: Slot 190 has begun.
+ INFO sim_cli::events: Slot 191 has begun.
+ INFO sim_cli::events: Slot 192 has begun.
+ INFO sim_cli::events: Slot 193 has begun.
+ INFO sim_cli::events: Slot 194 has begun.
+ INFO sim_cli::events: Slot 195 has begun.
+ INFO sim_cli::events: Slot 196 has begun.
+ INFO sim_cli::events: Slot 197 has begun.
+ INFO sim_cli::events: Slot 198 has begun.
+ INFO sim_cli::events: Slot 199 has begun.
+ INFO sim_cli::events: Slot 200 has begun.
+ INFO sim_cli::events: Slot 201 has begun.
+ INFO sim_cli::events: Slot 202 has begun.
+ INFO sim_cli::events: Slot 203 has begun.
+ INFO sim_cli::events: Slot 204 has begun.
+ INFO sim_cli::events: Slot 205 has begun.
+ INFO sim_cli::events: Slot 206 has begun.
+ INFO sim_cli::events: Slot 207 has begun.
+ INFO sim_cli::events: Slot 208 has begun.
+ INFO sim_cli::events: Slot 209 has begun.
+ INFO sim_cli::events: Slot 210 has begun.
+ INFO sim_cli::events: Slot 211 has begun.
+ INFO sim_cli::events: Slot 212 has begun.
+ INFO sim_cli::events: Slot 213 has begun.
+ INFO sim_cli::events: Slot 214 has begun.
+ INFO sim_cli::events: Slot 215 has begun.
+ INFO sim_cli::events: Slot 216 has begun.
+ INFO sim_cli::events: Slot 217 has begun.
+ INFO sim_cli::events: Slot 218 has begun.
+ INFO sim_cli::events: Slot 219 has begun.
+ INFO sim_cli::events: Slot 220 has begun.
+ INFO sim_cli::events: Slot 221 has begun.
+ INFO sim_cli::events: Slot 222 has begun.
+ INFO sim_cli::events: Slot 223 has begun.
+ INFO sim_cli::events: Slot 224 has begun.
+ INFO sim_cli::events: Slot 225 has begun.
+ INFO sim_cli::events: Slot 226 has begun.
+ INFO sim_cli::events: Slot 227 has begun.
+ INFO sim_cli::events: Slot 228 has begun.
+ INFO sim_cli::events: Slot 229 has begun.
+ INFO sim_cli::events: Slot 230 has begun.
+ INFO sim_cli::events: Slot 231 has begun.
+ INFO sim_cli::events: Slot 232 has begun.
+ INFO sim_cli::events: Slot 233 has begun.
+ INFO sim_cli::events: Slot 234 has begun.
+ INFO sim_cli::events: Slot 235 has begun.
+ INFO sim_cli::events: Slot 236 has begun.
+ INFO sim_cli::events: Slot 237 has begun.
+ INFO sim_cli::events: Slot 238 has begun.
+ INFO sim_cli::events: Pool node-84 produced a praos block in slot 238 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 4134 leios tx(s) (4134 unique).
+ INFO sim_cli::events: Pool node-84 generated an EB with 0 IB(s) and 8000 TX(s) in slot 238.
+ INFO sim_cli::events: Slot 239 has begun.
+ INFO sim_cli::events: Slot 240 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 240:
+  monitor.txs: 24000 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 7 entries
+  monitor.votes_per_bundle: 5413 entries
+  monitor.eb_votes: 7 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 5068 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 5 entries
+  liveness.queue: 8000 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 240:
+  The average age of the pending transactions is 49.028s (stddev 28.293).
+  7 EB(s) were generated; on average there were 0.029 EB(s) per slot.
+  Each EB contained an average of 4366.286 transaction(s) (stddev 2179.305). 0 EB(s) were empty.
+  4 out of 7 EBs expired before an EB from their stage reached an RB.
+  18872 out of 24000 transaction(s) were included in at least one EB.
+  125703263239 total votes were generated.
+  Each stake pool produced an average of 46816857.817 vote(s) (stddev 106069662.536).
+  Each EB received an average of 17957609034.143 vote(s) (stddev 7303128487.004).
+  There were 5413 bundle(s) of votes. Each bundle contained 23222476.120 vote(s) (stddev 23895969.844).
+  1 out of 7 EB(s) did not reach the vote threshold (12690128428).
+  2 L1 block(s) had a Leios endorsement.
+  10632 tx(s) (15.95 MB) were referenced by a Leios endorsement.
+  300 tx(s) (450 kB) were included directly in a Praos block.
+  Spatial efficiency: 15.95 MB/995.73 kB (1601.642%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 33.523s (stddev 30.933) to be included in an EB.
+  Each transaction took an average of 76.136s (stddev 30.823) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 240:
+  64415398 TX message(s) were sent. 64414980 of them were received (99.999%).
+  18788 EB message(s) were sent. 18788 of them were received (100.000%).
+  14528492 Vote message(s) were sent. 14528492 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 240 (node 0, x2685 nodes):
+  txs:                 24000 entries  ~    3.3 MB  (received: 24000)
+  mempool:             13068 entries  ~   20.9 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           10 entries  ~    0.0 MB  (tx_refs: 300)
+  ledger_states:           1 entries  ~    0.2 MB  (spent_inputs: 10932)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:             1 entries  ~    0.0 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 1)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:            6 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 24.4 MB  (x 2685 = ~ 62423.0 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 11664 active
+  queued messages: 204977
+  queued bytes: 0.1 MB
+ INFO sim_cli::events: Slot 241 has begun.
+ INFO sim_cli::events: Slot 242 has begun.
+ INFO sim_cli::events: Slot 243 has begun.
+ INFO sim_cli::events: Slot 244 has begun.
+ INFO sim_cli::events: Slot 245 has begun.
+ INFO sim_cli::events: Pool node-73 produced a praos block in slot 245 with 60 tx(s).
+ INFO sim_cli::events: Pool node-73 generated an EB with 0 IB(s) and 8000 TX(s) in slot 245.
+ INFO sim_cli::events: Slot 246 has begun.
+ INFO sim_cli::events: Slot 247 has begun.
+ INFO sim_cli::events: Slot 248 has begun.
+ INFO sim_cli::events: Slot 249 has begun.
+ INFO sim_cli::events: Slot 250 has begun.
+ INFO sim_cli::events: Slot 251 has begun.
+ INFO sim_cli::events: Slot 252 has begun.
+ INFO sim_cli::events: Slot 253 has begun.
+ INFO sim_cli::events: Slot 254 has begun.
+ INFO sim_cli::events: Slot 255 has begun.
+ INFO sim_cli::events: Slot 256 has begun.
+ INFO sim_cli::events: Slot 257 has begun.
+ INFO sim_cli::events: Pool node-321 produced a praos block in slot 257 with 60 tx(s).
+ INFO sim_cli::events: Pool node-321 generated an EB with 0 IB(s) and 8000 TX(s) in slot 257.
+ INFO sim_cli::events: Slot 258 has begun.
+ INFO sim_cli::events: Slot 259 has begun.
+ INFO sim_cli::events: Slot 260 has begun.
+ INFO sim_cli::events: Slot 261 has begun.
+ INFO sim_cli::events: Slot 262 has begun.
+ INFO sim_cli::events: Slot 263 has begun.
+ INFO sim_cli::events: Pool node-538 produced a praos block in slot 263 with 60 tx(s).
+ INFO sim_cli::events: Pool node-538 generated an EB with 0 IB(s) and 8000 TX(s) in slot 263.
+ INFO sim_cli::events: Slot 264 has begun.
+ INFO sim_cli::events: Slot 265 has begun.
+ INFO sim_cli::events: Slot 266 has begun.
+ INFO sim_cli::events: Slot 267 has begun.
+ INFO sim_cli::events: Slot 268 has begun.
+ INFO sim_cli::events: Slot 269 has begun.
+ INFO sim_cli::events: Slot 270 has begun.
+ INFO sim_cli::events: Slot 271 has begun.
+ INFO sim_cli::events: Slot 272 has begun.
+ INFO sim_cli::events: Slot 273 has begun.
+ INFO sim_cli::events: Slot 274 has begun.
+ INFO sim_cli::events: Slot 275 has begun.
+ INFO sim_cli::events: Slot 276 has begun.
+ INFO sim_cli::events: Slot 277 has begun.
+ INFO sim_cli::events: Slot 278 has begun.
+ INFO sim_cli::events: Pool node-240 produced a praos block in slot 278 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-240 generated an EB with 0 IB(s) and 8000 TX(s) in slot 278.
+ INFO sim_cli::events: Slot 279 has begun.
+ INFO sim_cli::events: Slot 280 has begun.
+ INFO sim_cli::events: Slot 281 has begun.
+ INFO sim_cli::events: Slot 282 has begun.
+ INFO sim_cli::events: Slot 283 has begun.
+ INFO sim_cli::events: Slot 284 has begun.
+ INFO sim_cli::events: Slot 285 has begun.
+ INFO sim_cli::events: Slot 286 has begun.
+ INFO sim_cli::events: Slot 287 has begun.
+ INFO sim_cli::events: Slot 288 has begun.
+ INFO sim_cli::events: Slot 289 has begun.
+ INFO sim_cli::events: Slot 290 has begun.
+ INFO sim_cli::events: Slot 291 has begun.
+ INFO sim_cli::events: Slot 292 has begun.
+ INFO sim_cli::events: Slot 293 has begun.
+ INFO sim_cli::events: Slot 294 has begun.
+ INFO sim_cli::events: Slot 295 has begun.
+ INFO sim_cli::events: Slot 296 has begun.
+ INFO sim_cli::events: Pool node-212 produced a praos block in slot 296 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-212 generated an EB with 0 IB(s) and 4353 TX(s) in slot 296.
+ INFO sim_cli::events: Slot 297 has begun.
+ INFO sim_cli::events: Slot 298 has begun.
+ INFO sim_cli::events: Slot 299 has begun.
+ INFO sim_cli::events: Slot 300 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 300:
+  monitor.txs: 32004 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 12 entries
+  monitor.votes_per_bundle: 10824 entries
+  monitor.eb_votes: 12 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 4892 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 8 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 300:
+  The average age of the pending transactions is 18.338s (stddev 10.592).
+  12 EB(s) were generated; on average there were 0.040 EB(s) per slot.
+  Each EB contained an average of 5576.417 transaction(s) (stddev 2389.007). 0 EB(s) were empty.
+  4 out of 12 EBs expired before an EB from their stage reached an RB.
+  31405 out of 32004 transaction(s) were included in at least one EB.
+  251269185048 total votes were generated.
+  Each stake pool produced an average of 93582564.264 vote(s) (stddev 211946554.537).
+  Each EB received an average of 20939098754.000 vote(s) (stddev 0.000).
+  There were 10824 bundle(s) of votes. Each bundle contained 23214078.441 vote(s) (stddev 23890189.493).
+  4 L1 block(s) had a Leios endorsement.
+  26632 tx(s) (39.95 MB) were referenced by a Leios endorsement.
+  480 tx(s) (720 kB) were included directly in a Praos block.
+  Spatial efficiency: 39.95 MB/2.18 MB (1835.657%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 34.213s (stddev 27.187) to be included in an EB.
+  Each transaction took an average of 80.998s (stddev 29.045) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 300:
+  85884104 TX message(s) were sent. 85882600 of them were received (99.998%).
+  32208 EB message(s) were sent. 32208 of them were received (100.000%).
+  29051616 Vote message(s) were sent. 29051616 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 300 (node 0, x2685 nodes):
+  txs:                 31998 entries  ~    4.4 MB  (received: 31998)
+  mempool:              4886 entries  ~    7.8 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           15 entries  ~    0.0 MB  (tx_refs: 480)
+  ledger_states:           1 entries  ~    0.4 MB  (spent_inputs: 27112)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 4353)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           11 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 12.7 MB  (x 2685 = ~ 32644.6 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 10619 active
+  queued messages: 190422
+  queued bytes: 0.3 MB
+ INFO sim_cli::events: Slot 301 has begun.
+ INFO sim_cli::events: Slot 302 has begun.
+ INFO sim_cli::events: Slot 303 has begun.
+ INFO sim_cli::events: Slot 304 has begun.
+ INFO sim_cli::events: Slot 305 has begun.
+ INFO sim_cli::events: Slot 306 has begun.
+ INFO sim_cli::events: Slot 307 has begun.
+ INFO sim_cli::events: Slot 308 has begun.
+ INFO sim_cli::events: Slot 309 has begun.
+ INFO sim_cli::events: Slot 310 has begun.
+ INFO sim_cli::events: Slot 311 has begun.
+ INFO sim_cli::events: Slot 312 has begun.
+ INFO sim_cli::events: Slot 313 has begun.
+ INFO sim_cli::events: Slot 314 has begun.
+ INFO sim_cli::events: Slot 315 has begun.
+ INFO sim_cli::events: Pool node-174 produced a praos block in slot 315 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 4353 leios tx(s) (4353 unique).
+ INFO sim_cli::events: Pool node-174 generated an EB with 0 IB(s) and 2536 TX(s) in slot 315.
+ INFO sim_cli::events: Slot 316 has begun.
+ INFO sim_cli::events: Pool node-298 produced a praos block in slot 316 with 60 tx(s).
+ INFO sim_cli::events: Pool node-298 generated an EB with 0 IB(s) and 2609 TX(s) in slot 316.
+ INFO sim_cli::events: Slot 317 has begun.
+ INFO sim_cli::events: Slot 318 has begun.
+ INFO sim_cli::events: Slot 319 has begun.
+ INFO sim_cli::events: Slot 320 has begun.
+ INFO sim_cli::events: Slot 321 has begun.
+ INFO sim_cli::events: Slot 322 has begun.
+ INFO sim_cli::events: Slot 323 has begun.
+ INFO sim_cli::events: Slot 324 has begun.
+ INFO sim_cli::events: Slot 325 has begun.
+ INFO sim_cli::events: Slot 326 has begun.
+ INFO sim_cli::events: Slot 327 has begun.
+ INFO sim_cli::events: Pool node-222 produced a praos block in slot 327 with 60 tx(s).
+ INFO sim_cli::events: Pool node-222 generated an EB with 0 IB(s) and 4013 TX(s) in slot 327.
+ INFO sim_cli::events: Slot 328 has begun.
+ INFO sim_cli::events: Slot 329 has begun.
+ INFO sim_cli::events: Slot 330 has begun.
+ INFO sim_cli::events: Slot 331 has begun.
+ INFO sim_cli::events: Slot 332 has begun.
+ INFO sim_cli::events: Slot 333 has begun.
+ INFO sim_cli::events: Slot 334 has begun.
+ INFO sim_cli::events: Slot 335 has begun.
+ INFO sim_cli::events: Slot 336 has begun.
+ INFO sim_cli::events: Slot 337 has begun.
+ INFO sim_cli::events: Slot 338 has begun.
+ INFO sim_cli::events: Pool node-332 produced a praos block in slot 338 with 60 tx(s).
+ INFO sim_cli::events: Pool node-332 generated an EB with 0 IB(s) and 5423 TX(s) in slot 338.
+ INFO sim_cli::events: Slot 339 has begun.
+ INFO sim_cli::events: Slot 340 has begun.
+ INFO sim_cli::events: Slot 341 has begun.
+ INFO sim_cli::events: Slot 342 has begun.
+ INFO sim_cli::events: Slot 343 has begun.
+ INFO sim_cli::events: Slot 344 has begun.
+ INFO sim_cli::events: Slot 345 has begun.
+ INFO sim_cli::events: Slot 346 has begun.
+ INFO sim_cli::events: Slot 347 has begun.
+ INFO sim_cli::events: Slot 348 has begun.
+ INFO sim_cli::events: Slot 349 has begun.
+ INFO sim_cli::events: Slot 350 has begun.
+ INFO sim_cli::events: Slot 351 has begun.
+ INFO sim_cli::events: Slot 352 has begun.
+ INFO sim_cli::events: Slot 353 has begun.
+ INFO sim_cli::events: Slot 354 has begun.
+ INFO sim_cli::events: Slot 355 has begun.
+ INFO sim_cli::events: Slot 356 has begun.
+ INFO sim_cli::events: Slot 357 has begun.
+ INFO sim_cli::events: Slot 358 has begun.
+ INFO sim_cli::events: Slot 359 has begun.
+ INFO sim_cli::events: Slot 360 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 360:
+  monitor.txs: 40002 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 16 entries
+  monitor.votes_per_bundle: 13531 entries
+  monitor.eb_votes: 16 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 3067 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 11 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 360:
+  The average age of the pending transactions is 31.346s (stddev 18.093).
+  16 EB(s) were generated; on average there were 0.044 EB(s) per slot.
+  Each EB contained an average of 5093.625 transaction(s) (stddev 2308.630). 0 EB(s) were empty.
+  7 out of 16 EBs expired before an EB from their stage reached an RB.
+  37008 out of 40002 transaction(s) were included in at least one EB.
+  314133378109 total votes were generated.
+  Each stake pool produced an average of 116995671.549 vote(s) (stddev 264973399.812).
+  Each EB received an average of 19633336131.812 vote(s) (stddev 5057196889.832).
+  There were 13531 bundle(s) of votes. Each bundle contained 23215828.698 vote(s) (stddev 23890174.163).
+  901 vote(s) were not generated due to validation failures:
+    WrongEB: 901
+  1 out of 16 EB(s) did not reach the vote threshold (12690128428).
+  5 L1 block(s) had a Leios endorsement.
+  30985 tx(s) (46.48 MB) were referenced by a Leios endorsement.
+  660 tx(s) (990 kB) were included directly in a Praos block.
+  Spatial efficiency: 46.48 MB/2.65 MB (1752.693%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 30.156s (stddev 26.890) to be included in an EB.
+  Each transaction took an average of 74.455s (stddev 31.488) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 360:
+  107361504 TX message(s) were sent. 107360667 of them were received (99.999%).
+  42944 EB message(s) were sent. 42944 of them were received (100.000%).
+  36317204 Vote message(s) were sent. 36317204 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 360 (node 0, x2685 nodes):
+  txs:                 40001 entries  ~    5.4 MB  (received: 40000)
+  mempool:              8355 entries  ~   13.3 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           19 entries  ~    0.0 MB  (tx_refs: 660)
+  ledger_states:           1 entries  ~    0.5 MB  (spent_inputs: 31645)
+  leios.ebs:               4 entries  ~    0.1 MB  (tx_refs: 14581)
+  leios.votes:          2707 entries  ~    0.2 MB
+  leios.votes_by_eb:       4 entries  ~    0.1 MB  (voters: 2707)
+  leios.eb_announce:       4 entries  ~    0.0 MB  (peers: 196)
+  leios.ebs_by_rb:         4 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           12 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 19.7 MB  (x 2685 = ~ 50552.9 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12961 active
+  queued messages: 224767
+  queued bytes: 0.2 MB
+ INFO sim_cli::events: Slot 361 has begun.
+ INFO sim_cli::events: Slot 362 has begun.
+ INFO sim_cli::events: Slot 363 has begun.
+ INFO sim_cli::events: Slot 364 has begun.
+ INFO sim_cli::events: Slot 365 has begun.
+ INFO sim_cli::events: Slot 366 has begun.
+ INFO sim_cli::events: Slot 367 has begun.
+ INFO sim_cli::events: Slot 368 has begun.
+ INFO sim_cli::events: Slot 369 has begun.
+ INFO sim_cli::events: Slot 370 has begun.
+ INFO sim_cli::events: Slot 371 has begun.
+ INFO sim_cli::events: Slot 372 has begun.
+ INFO sim_cli::events: Slot 373 has begun.
+ INFO sim_cli::events: Slot 374 has begun.
+ INFO sim_cli::events: Slot 375 has begun.
+ INFO sim_cli::events: Pool node-163 produced a praos block in slot 375 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 5423 leios tx(s) (5423 unique).
+ INFO sim_cli::events: Pool node-163 generated an EB with 0 IB(s) and 4930 TX(s) in slot 375.
+ INFO sim_cli::events: Slot 376 has begun.
+ INFO sim_cli::events: Slot 377 has begun.
+ INFO sim_cli::events: Slot 378 has begun.
+ INFO sim_cli::events: Slot 379 has begun.
+ INFO sim_cli::events: Slot 380 has begun.
+ INFO sim_cli::events: Slot 381 has begun.
+ INFO sim_cli::events: Slot 382 has begun.
+ INFO sim_cli::events: Slot 383 has begun.
+ INFO sim_cli::events: Slot 384 has begun.
+ INFO sim_cli::events: Slot 385 has begun.
+ INFO sim_cli::events: Slot 386 has begun.
+ INFO sim_cli::events: Slot 387 has begun.
+ INFO sim_cli::events: Slot 388 has begun.
+ INFO sim_cli::events: Slot 389 has begun.
+ INFO sim_cli::events: Slot 390 has begun.
+ INFO sim_cli::events: Pool node-296 produced a praos block in slot 390 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 4930 leios tx(s) (4930 unique).
+ INFO sim_cli::events: Pool node-296 generated an EB with 0 IB(s) and 2001 TX(s) in slot 390.
+ INFO sim_cli::events: Slot 391 has begun.
+ INFO sim_cli::events: Slot 392 has begun.
+ INFO sim_cli::events: Slot 393 has begun.
+ INFO sim_cli::events: Slot 394 has begun.
+ INFO sim_cli::events: Slot 395 has begun.
+ INFO sim_cli::events: Slot 396 has begun.
+ INFO sim_cli::events: Slot 397 has begun.
+ INFO sim_cli::events: Slot 398 has begun.
+ INFO sim_cli::events: Slot 399 has begun.
+ INFO sim_cli::events: Slot 400 has begun.
+ INFO sim_cli::events: Slot 401 has begun.
+ INFO sim_cli::events: Slot 402 has begun.
+ INFO sim_cli::events: Slot 403 has begun.
+ INFO sim_cli::events: Slot 404 has begun.
+ INFO sim_cli::events: Slot 405 has begun.
+ INFO sim_cli::events: Slot 406 has begun.
+ INFO sim_cli::events: Slot 407 has begun.
+ INFO sim_cli::events: Slot 408 has begun.
+ INFO sim_cli::events: Slot 409 has begun.
+ INFO sim_cli::events: Slot 410 has begun.
+ INFO sim_cli::events: Slot 411 has begun.
+ INFO sim_cli::events: Slot 412 has begun.
+ INFO sim_cli::events: Slot 413 has begun.
+ INFO sim_cli::events: Slot 414 has begun.
+ INFO sim_cli::events: Slot 415 has begun.
+ INFO sim_cli::events: Slot 416 has begun.
+ INFO sim_cli::events: Slot 417 has begun.
+ INFO sim_cli::events: Slot 418 has begun.
+ INFO sim_cli::events: Slot 419 has begun.
+ INFO sim_cli::events: Slot 420 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 420:
+  monitor.txs: 48000 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 18 entries
+  monitor.votes_per_bundle: 15335 entries
+  monitor.eb_votes: 18 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 4001 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 11 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 420:
+  The average age of the pending transactions is 22.530s (stddev 12.995).
+  18 EB(s) were generated; on average there were 0.043 EB(s) per slot.
+  Each EB contained an average of 4912.722 transaction(s) (stddev 2288.600). 0 EB(s) were empty.
+  9 out of 18 EBs expired before an EB from their stage reached an RB.
+  43939 out of 48000 transaction(s) were included in at least one EB.
+  356011575617 total votes were generated.
+  Each stake pool produced an average of 132592765.593 vote(s) (stddev 300297644.151).
+  Each EB received an average of 19778420867.611 vote(s) (stddev 4785597522.900).
+  There were 15335 bundle(s) of votes. Each bundle contained 23215622.799 vote(s) (stddev 23890175.973).
+  901 vote(s) were not generated due to validation failures:
+    WrongEB: 901
+  1 out of 18 EB(s) did not reach the vote threshold (12690128428).
+  7 L1 block(s) had a Leios endorsement.
+  41338 tx(s) (62.01 MB) were referenced by a Leios endorsement.
+  660 tx(s) (990 kB) were included directly in a Praos block.
+  Spatial efficiency: 62.01 MB/2.89 MB (2145.535%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 27.855s (stddev 25.591) to be included in an EB.
+  Each transaction took an average of 67.492s (stddev 31.010) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 420:
+  128831431 TX message(s) were sent. 128831096 of them were received (100.000%).
+  48312 EB message(s) were sent. 48312 of them were received (100.000%).
+  41159140 Vote message(s) were sent. 41159140 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 420 (node 0, x2685 nodes):
+  txs:                 48000 entries  ~    6.5 MB  (received: 48000)
+  mempool:              6002 entries  ~    9.6 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           21 entries  ~    0.0 MB  (tx_refs: 660)
+  ledger_states:           1 entries  ~    0.7 MB  (spent_inputs: 41998)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 2001)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           17 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 16.9 MB  (x 2685 = ~ 43367.5 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 11222 active
+  queued messages: 205851
+  queued bytes: 0.0 MB
+ INFO sim_cli::events: Slot 421 has begun.
+ INFO sim_cli::events: Slot 422 has begun.
+ INFO sim_cli::events: Slot 423 has begun.
+ INFO sim_cli::events: Slot 424 has begun.
+ INFO sim_cli::events: Slot 425 has begun.
+ INFO sim_cli::events: Slot 426 has begun.
+ INFO sim_cli::events: Slot 427 has begun.
+ INFO sim_cli::events: Slot 428 has begun.
+ INFO sim_cli::events: Slot 429 has begun.
+ INFO sim_cli::events: Slot 430 has begun.
+ INFO sim_cli::events: Slot 431 has begun.
+ INFO sim_cli::events: Slot 432 has begun.
+ INFO sim_cli::events: Slot 433 has begun.
+ INFO sim_cli::events: Slot 434 has begun.
+ INFO sim_cli::events: Slot 435 has begun.
+ INFO sim_cli::events: Slot 436 has begun.
+ INFO sim_cli::events: Slot 437 has begun.
+ INFO sim_cli::events: Slot 438 has begun.
+ INFO sim_cli::events: Slot 439 has begun.
+ INFO sim_cli::events: Slot 440 has begun.
+ INFO sim_cli::events: Slot 441 has begun.
+ INFO sim_cli::events: Slot 442 has begun.
+ INFO sim_cli::events: Slot 443 has begun.
+ INFO sim_cli::events: Slot 444 has begun.
+ INFO sim_cli::events: Slot 445 has begun.
+ INFO sim_cli::events: Slot 446 has begun.
+ INFO sim_cli::events: Slot 447 has begun.
+ INFO sim_cli::events: Slot 448 has begun.
+ INFO sim_cli::events: Slot 449 has begun.
+ INFO sim_cli::events: Slot 450 has begun.
+ INFO sim_cli::events: Slot 451 has begun.
+ INFO sim_cli::events: Slot 452 has begun.
+ INFO sim_cli::events: Slot 453 has begun.
+ INFO sim_cli::events: Slot 454 has begun.
+ INFO sim_cli::events: Slot 455 has begun.
+ INFO sim_cli::events: Slot 456 has begun.
+ INFO sim_cli::events: Slot 457 has begun.
+ INFO sim_cli::events: Slot 458 has begun.
+ INFO sim_cli::events: Slot 459 has begun.
+ INFO sim_cli::events: Slot 460 has begun.
+ INFO sim_cli::events: Slot 461 has begun.
+ INFO sim_cli::events: Slot 462 has begun.
+ INFO sim_cli::events: Slot 463 has begun.
+ INFO sim_cli::events: Slot 464 has begun.
+ INFO sim_cli::events: Slot 465 has begun.
+ INFO sim_cli::events: Slot 466 has begun.
+ INFO sim_cli::events: Slot 467 has begun.
+ INFO sim_cli::events: Slot 468 has begun.
+ INFO sim_cli::events: Slot 469 has begun.
+ INFO sim_cli::events: Slot 470 has begun.
+ INFO sim_cli::events: Slot 471 has begun.
+ INFO sim_cli::events: Pool node-41 produced a praos block in slot 471 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 2001 leios tx(s) (2001 unique).
+ INFO sim_cli::events: Pool node-41 generated an EB with 0 IB(s) and 8000 TX(s) in slot 471.
+ INFO sim_cli::events: Slot 472 has begun.
+ INFO sim_cli::events: Pool node-593 produced a praos block in slot 472 with 60 tx(s).
+ INFO sim_cli::events: Pool node-593 generated an EB with 0 IB(s) and 8000 TX(s) in slot 472.
+ INFO sim_cli::events: Slot 473 has begun.
+ INFO sim_cli::events: Slot 474 has begun.
+ INFO sim_cli::events: Slot 475 has begun.
+ INFO sim_cli::events: Slot 476 has begun.
+ INFO sim_cli::events: Slot 477 has begun.
+ INFO sim_cli::events: Slot 478 has begun.
+ INFO sim_cli::events: Slot 479 has begun.
+ INFO sim_cli::events: Slot 480 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 480:
+  monitor.txs: 56004 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 20 entries
+  monitor.votes_per_bundle: 16238 entries
+  monitor.eb_votes: 20 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 4005 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 12 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 480:
+  The average age of the pending transactions is 44.786s (stddev 25.862).
+  20 EB(s) were generated; on average there were 0.042 EB(s) per slot.
+  Each EB contained an average of 5221.450 transaction(s) (stddev 2360.453). 0 EB(s) were empty.
+  10 out of 20 EBs expired before an EB from their stage reached an RB.
+  51999 out of 56004 transaction(s) were included in at least one EB.
+  377024346521 total votes were generated.
+  Each stake pool produced an average of 140418751.032 vote(s) (stddev 318065262.443).
+  Each EB received an average of 18851217326.050 vote(s) (stddev 6263645714.565).
+  There were 16238 bundle(s) of votes. Each bundle contained 23218644.323 vote(s) (stddev 23892722.127).
+  1802 vote(s) were not generated due to validation failures:
+    WrongEB: 1802
+  2 out of 20 EB(s) did not reach the vote threshold (12690128428).
+  8 L1 block(s) had a Leios endorsement.
+  43339 tx(s) (65.01 MB) were referenced by a Leios endorsement.
+  720 tx(s) (1.08 MB) were included directly in a Praos block.
+  Spatial efficiency: 65.01 MB/3.41 MB (1906.112%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 31.466s (stddev 25.915) to be included in an EB.
+  Each transaction took an average of 68.483s (stddev 30.619) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 480:
+  150304458 TX message(s) were sent. 150300373 of them were received (99.997%).
+  53680 EB message(s) were sent. 53680 of them were received (100.000%).
+  43582792 Vote message(s) were sent. 43582792 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 480 (node 0, x2685 nodes):
+  txs:                 56000 entries  ~    7.6 MB  (received: 55998)
+  mempool:             11939 entries  ~   19.1 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           23 entries  ~    0.0 MB  (tx_refs: 720)
+  ledger_states:           1 entries  ~    0.7 MB  (spent_inputs: 44059)
+  leios.ebs:               2 entries  ~    0.1 MB  (tx_refs: 16000)
+  leios.votes:           903 entries  ~    0.1 MB
+  leios.votes_by_eb:       2 entries  ~    0.0 MB  (voters: 903)
+  leios.eb_announce:       2 entries  ~    0.0 MB  (peers: 99)
+  leios.ebs_by_rb:         2 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           18 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 27.6 MB  (x 2685 = ~ 70798.3 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12056 active
+  queued messages: 189845
+  queued bytes: 1.0 MB
+ INFO sim_cli::events: Slot 481 has begun.
+ INFO sim_cli::events: Slot 482 has begun.
+ INFO sim_cli::events: Slot 483 has begun.
+ INFO sim_cli::events: Slot 484 has begun.
+ INFO sim_cli::events: Slot 485 has begun.
+ INFO sim_cli::events: Slot 486 has begun.
+ INFO sim_cli::events: Slot 487 has begun.
+ INFO sim_cli::events: Slot 488 has begun.
+ INFO sim_cli::events: Slot 489 has begun.
+ INFO sim_cli::events: Slot 490 has begun.
+ INFO sim_cli::events: Slot 491 has begun.
+ INFO sim_cli::events: Slot 492 has begun.
+ INFO sim_cli::events: Slot 493 has begun.
+ INFO sim_cli::events: Slot 494 has begun.
+ INFO sim_cli::events: Slot 495 has begun.
+ INFO sim_cli::events: Slot 496 has begun.
+ INFO sim_cli::events: Slot 497 has begun.
+ INFO sim_cli::events: Slot 498 has begun.
+ INFO sim_cli::events: Slot 499 has begun.
+ INFO sim_cli::events: Slot 500 has begun.
+ INFO sim_cli::events: Slot 501 has begun.
+ INFO sim_cli::events: Slot 502 has begun.
+ INFO sim_cli::events: Slot 503 has begun.
+ INFO sim_cli::events: Slot 504 has begun.
+ INFO sim_cli::events: Slot 505 has begun.
+ INFO sim_cli::events: Slot 506 has begun.
+ INFO sim_cli::events: Slot 507 has begun.
+ INFO sim_cli::events: Slot 508 has begun.
+ INFO sim_cli::events: Slot 509 has begun.
+ INFO sim_cli::events: Slot 510 has begun.
+ INFO sim_cli::events: Slot 511 has begun.
+ INFO sim_cli::events: Slot 512 has begun.
+ INFO sim_cli::events: Slot 513 has begun.
+ INFO sim_cli::events: Slot 514 has begun.
+ INFO sim_cli::events: Slot 515 has begun.
+ INFO sim_cli::events: Slot 516 has begun.
+ INFO sim_cli::events: Slot 517 has begun.
+ INFO sim_cli::events: Slot 518 has begun.
+ INFO sim_cli::events: Slot 519 has begun.
+ INFO sim_cli::events: Slot 520 has begun.
+ INFO sim_cli::events: Pool node-328 produced a praos block in slot 520 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-328 generated an EB with 0 IB(s) and 8000 TX(s) in slot 520.
+ INFO sim_cli::events: Slot 521 has begun.
+ INFO sim_cli::events: Slot 522 has begun.
+ INFO sim_cli::events: Slot 523 has begun.
+ INFO sim_cli::events: Slot 524 has begun.
+ INFO sim_cli::events: Slot 525 has begun.
+ INFO sim_cli::events: Pool node-271 produced a praos block in slot 525 with 60 tx(s).
+ INFO sim_cli::events: Pool node-133 produced a praos block in slot 525 with 60 tx(s).
+ INFO sim_cli::events: Pool node-271 generated an EB with 0 IB(s) and 8000 TX(s) in slot 525.
+ INFO sim_cli::events: Pool node-133 generated an EB with 0 IB(s) and 8000 TX(s) in slot 525.
+ INFO sim_cli::events: Slot 526 has begun.
+ INFO sim_cli::events: Slot 527 has begun.
+ INFO sim_cli::events: Slot 528 has begun.
+ INFO sim_cli::events: Slot 529 has begun.
+ INFO sim_cli::events: Slot 530 has begun.
+ INFO sim_cli::events: Slot 531 has begun.
+ INFO sim_cli::events: Slot 532 has begun.
+ INFO sim_cli::events: Slot 533 has begun.
+ INFO sim_cli::events: Slot 534 has begun.
+ INFO sim_cli::events: Slot 535 has begun.
+ INFO sim_cli::events: Slot 536 has begun.
+ INFO sim_cli::events: Pool node-27 produced a praos block in slot 536 with 60 tx(s).
+ INFO sim_cli::events: Pool node-27 generated an EB with 0 IB(s) and 8000 TX(s) in slot 536.
+ INFO sim_cli::events: Slot 537 has begun.
+ INFO sim_cli::events: Slot 538 has begun.
+ INFO sim_cli::events: Slot 539 has begun.
+ INFO sim_cli::events: Slot 540 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 540:
+  monitor.txs: 64002 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 24 entries
+  monitor.votes_per_bundle: 18937 entries
+  monitor.eb_votes: 24 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 11761 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 15 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 540:
+  The average age of the pending transactions is 44.340s (stddev 25.595).
+  24 EB(s) were generated; on average there were 0.044 EB(s) per slot.
+  Each EB contained an average of 5684.542 transaction(s) (stddev 2390.687). 0 EB(s) were empty.
+  10 out of 24 EBs expired before an EB from their stage reached an RB.
+  60120 out of 64002 transaction(s) were included in at least one EB.
+  439864340383 total votes were generated.
+  Each stake pool produced an average of 163822845.580 vote(s) (stddev 371109968.586).
+  Each EB received an average of 18327680849.292 vote(s) (stddev 6889446587.583).
+  There were 18937 bundle(s) of votes. Each bundle contained 23227773.163 vote(s) (stddev 23901543.229).
+  2689 vote(s) were not generated due to validation failures:
+    WrongEB: 2689
+  3 out of 24 EB(s) did not reach the vote threshold (12690128428).
+  9 L1 block(s) had a Leios endorsement.
+  51339 tx(s) (77.01 MB) were referenced by a Leios endorsement.
+  841 tx(s) (1.26 MB) were included directly in a Praos block.
+  Spatial efficiency: 77.01 MB/4.44 MB (1733.064%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 32.568s (stddev 25.088) to be included in an EB.
+  Each transaction took an average of 73.329s (stddev 31.081) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 540:
+  171780201 TX message(s) were sent. 171779370 of them were received (100.000%).
+  64351 EB message(s) were sent. 64351 of them were received (100.000%).
+  50826908 Vote message(s) were sent. 50826908 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 540 (node 0, x2685 nodes):
+  txs:                 64002 entries  ~    8.7 MB  (received: 64000)
+  mempool:             11820 entries  ~   18.9 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           27 entries  ~    0.0 MB  (tx_refs: 840)
+  ledger_states:           1 entries  ~    0.8 MB  (spent_inputs: 52180)
+  leios.ebs:               4 entries  ~    0.3 MB  (tx_refs: 32000)
+  leios.votes:          2699 entries  ~    0.2 MB
+  leios.votes_by_eb:       4 entries  ~    0.1 MB  (voters: 2699)
+  leios.eb_announce:       4 entries  ~    0.0 MB  (peers: 196)
+  leios.ebs_by_rb:         4 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           20 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 29.0 MB  (x 2685 = ~ 74295.8 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12830 active
+  queued messages: 223386
+  queued bytes: 0.2 MB
+ INFO sim_cli::events: Slot 541 has begun.
+ INFO sim_cli::events: Slot 542 has begun.
+ INFO sim_cli::events: Slot 543 has begun.
+ INFO sim_cli::events: Slot 544 has begun.
+ INFO sim_cli::events: Slot 545 has begun.
+ INFO sim_cli::events: Slot 546 has begun.
+ INFO sim_cli::events: Slot 547 has begun.
+ INFO sim_cli::events: Slot 548 has begun.
+ INFO sim_cli::events: Slot 549 has begun.
+ INFO sim_cli::events: Slot 550 has begun.
+ INFO sim_cli::events: Slot 551 has begun.
+ INFO sim_cli::events: Slot 552 has begun.
+ INFO sim_cli::events: Slot 553 has begun.
+ INFO sim_cli::events: Slot 554 has begun.
+ INFO sim_cli::events: Slot 555 has begun.
+ INFO sim_cli::events: Slot 556 has begun.
+ INFO sim_cli::events: Slot 557 has begun.
+ INFO sim_cli::events: Slot 558 has begun.
+ INFO sim_cli::events: Slot 559 has begun.
+ INFO sim_cli::events: Slot 560 has begun.
+ INFO sim_cli::events: Slot 561 has begun.
+ INFO sim_cli::events: Slot 562 has begun.
+ INFO sim_cli::events: Slot 563 has begun.
+ INFO sim_cli::events: Slot 564 has begun.
+ INFO sim_cli::events: Slot 565 has begun.
+ INFO sim_cli::events: Slot 566 has begun.
+ INFO sim_cli::events: Slot 567 has begun.
+ INFO sim_cli::events: Slot 568 has begun.
+ INFO sim_cli::events: Slot 569 has begun.
+ INFO sim_cli::events: Slot 570 has begun.
+ INFO sim_cli::events: Slot 571 has begun.
+ INFO sim_cli::events: Slot 572 has begun.
+ INFO sim_cli::events: Slot 573 has begun.
+ INFO sim_cli::events: Slot 574 has begun.
+ INFO sim_cli::events: Slot 575 has begun.
+ INFO sim_cli::events: Slot 576 has begun.
+ INFO sim_cli::events: Slot 577 has begun.
+ INFO sim_cli::events: Slot 578 has begun.
+ INFO sim_cli::events: Slot 579 has begun.
+ INFO sim_cli::events: Slot 580 has begun.
+ INFO sim_cli::events: Slot 581 has begun.
+ INFO sim_cli::events: Slot 582 has begun.
+ INFO sim_cli::events: Slot 583 has begun.
+ INFO sim_cli::events: Slot 584 has begun.
+ INFO sim_cli::events: Slot 585 has begun.
+ INFO sim_cli::events: Slot 586 has begun.
+ INFO sim_cli::events: Slot 587 has begun.
+ INFO sim_cli::events: Slot 588 has begun.
+ INFO sim_cli::events: Slot 589 has begun.
+ INFO sim_cli::events: Slot 590 has begun.
+ INFO sim_cli::events: Slot 591 has begun.
+ INFO sim_cli::events: Slot 592 has begun.
+ INFO sim_cli::events: Slot 593 has begun.
+ INFO sim_cli::events: Slot 594 has begun.
+ INFO sim_cli::events: Slot 595 has begun.
+ INFO sim_cli::events: Slot 596 has begun.
+ INFO sim_cli::events: Slot 597 has begun.
+ INFO sim_cli::events: Slot 598 has begun.
+ INFO sim_cli::events: Slot 599 has begun.
+ INFO sim_cli::events: Slot 600 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 600:
+  monitor.txs: 72000 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 24 entries
+  monitor.votes_per_bundle: 18937 entries
+  monitor.eb_votes: 24 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 19759 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 15 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 600:
+  The average age of the pending transactions is 74.348s (stddev 42.912).
+  24 EB(s) were generated; on average there were 0.040 EB(s) per slot.
+  Each EB contained an average of 5684.542 transaction(s) (stddev 2390.687). 0 EB(s) were empty.
+  11 out of 24 EBs expired before an EB from their stage reached an RB.
+  60120 out of 72000 transaction(s) were included in at least one EB.
+  439864340383 total votes were generated.
+  Each stake pool produced an average of 163822845.580 vote(s) (stddev 371109968.586).
+  Each EB received an average of 18327680849.292 vote(s) (stddev 6889446587.583).
+  There were 18937 bundle(s) of votes. Each bundle contained 23227773.163 vote(s) (stddev 23901543.229).
+  2689 vote(s) were not generated due to validation failures:
+    WrongEB: 2689
+  3 out of 24 EB(s) did not reach the vote threshold (12690128428).
+  9 L1 block(s) had a Leios endorsement.
+  51339 tx(s) (77.01 MB) were referenced by a Leios endorsement.
+  841 tx(s) (1.26 MB) were included directly in a Praos block.
+  Spatial efficiency: 77.01 MB/4.44 MB (1733.064%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 32.568s (stddev 25.088) to be included in an EB.
+  Each transaction took an average of 73.329s (stddev 31.081) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 600:
+  193247460 TX message(s) were sent. 193247142 of them were received (100.000%).
+  64351 EB message(s) were sent. 64351 of them were received (100.000%).
+  50826908 Vote message(s) were sent. 50826908 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 600 (node 0, x2685 nodes):
+  txs:                 72000 entries  ~    9.8 MB  (received: 72000)
+  mempool:             19820 entries  ~   31.6 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           27 entries  ~    0.0 MB  (tx_refs: 840)
+  ledger_states:           1 entries  ~    0.8 MB  (spent_inputs: 52180)
+  leios.ebs:               4 entries  ~    0.3 MB  (tx_refs: 32000)
+  leios.votes:          2699 entries  ~    0.2 MB
+  leios.votes_by_eb:       4 entries  ~    0.1 MB  (voters: 2699)
+  leios.eb_announce:       4 entries  ~    0.0 MB  (peers: 196)
+  leios.ebs_by_rb:         4 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           20 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 42.9 MB  (x 2685 = ~ 109775.3 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 10701 active
+  queued messages: 204873
+  queued bytes: 0.0 MB
+ INFO sim_cli::events: Slot 601 has begun.
+ INFO sim_cli::events: Slot 602 has begun.
+ INFO sim_cli::events: Slot 603 has begun.
+ INFO sim_cli::events: Slot 604 has begun.
+ INFO sim_cli::events: Slot 605 has begun.
+ INFO sim_cli::events: Slot 606 has begun.
+ INFO sim_cli::events: Slot 607 has begun.
+ INFO sim_cli::events: Slot 608 has begun.
+ INFO sim_cli::events: Pool node-129 produced a praos block in slot 608 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-129 generated an EB with 0 IB(s) and 8000 TX(s) in slot 608.
+ INFO sim_cli::events: Slot 609 has begun.
+ INFO sim_cli::events: Slot 610 has begun.
+ INFO sim_cli::events: Slot 611 has begun.
+ INFO sim_cli::events: Slot 612 has begun.
+ INFO sim_cli::events: Slot 613 has begun.
+ INFO sim_cli::events: Slot 614 has begun.
+ INFO sim_cli::events: Slot 615 has begun.
+ INFO sim_cli::events: Slot 616 has begun.
+ INFO sim_cli::events: Slot 617 has begun.
+ INFO sim_cli::events: Slot 618 has begun.
+ INFO sim_cli::events: Slot 619 has begun.
+ INFO sim_cli::events: Slot 620 has begun.
+ INFO sim_cli::events: Slot 621 has begun.
+ INFO sim_cli::events: Slot 622 has begun.
+ INFO sim_cli::events: Slot 623 has begun.
+ INFO sim_cli::events: Slot 624 has begun.
+ INFO sim_cli::events: Slot 625 has begun.
+ INFO sim_cli::events: Slot 626 has begun.
+ INFO sim_cli::events: Slot 627 has begun.
+ INFO sim_cli::events: Slot 628 has begun.
+ INFO sim_cli::events: Slot 629 has begun.
+ INFO sim_cli::events: Slot 630 has begun.
+ INFO sim_cli::events: Slot 631 has begun.
+ INFO sim_cli::events: Slot 632 has begun.
+ INFO sim_cli::events: Slot 633 has begun.
+ INFO sim_cli::events: Slot 634 has begun.
+ INFO sim_cli::events: Slot 635 has begun.
+ INFO sim_cli::events: Slot 636 has begun.
+ INFO sim_cli::events: Slot 637 has begun.
+ INFO sim_cli::events: Slot 638 has begun.
+ INFO sim_cli::events: Slot 639 has begun.
+ INFO sim_cli::events: Slot 640 has begun.
+ INFO sim_cli::events: Slot 641 has begun.
+ INFO sim_cli::events: Slot 642 has begun.
+ INFO sim_cli::events: Slot 643 has begun.
+ INFO sim_cli::events: Slot 644 has begun.
+ INFO sim_cli::events: Slot 645 has begun.
+ INFO sim_cli::events: Slot 646 has begun.
+ INFO sim_cli::events: Slot 647 has begun.
+ INFO sim_cli::events: Slot 648 has begun.
+ INFO sim_cli::events: Slot 649 has begun.
+ INFO sim_cli::events: Slot 650 has begun.
+ INFO sim_cli::events: Slot 651 has begun.
+ INFO sim_cli::events: Slot 652 has begun.
+ INFO sim_cli::events: Slot 653 has begun.
+ INFO sim_cli::events: Slot 654 has begun.
+ INFO sim_cli::events: Slot 655 has begun.
+ INFO sim_cli::events: Slot 656 has begun.
+ INFO sim_cli::events: Slot 657 has begun.
+ INFO sim_cli::events: Slot 658 has begun.
+ INFO sim_cli::events: Slot 659 has begun.
+ INFO sim_cli::events: Slot 660 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 660:
+  monitor.txs: 80004 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 25 entries
+  monitor.votes_per_bundle: 19839 entries
+  monitor.eb_votes: 25 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 19824 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 15 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 660:
+  The average age of the pending transactions is 74.332s (stddev 42.920).
+  25 EB(s) were generated; on average there were 0.038 EB(s) per slot.
+  Each EB contained an average of 5777.160 transaction(s) (stddev 2385.926). 0 EB(s) were empty.
+  14 out of 25 EBs expired before an EB from their stage reached an RB.
+  68120 out of 80004 transaction(s) were included in at least one EB.
+  460803439137 total votes were generated.
+  Each stake pool produced an average of 171621392.602 vote(s) (stddev 388771933.086).
+  Each EB received an average of 18432137565.480 vote(s) (stddev 6769620686.951).
+  There were 19839 bundle(s) of votes. Each bundle contained 23227150.519 vote(s) (stddev 23901027.307).
+  2689 vote(s) were not generated due to validation failures:
+    WrongEB: 2689
+  3 out of 25 EB(s) did not reach the vote threshold (12690128428).
+  10 L1 block(s) had a Leios endorsement.
+  59339 tx(s) (89.01 MB) were referenced by a Leios endorsement.
+  841 tx(s) (1.26 MB) were included directly in a Praos block.
+  Spatial efficiency: 89.01 MB/4.71 MB (1890.689%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 36.613s (stddev 26.715) to be included in an EB.
+  Each transaction took an average of 80.466s (stddev 34.780) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 660:
+  214720218 TX message(s) were sent. 214718656 of them were received (99.999%).
+  67035 EB message(s) were sent. 67035 of them were received (100.000%).
+  53247876 Vote message(s) were sent. 53247876 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 660 (node 0, x2685 nodes):
+  txs:                 80000 entries  ~   10.9 MB  (received: 79998)
+  mempool:             19818 entries  ~   31.6 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           28 entries  ~    0.0 MB  (tx_refs: 840)
+  ledger_states:           1 entries  ~    1.0 MB  (spent_inputs: 60180)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           24 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 43.7 MB  (x 2685 = ~ 111869.2 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 11705 active
+  queued messages: 189691
+  queued bytes: 0.9 MB
+ INFO sim_cli::events: Slot 661 has begun.
+ INFO sim_cli::events: Slot 662 has begun.
+ INFO sim_cli::events: Slot 663 has begun.
+ INFO sim_cli::events: Slot 664 has begun.
+ INFO sim_cli::events: Slot 665 has begun.
+ INFO sim_cli::events: Slot 666 has begun.
+ INFO sim_cli::events: Slot 667 has begun.
+ INFO sim_cli::events: Slot 668 has begun.
+ INFO sim_cli::events: Slot 669 has begun.
+ INFO sim_cli::events: Slot 670 has begun.
+ INFO sim_cli::events: Slot 671 has begun.
+ INFO sim_cli::events: Slot 672 has begun.
+ INFO sim_cli::events: Slot 673 has begun.
+ INFO sim_cli::events: Slot 674 has begun.
+ INFO sim_cli::events: Slot 675 has begun.
+ INFO sim_cli::events: Slot 676 has begun.
+ INFO sim_cli::events: Slot 677 has begun.
+ INFO sim_cli::events: Slot 678 has begun.
+ INFO sim_cli::events: Slot 679 has begun.
+ INFO sim_cli::events: Slot 680 has begun.
+ INFO sim_cli::events: Slot 681 has begun.
+ INFO sim_cli::events: Slot 682 has begun.
+ INFO sim_cli::events: Slot 683 has begun.
+ INFO sim_cli::events: Slot 684 has begun.
+ INFO sim_cli::events: Pool node-101 produced a praos block in slot 684 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-101 generated an EB with 0 IB(s) and 8000 TX(s) in slot 684.
+ INFO sim_cli::events: Slot 685 has begun.
+ INFO sim_cli::events: Pool node-503 produced a praos block in slot 685 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 0 leios tx(s) (0 unique).
+ INFO sim_cli::events: Pool node-503 generated an EB with 0 IB(s) and 8000 TX(s) in slot 685.
+ INFO sim_cli::events: Slot 686 has begun.
+ INFO sim_cli::events: Pool node-382 produced a praos block in slot 686 with 60 tx(s).
+ INFO sim_cli::events: Pool node-382 generated an EB with 0 IB(s) and 8000 TX(s) in slot 686.
+ INFO sim_cli::events: Slot 687 has begun.
+ INFO sim_cli::events: Slot 688 has begun.
+ INFO sim_cli::events: Slot 689 has begun.
+ INFO sim_cli::events: Slot 690 has begun.
+ INFO sim_cli::events: Slot 691 has begun.
+ INFO sim_cli::events: Slot 692 has begun.
+ INFO sim_cli::events: Slot 693 has begun.
+ INFO sim_cli::events: Slot 694 has begun.
+ INFO sim_cli::events: Slot 695 has begun.
+ INFO sim_cli::events: Slot 696 has begun.
+ INFO sim_cli::events: Slot 697 has begun.
+ INFO sim_cli::events: Slot 698 has begun.
+ INFO sim_cli::events: Slot 699 has begun.
+ INFO sim_cli::events: Slot 700 has begun.
+ INFO sim_cli::events: Slot 701 has begun.
+ INFO sim_cli::events: Slot 702 has begun.
+ INFO sim_cli::events: Slot 703 has begun.
+ INFO sim_cli::events: Slot 704 has begun.
+ INFO sim_cli::events: Slot 705 has begun.
+ INFO sim_cli::events: Slot 706 has begun.
+ INFO sim_cli::events: Slot 707 has begun.
+ INFO sim_cli::events: Slot 708 has begun.
+ INFO sim_cli::events: Slot 709 has begun.
+ INFO sim_cli::events: Slot 710 has begun.
+ INFO sim_cli::events: Slot 711 has begun.
+ INFO sim_cli::events: Slot 712 has begun.
+ INFO sim_cli::events: Pool node-521 produced a praos block in slot 712 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-521 generated an EB with 0 IB(s) and 8000 TX(s) in slot 712.
+ INFO sim_cli::events: Slot 713 has begun.
+ INFO sim_cli::events: Slot 714 has begun.
+ INFO sim_cli::events: Slot 715 has begun.
+ INFO sim_cli::events: Slot 716 has begun.
+ INFO sim_cli::events: Slot 717 has begun.
+ INFO sim_cli::events: Slot 718 has begun.
+ INFO sim_cli::events: Slot 719 has begun.
+ INFO sim_cli::events: Slot 720 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 720:
+  monitor.txs: 88002 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 29 entries
+  monitor.votes_per_bundle: 21645 entries
+  monitor.eb_votes: 29 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 11762 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 17 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 720:
+  The average age of the pending transactions is 44.115s (stddev 25.465).
+  29 EB(s) were generated; on average there were 0.040 EB(s) per slot.
+  Each EB contained an average of 6083.759 transaction(s) (stddev 2344.135). 0 EB(s) were empty.
+  14 out of 29 EBs expired before an EB from their stage reached an RB.
+  84180 out of 88002 transaction(s) were included in at least one EB.
+  502755744474 total votes were generated.
+  Each stake pool produced an average of 187246087.327 vote(s) (stddev 424174136.113).
+  Each EB received an average of 17336404981.862 vote(s) (stddev 7878835046.087).
+  There were 21645 bundle(s) of votes. Each bundle contained 23227338.622 vote(s) (stddev 23900796.845).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 29 EB(s) did not reach the vote threshold (12690128428).
+  13 L1 block(s) had a Leios endorsement.
+  75339 tx(s) (113.01 MB) were referenced by a Leios endorsement.
+  901 tx(s) (1.35 MB) were included directly in a Praos block.
+  Spatial efficiency: 113.01 MB/5.76 MB (1963.082%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 42.361s (stddev 28.720) to be included in an EB.
+  Each transaction took an average of 90.214s (stddev 37.806) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 720:
+  236196041 TX message(s) were sent. 236195020 of them were received (100.000%).
+  77771 EB message(s) were sent. 77771 of them were received (100.000%).
+  58095180 Vote message(s) were sent. 58095180 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 720 (node 0, x2685 nodes):
+  txs:                 88002 entries  ~   12.0 MB  (received: 87999)
+  mempool:             11759 entries  ~   18.8 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           32 entries  ~    0.1 MB  (tx_refs: 900)
+  ledger_states:           1 entries  ~    1.2 MB  (spent_inputs: 76240)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 50)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          1 entries
+  leios.pruned:           28 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 32.2 MB  (x 2685 = ~ 82388.7 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12940 active
+  queued messages: 222111
+  queued bytes: 0.2 MB
+ INFO sim_cli::events: Slot 721 has begun.
+ INFO sim_cli::events: Slot 722 has begun.
+ INFO sim_cli::events: Slot 723 has begun.
+ INFO sim_cli::events: Slot 724 has begun.
+ INFO sim_cli::events: Slot 725 has begun.
+ INFO sim_cli::events: Slot 726 has begun.
+ INFO sim_cli::events: Slot 727 has begun.
+ INFO sim_cli::events: Slot 728 has begun.
+ INFO sim_cli::events: Slot 729 has begun.
+ INFO sim_cli::events: Slot 730 has begun.
+ INFO sim_cli::events: Slot 731 has begun.
+ INFO sim_cli::events: Slot 732 has begun.
+ INFO sim_cli::events: Slot 733 has begun.
+ INFO sim_cli::events: Pool node-187 produced a praos block in slot 733 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-187 generated an EB with 0 IB(s) and 5493 TX(s) in slot 733.
+ INFO sim_cli::events: Slot 734 has begun.
+ INFO sim_cli::events: Slot 735 has begun.
+ INFO sim_cli::events: Slot 736 has begun.
+ INFO sim_cli::events: Slot 737 has begun.
+ INFO sim_cli::events: Pool node-136 produced a praos block in slot 737 with 60 tx(s).
+ INFO sim_cli::events: Pool node-136 generated an EB with 0 IB(s) and 5968 TX(s) in slot 737.
+ INFO sim_cli::events: Slot 738 has begun.
+ INFO sim_cli::events: Slot 739 has begun.
+ INFO sim_cli::events: Slot 740 has begun.
+ INFO sim_cli::events: Slot 741 has begun.
+ INFO sim_cli::events: Slot 742 has begun.
+ INFO sim_cli::events: Slot 743 has begun.
+ INFO sim_cli::events: Slot 744 has begun.
+ INFO sim_cli::events: Slot 745 has begun.
+ INFO sim_cli::events: Slot 746 has begun.
+ INFO sim_cli::events: Slot 747 has begun.
+ INFO sim_cli::events: Pool node-71 produced a praos block in slot 747 with 60 tx(s).
+ INFO sim_cli::events: Pool node-71 generated an EB with 0 IB(s) and 7241 TX(s) in slot 747.
+ INFO sim_cli::events: Slot 748 has begun.
+ INFO sim_cli::events: Slot 749 has begun.
+ INFO sim_cli::events: Slot 750 has begun.
+ INFO sim_cli::events: Slot 751 has begun.
+ INFO sim_cli::events: Slot 752 has begun.
+ INFO sim_cli::events: Slot 753 has begun.
+ INFO sim_cli::events: Slot 754 has begun.
+ INFO sim_cli::events: Slot 755 has begun.
+ INFO sim_cli::events: Slot 756 has begun.
+ INFO sim_cli::events: Slot 757 has begun.
+ INFO sim_cli::events: Slot 758 has begun.
+ INFO sim_cli::events: Slot 759 has begun.
+ INFO sim_cli::events: Slot 760 has begun.
+ INFO sim_cli::events: Slot 761 has begun.
+ INFO sim_cli::events: Slot 762 has begun.
+ INFO sim_cli::events: Slot 763 has begun.
+ INFO sim_cli::events: Slot 764 has begun.
+ INFO sim_cli::events: Slot 765 has begun.
+ INFO sim_cli::events: Slot 766 has begun.
+ INFO sim_cli::events: Slot 767 has begun.
+ INFO sim_cli::events: Slot 768 has begun.
+ INFO sim_cli::events: Slot 769 has begun.
+ INFO sim_cli::events: Slot 770 has begun.
+ INFO sim_cli::events: Slot 771 has begun.
+ INFO sim_cli::events: Slot 772 has begun.
+ INFO sim_cli::events: Slot 773 has begun.
+ INFO sim_cli::events: Slot 774 has begun.
+ INFO sim_cli::events: Slot 775 has begun.
+ INFO sim_cli::events: Slot 776 has begun.
+ INFO sim_cli::events: Slot 777 has begun.
+ INFO sim_cli::events: Slot 778 has begun.
+ INFO sim_cli::events: Slot 779 has begun.
+ INFO sim_cli::events: Slot 780 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 780:
+  monitor.txs: 96000 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 32 entries
+  monitor.votes_per_bundle: 24351 entries
+  monitor.eb_votes: 32 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 4399 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 19 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 780:
+  The average age of the pending transactions is 43.672s (stddev 25.201).
+  32 EB(s) were generated; on average there were 0.041 EB(s) per slot.
+  Each EB contained an average of 6097.844 transaction(s) (stddev 2243.388). 0 EB(s) were empty.
+  14 out of 32 EBs expired before an EB from their stage reached an RB.
+  91541 out of 96000 transaction(s) were included in at least one EB.
+  565573040736 total votes were generated.
+  Each stake pool produced an average of 210641728.393 vote(s) (stddev 477160043.958).
+  Each EB received an average of 17674157523.000 vote(s) (stddev 7573582703.916).
+  There were 24351 bundle(s) of votes. Each bundle contained 23225865.087 vote(s) (stddev 23899618.701).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 32 EB(s) did not reach the vote threshold (12690128428).
+  14 L1 block(s) had a Leios endorsement.
+  83339 tx(s) (125.01 MB) were referenced by a Leios endorsement.
+  1021 tx(s) (1.53 MB) were included directly in a Praos block.
+  Spatial efficiency: 125.01 MB/6.36 MB (1964.347%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 40.299s (stddev 28.634) to be included in an EB.
+  Each transaction took an average of 88.380s (stddev 36.775) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 780:
+  257663151 TX message(s) were sent. 257662635 of them were received (100.000%).
+  85823 EB message(s) were sent. 85823 of them were received (100.000%).
+  65358084 Vote message(s) were sent. 65358084 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 780 (node 0, x2685 nodes):
+  txs:                 96000 entries  ~   13.1 MB  (received: 95999)
+  mempool:             11639 entries  ~   18.6 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           35 entries  ~    0.1 MB  (tx_refs: 1020)
+  ledger_states:           1 entries  ~    1.3 MB  (spent_inputs: 84360)
+  leios.ebs:               3 entries  ~    0.1 MB  (tx_refs: 18702)
+  leios.votes:          2706 entries  ~    0.2 MB
+  leios.votes_by_eb:       3 entries  ~    0.1 MB  (voters: 2706)
+  leios.eb_announce:       3 entries  ~    0.0 MB  (peers: 148)
+  leios.ebs_by_rb:         3 entries
+  leios.endorsed:          1 entries
+  leios.pruned:           29 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 33.5 MB  (x 2685 = ~ 85774.4 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12962 active
+  queued messages: 203580
+  queued bytes: 0.1 MB
+ INFO sim_cli::events: Slot 781 has begun.
+ INFO sim_cli::events: Slot 782 has begun.
+ INFO sim_cli::events: Slot 783 has begun.
+ INFO sim_cli::events: Slot 784 has begun.
+ INFO sim_cli::events: Slot 785 has begun.
+ INFO sim_cli::events: Slot 786 has begun.
+ INFO sim_cli::events: Slot 787 has begun.
+ INFO sim_cli::events: Slot 788 has begun.
+ INFO sim_cli::events: Slot 789 has begun.
+ INFO sim_cli::events: Slot 790 has begun.
+ INFO sim_cli::events: Slot 791 has begun.
+ INFO sim_cli::events: Slot 792 has begun.
+ INFO sim_cli::events: Slot 793 has begun.
+ INFO sim_cli::events: Slot 794 has begun.
+ INFO sim_cli::events: Slot 795 has begun.
+ INFO sim_cli::events: Slot 796 has begun.
+ INFO sim_cli::events: Slot 797 has begun.
+ INFO sim_cli::events: Slot 798 has begun.
+ INFO sim_cli::events: Slot 799 has begun.
+ INFO sim_cli::events: Slot 800 has begun.
+ INFO sim_cli::events: Slot 801 has begun.
+ INFO sim_cli::events: Slot 802 has begun.
+ INFO sim_cli::events: Slot 803 has begun.
+ INFO sim_cli::events: Slot 804 has begun.
+ INFO sim_cli::events: Slot 805 has begun.
+ INFO sim_cli::events: Slot 806 has begun.
+ INFO sim_cli::events: Slot 807 has begun.
+ INFO sim_cli::events: Slot 808 has begun.
+ INFO sim_cli::events: Slot 809 has begun.
+ INFO sim_cli::events: Slot 810 has begun.
+ INFO sim_cli::events: Slot 811 has begun.
+ INFO sim_cli::events: Slot 812 has begun.
+ INFO sim_cli::events: Slot 813 has begun.
+ INFO sim_cli::events: Slot 814 has begun.
+ INFO sim_cli::events: Slot 815 has begun.
+ INFO sim_cli::events: Slot 816 has begun.
+ INFO sim_cli::events: Slot 817 has begun.
+ INFO sim_cli::events: Slot 818 has begun.
+ INFO sim_cli::events: Slot 819 has begun.
+ INFO sim_cli::events: Slot 820 has begun.
+ INFO sim_cli::events: Slot 821 has begun.
+ INFO sim_cli::events: Slot 822 has begun.
+ INFO sim_cli::events: Pool node-291 produced a praos block in slot 822 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 7241 leios tx(s) (7241 unique).
+ INFO sim_cli::events: Pool node-291 generated an EB with 0 IB(s) and 8000 TX(s) in slot 822.
+ INFO sim_cli::events: Slot 823 has begun.
+ INFO sim_cli::events: Slot 824 has begun.
+ INFO sim_cli::events: Slot 825 has begun.
+ INFO sim_cli::events: Slot 826 has begun.
+ INFO sim_cli::events: Slot 827 has begun.
+ INFO sim_cli::events: Slot 828 has begun.
+ INFO sim_cli::events: Slot 829 has begun.
+ INFO sim_cli::events: Slot 830 has begun.
+ INFO sim_cli::events: Slot 831 has begun.
+ INFO sim_cli::events: Slot 832 has begun.
+ INFO sim_cli::events: Slot 833 has begun.
+ INFO sim_cli::events: Slot 834 has begun.
+ INFO sim_cli::events: Slot 835 has begun.
+ INFO sim_cli::events: Slot 836 has begun.
+ INFO sim_cli::events: Slot 837 has begun.
+ INFO sim_cli::events: Slot 838 has begun.
+ INFO sim_cli::events: Slot 839 has begun.
+ INFO sim_cli::events: Slot 840 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 840:
+  monitor.txs: 104004 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 33 entries
+  monitor.votes_per_bundle: 25253 entries
+  monitor.eb_votes: 33 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 4403 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 19 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 840:
+  The average age of the pending transactions is 46.504s (stddev 26.853).
+  33 EB(s) were generated; on average there were 0.039 EB(s) per slot.
+  Each EB contained an average of 6155.485 transaction(s) (stddev 2233.070). 0 EB(s) were empty.
+  18 out of 33 EBs expired before an EB from their stage reached an RB.
+  99541 out of 104004 transaction(s) were included in at least one EB.
+  586512139490 total votes were generated.
+  Each stake pool produced an average of 218440275.415 vote(s) (stddev 494822048.019).
+  Each EB received an average of 17773095136.061 vote(s) (stddev 7478919414.103).
+  There were 25253 bundle(s) of votes. Each bundle contained 23225444.085 vote(s) (stddev 23899282.067).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 33 EB(s) did not reach the vote threshold (12690128428).
+  15 L1 block(s) had a Leios endorsement.
+  90580 tx(s) (135.87 MB) were referenced by a Leios endorsement.
+  1021 tx(s) (1.53 MB) were included directly in a Praos block.
+  Spatial efficiency: 135.87 MB/6.63 MB (2049.905%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 40.705s (stddev 27.929) to be included in an EB.
+  Each transaction took an average of 89.497s (stddev 35.769) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 840:
+  279135405 TX message(s) were sent. 279132152 of them were received (99.999%).
+  88507 EB message(s) were sent. 88507 of them were received (100.000%).
+  67779052 Vote message(s) were sent. 67779052 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 840 (node 0, x2685 nodes):
+  txs:                104000 entries  ~   14.1 MB  (received: 103998)
+  mempool:             12397 entries  ~   19.8 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           36 entries  ~    0.1 MB  (tx_refs: 1020)
+  ledger_states:           1 entries  ~    1.5 MB  (spent_inputs: 91601)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          1 entries
+  leios.pruned:           32 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 35.6 MB  (x 2685 = ~ 91215.2 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 11874 active
+  queued messages: 190457
+  queued bytes: 0.7 MB
+ INFO sim_cli::events: Slot 841 has begun.
+ INFO sim_cli::events: Slot 842 has begun.
+ INFO sim_cli::events: Slot 843 has begun.
+ INFO sim_cli::events: Slot 844 has begun.
+ INFO sim_cli::events: Slot 845 has begun.
+ INFO sim_cli::events: Slot 846 has begun.
+ INFO sim_cli::events: Slot 847 has begun.
+ INFO sim_cli::events: Slot 848 has begun.
+ INFO sim_cli::events: Slot 849 has begun.
+ INFO sim_cli::events: Slot 850 has begun.
+ INFO sim_cli::events: Slot 851 has begun.
+ INFO sim_cli::events: Slot 852 has begun.
+ INFO sim_cli::events: Slot 853 has begun.
+ INFO sim_cli::events: Slot 854 has begun.
+ INFO sim_cli::events: Slot 855 has begun.
+ INFO sim_cli::events: Slot 856 has begun.
+ INFO sim_cli::events: Slot 857 has begun.
+ INFO sim_cli::events: Slot 858 has begun.
+ INFO sim_cli::events: Slot 859 has begun.
+ INFO sim_cli::events: Slot 860 has begun.
+ INFO sim_cli::events: Slot 861 has begun.
+ INFO sim_cli::events: Slot 862 has begun.
+ INFO sim_cli::events: Slot 863 has begun.
+ INFO sim_cli::events: Slot 864 has begun.
+ INFO sim_cli::events: Slot 865 has begun.
+ INFO sim_cli::events: Slot 866 has begun.
+ INFO sim_cli::events: Slot 867 has begun.
+ INFO sim_cli::events: Slot 868 has begun.
+ INFO sim_cli::events: Slot 869 has begun.
+ INFO sim_cli::events: Slot 870 has begun.
+ INFO sim_cli::events: Slot 871 has begun.
+ INFO sim_cli::events: Slot 872 has begun.
+ INFO sim_cli::events: Slot 873 has begun.
+ INFO sim_cli::events: Slot 874 has begun.
+ INFO sim_cli::events: Slot 875 has begun.
+ INFO sim_cli::events: Slot 876 has begun.
+ INFO sim_cli::events: Slot 877 has begun.
+ INFO sim_cli::events: Slot 878 has begun.
+ INFO sim_cli::events: Slot 879 has begun.
+ INFO sim_cli::events: Slot 880 has begun.
+ INFO sim_cli::events: Slot 881 has begun.
+ INFO sim_cli::events: Slot 882 has begun.
+ INFO sim_cli::events: Slot 883 has begun.
+ INFO sim_cli::events: Slot 884 has begun.
+ INFO sim_cli::events: Slot 885 has begun.
+ INFO sim_cli::events: Slot 886 has begun.
+ INFO sim_cli::events: Slot 887 has begun.
+ INFO sim_cli::events: Slot 888 has begun.
+ INFO sim_cli::events: Slot 889 has begun.
+ INFO sim_cli::events: Slot 890 has begun.
+ INFO sim_cli::events: Slot 891 has begun.
+ INFO sim_cli::events: Slot 892 has begun.
+ INFO sim_cli::events: Slot 893 has begun.
+ INFO sim_cli::events: Slot 894 has begun.
+ INFO sim_cli::events: Slot 895 has begun.
+ INFO sim_cli::events: Slot 896 has begun.
+ INFO sim_cli::events: Slot 897 has begun.
+ INFO sim_cli::events: Slot 898 has begun.
+ INFO sim_cli::events: Slot 899 has begun.
+ INFO sim_cli::events: Slot 900 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 900:
+  monitor.txs: 112002 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 33 entries
+  monitor.votes_per_bundle: 25253 entries
+  monitor.eb_votes: 33 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 12401 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 19 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 900:
+  The average age of the pending transactions is 76.511s (stddev 44.169).
+  33 EB(s) were generated; on average there were 0.037 EB(s) per slot.
+  Each EB contained an average of 6155.485 transaction(s) (stddev 2233.070). 0 EB(s) were empty.
+  18 out of 33 EBs expired before an EB from their stage reached an RB.
+  99541 out of 112002 transaction(s) were included in at least one EB.
+  586512139490 total votes were generated.
+  Each stake pool produced an average of 218440275.415 vote(s) (stddev 494822048.019).
+  Each EB received an average of 17773095136.061 vote(s) (stddev 7478919414.103).
+  There were 25253 bundle(s) of votes. Each bundle contained 23225444.085 vote(s) (stddev 23899282.067).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 33 EB(s) did not reach the vote threshold (12690128428).
+  15 L1 block(s) had a Leios endorsement.
+  90580 tx(s) (135.87 MB) were referenced by a Leios endorsement.
+  1021 tx(s) (1.53 MB) were included directly in a Praos block.
+  Spatial efficiency: 135.87 MB/6.63 MB (2049.905%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 40.705s (stddev 27.929) to be included in an EB.
+  Each transaction took an average of 89.497s (stddev 35.769) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 900:
+  300612258 TX message(s) were sent. 300611456 of them were received (100.000%).
+  88507 EB message(s) were sent. 88507 of them were received (100.000%).
+  67779052 Vote message(s) were sent. 67779052 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 900 (node 0, x2685 nodes):
+  txs:                112002 entries  ~   15.2 MB  (received: 112001)
+  mempool:             20400 entries  ~   32.6 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           36 entries  ~    0.1 MB  (tx_refs: 1020)
+  ledger_states:           1 entries  ~    1.5 MB  (spent_inputs: 91601)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          1 entries
+  leios.pruned:           32 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 49.5 MB  (x 2685 = ~ 126708.2 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 12698 active
+  queued messages: 226784
+  queued bytes: 0.1 MB
+ INFO sim_cli::events: Slot 901 has begun.
+ INFO sim_cli::events: Slot 902 has begun.
+ INFO sim_cli::events: Slot 903 has begun.
+ INFO sim_cli::events: Slot 904 has begun.
+ INFO sim_cli::events: Slot 905 has begun.
+ INFO sim_cli::events: Slot 906 has begun.
+ INFO sim_cli::events: Slot 907 has begun.
+ INFO sim_cli::events: Slot 908 has begun.
+ INFO sim_cli::events: Slot 909 has begun.
+ INFO sim_cli::events: Slot 910 has begun.
+ INFO sim_cli::events: Slot 911 has begun.
+ INFO sim_cli::events: Slot 912 has begun.
+ INFO sim_cli::events: Slot 913 has begun.
+ INFO sim_cli::events: Slot 914 has begun.
+ INFO sim_cli::events: Slot 915 has begun.
+ INFO sim_cli::events: Slot 916 has begun.
+ INFO sim_cli::events: Slot 917 has begun.
+ INFO sim_cli::events: Slot 918 has begun.
+ INFO sim_cli::events: Slot 919 has begun.
+ INFO sim_cli::events: Slot 920 has begun.
+ INFO sim_cli::events: Slot 921 has begun.
+ INFO sim_cli::events: Slot 922 has begun.
+ INFO sim_cli::events: Slot 923 has begun.
+ INFO sim_cli::events: Slot 924 has begun.
+ INFO sim_cli::events: Slot 925 has begun.
+ INFO sim_cli::events: Slot 926 has begun.
+ INFO sim_cli::events: Slot 927 has begun.
+ INFO sim_cli::events: Slot 928 has begun.
+ INFO sim_cli::events: Slot 929 has begun.
+ INFO sim_cli::events: Slot 930 has begun.
+ INFO sim_cli::events: Slot 931 has begun.
+ INFO sim_cli::events: Slot 932 has begun.
+ INFO sim_cli::events: Slot 933 has begun.
+ INFO sim_cli::events: Slot 934 has begun.
+ INFO sim_cli::events: Slot 935 has begun.
+ INFO sim_cli::events: Slot 936 has begun.
+ INFO sim_cli::events: Slot 937 has begun.
+ INFO sim_cli::events: Slot 938 has begun.
+ INFO sim_cli::events: Slot 939 has begun.
+ INFO sim_cli::events: Slot 940 has begun.
+ INFO sim_cli::events: Slot 941 has begun.
+ INFO sim_cli::events: Slot 942 has begun.
+ INFO sim_cli::events: Slot 943 has begun.
+ INFO sim_cli::events: Slot 944 has begun.
+ INFO sim_cli::events: Slot 945 has begun.
+ INFO sim_cli::events: Slot 946 has begun.
+ INFO sim_cli::events: Slot 947 has begun.
+ INFO sim_cli::events: Slot 948 has begun.
+ INFO sim_cli::events: Slot 949 has begun.
+ INFO sim_cli::events: Slot 950 has begun.
+ INFO sim_cli::events: Slot 951 has begun.
+ INFO sim_cli::events: Slot 952 has begun.
+ INFO sim_cli::events: Slot 953 has begun.
+ INFO sim_cli::events: Slot 954 has begun.
+ INFO sim_cli::events: Slot 955 has begun.
+ INFO sim_cli::events: Slot 956 has begun.
+ INFO sim_cli::events: Slot 957 has begun.
+ INFO sim_cli::events: Slot 958 has begun.
+ INFO sim_cli::events: Slot 959 has begun.
+ INFO sim_cli::events: Slot 960 has begun.
+ INFO sim_cli::events: EventMonitor stats at slot 960:
+  monitor.txs: 120000 entries
+  monitor.ibs: 0 entries
+  monitor.ebs: 33 entries
+  monitor.votes_per_bundle: 25253 entries
+  monitor.eb_votes: 33 entries
+  monitor.ibs_containing_tx: 0 entries
+  monitor.ebs_containing_ib: 0 entries
+  buffered output events: 0
+  liveness.txs: 20399 entries
+  liveness.ibs: 0 entries
+  liveness.ebs: 19 entries
+  liveness.queue: 0 entries
+ INFO leios: sim_cli::events: Protocol stats at slot 960:
+  The average age of the pending transactions is 106.519s (stddev 61.486).
+  33 EB(s) were generated; on average there were 0.034 EB(s) per slot.
+  Each EB contained an average of 6155.485 transaction(s) (stddev 2233.070). 0 EB(s) were empty.
+  19 out of 33 EBs expired before an EB from their stage reached an RB.
+  99541 out of 120000 transaction(s) were included in at least one EB.
+  586512139490 total votes were generated.
+  Each stake pool produced an average of 218440275.415 vote(s) (stddev 494822048.019).
+  Each EB received an average of 17773095136.061 vote(s) (stddev 7478919414.103).
+  There were 25253 bundle(s) of votes. Each bundle contained 23225444.085 vote(s) (stddev 23899282.067).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 33 EB(s) did not reach the vote threshold (12690128428).
+  15 L1 block(s) had a Leios endorsement.
+  90580 tx(s) (135.87 MB) were referenced by a Leios endorsement.
+  1021 tx(s) (1.53 MB) were included directly in a Praos block.
+  Spatial efficiency: 135.87 MB/6.63 MB (2049.905%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 40.705s (stddev 27.929) to be included in an EB.
+  Each transaction took an average of 89.497s (stddev 35.769) to be included in a block.
+ INFO network: sim_cli::events: Network stats at slot 960:
+  322079449 TX message(s) were sent. 322079096 of them were received (100.000%).
+  88507 EB message(s) were sent. 88507 of them were received (100.000%).
+  67779052 Vote message(s) were sent. 67779052 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 960 (node 0, x2685 nodes):
+  txs:                120000 entries  ~   16.3 MB  (received: 120000)
+  mempool:             28399 entries  ~   45.3 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           36 entries  ~    0.1 MB  (tx_refs: 1020)
+  ledger_states:           1 entries  ~    1.5 MB  (spent_inputs: 91601)
+  leios.ebs:               1 entries  ~    0.1 MB  (tx_refs: 8000)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          1 entries
+  leios.pruned:           32 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 63.3 MB  (x 2685 = ~ 162183.5 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 11318 active
+  queued messages: 204017
+  queued bytes: 0.0 MB
+ INFO sim_cli::events: Slot 961 has begun.
+ INFO sim_cli::events: Slot 962 has begun.
+ INFO sim_cli::events: Slot 963 has begun.
+ INFO sim_cli::events: Slot 964 has begun.
+ INFO sim_cli::events: Slot 965 has begun.
+ INFO sim_cli::events: Slot 966 has begun.
+ INFO sim_cli::events: Slot 967 has begun.
+ INFO sim_cli::events: Slot 968 has begun.
+ INFO sim_cli::events: Slot 969 has begun.
+ INFO sim_cli::events: Slot 970 has begun.
+ INFO sim_cli::events: Slot 971 has begun.
+ INFO sim_cli::events: Slot 972 has begun.
+ INFO sim_cli::events: Slot 973 has begun.
+ INFO sim_cli::events: Slot 974 has begun.
+ INFO sim_cli::events: Slot 975 has begun.
+ INFO sim_cli::events: Slot 976 has begun.
+ INFO sim_cli::events: Slot 977 has begun.
+ INFO sim_cli::events: Slot 978 has begun.
+ INFO sim_cli::events: Slot 979 has begun.
+ INFO sim_cli::events: Slot 980 has begun.
+ INFO sim_cli::events: Slot 981 has begun.
+ INFO sim_cli::events: Slot 982 has begun.
+ INFO sim_cli::events: Slot 983 has begun.
+ INFO sim_cli::events: Slot 984 has begun.
+ INFO sim_cli::events: Slot 985 has begun.
+ INFO sim_cli::events: Slot 986 has begun.
+ INFO sim_cli::events: Slot 987 has begun.
+ INFO sim_cli::events: Pool node-1332 produced a praos block in slot 987 with 0 tx(s).
+ INFO sim_cli::events: This block had an additional 8000 leios tx(s) (8000 unique).
+ INFO sim_cli::events: Pool node-1332 generated an EB with 0 IB(s) and 8000 TX(s) in slot 987.
+ INFO sim_cli::events: Slot 988 has begun.
+ INFO sim_cli::events: Slot 989 has begun.
+ INFO sim_cli::events: Slot 990 has begun.
+ INFO sim_cli::events: Slot 991 has begun.
+ INFO sim_cli::events: Slot 992 has begun.
+ INFO sim_cli::events: Slot 993 has begun.
+ INFO sim_cli::events: Slot 994 has begun.
+ INFO sim_cli::events: Slot 995 has begun.
+ INFO sim_cli::events: Slot 996 has begun.
+ INFO sim_cli::events: Slot 997 has begun.
+ INFO sim_cli::events: Slot 998 has begun.
+ INFO sim_cli::events: Slot 999 has begun.
+ INFO praos: sim_cli::events: 120006 transactions(s) were generated in total.
+ INFO praos: sim_cli::events: 36 naive praos block(s) were published.
+ INFO praos: sim_cli::events: 964 slot(s) had no naive praos blocks.
+ INFO praos: sim_cli::events: 99601 transaction(s) (149.40 MB) finalized in a naive praos block.
+ INFO praos: sim_cli::events: 20405 transaction(s) (30.61 MB) did not reach a naive praos block.
+ INFO praos: sim_cli::events: Pool 14 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 58 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 324 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 369 failed to publish 1 naive praos block(s) due to slot battles.
+ INFO praos: sim_cli::events: Pool 372 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 402 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 702 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 824 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 968 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1035 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1068 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1247 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1358 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1558 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1875 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1877 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1886 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1899 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1904 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1906 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1933 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1940 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1945 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 1997 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2000 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2024 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2031 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2135 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2155 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2173 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2208 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2234 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2364 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2386 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2408 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2508 published 1 naive praos block(s)
+ INFO praos: sim_cli::events: Pool 2674 published 1 naive praos block(s)
+ INFO leios: sim_cli::events: Final protocol stats:
+  The average age of the pending transactions is 115.496s (stddev 44.178).
+  34 EB(s) were generated; on average there were 0.034 EB(s) per slot.
+  Each EB contained an average of 6209.735 transaction(s) (stddev 2221.950). 0 EB(s) were empty.
+  18 out of 34 EBs expired before an EB from their stage reached an RB.
+  107541 out of 120006 transaction(s) were included in at least one EB.
+  607451238244 total votes were generated.
+  Each stake pool produced an average of 226238822.437 vote(s) (stddev 512484066.473).
+  Each EB received an average of 17866212889.529 vote(s) (stddev 7387506430.080).
+  There were 26155 bundle(s) of votes. Each bundle contained 23225052.122 vote(s) (stddev 23898968.642).
+  4491 vote(s) were not generated due to validation failures:
+    WrongEB: 4491
+  5 out of 34 EB(s) did not reach the vote threshold (12690128428).
+  16 L1 block(s) had a Leios endorsement.
+  98580 tx(s) (147.87 MB) were referenced by a Leios endorsement.
+  1021 tx(s) (1.53 MB) were included directly in a Praos block.
+  Spatial efficiency: 147.87 MB/6.89 MB (2145.421%) of Leios bytes were unique transactions.
+  0 tx(s) (0.000%) referenced by a Leios endorsement were redundant.
+  Each transaction took an average of 48.862s (stddev 39.651) to be included in an EB.
+  Each transaction took an average of 99.204s (stddev 47.747) to be included in a block.
+ INFO network: sim_cli::events: Final network stats:
+  322096104 TX message(s) were sent. 322096104 of them were received (100.000%).
+  91191 EB message(s) were sent. 91191 of them were received (100.000%).
+  70200020 Vote message(s) were sent. 70200020 of them were received (100.000%).
