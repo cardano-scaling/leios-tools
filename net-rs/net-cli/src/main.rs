@@ -57,7 +57,8 @@ enum Command {
         count: usize,
     },
 
-    /// Fetch blocks via BlockFetch (uses ChainSync to find tip first)
+    /// Fetch blocks via BlockFetch (uses ChainSync to find tip first,
+    /// or a supplied point with --slot/--hash).
     BlockFetch {
         /// Host and port to connect to
         host: String,
@@ -65,6 +66,18 @@ enum Command {
         /// Network magic number
         #[arg(long, default_value_t = n2n::MAINNET_MAGIC)]
         magic: u64,
+
+        /// Override: target slot for BlockFetch (must be paired with --hash).
+        #[arg(long)]
+        slot: Option<u64>,
+
+        /// Override: target 32-byte block hash in hex (must be paired with --slot).
+        #[arg(long)]
+        hash: Option<String>,
+
+        /// Print the fetched block as hex on stdout.
+        #[arg(long)]
+        dump_hex: bool,
     },
 
     /// Run a fake Cardano node serving synthetic blocks
@@ -211,7 +224,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Command::Handshake { host, magic } => handshake::run(&host, magic).await,
         Command::Capture { host, magic } => capture::run(&host, magic).await,
         Command::ChainSync { host, magic, count } => chainsync::run(&host, magic, count).await,
-        Command::BlockFetch { host, magic } => blockfetch::run(&host, magic).await,
+        Command::BlockFetch {
+            host,
+            magic,
+            slot,
+            hash,
+            dump_hex,
+        } => {
+            let point = match (slot, hash) {
+                (Some(slot), Some(hash_hex)) => {
+                    // Reject odd-length / non-64-char input up front; the
+                    // slice path below would otherwise panic on
+                    // `&hash_hex[i..i+2]` when the last 2-byte window
+                    // overruns the string.
+                    let hash_hex = hash_hex.strip_prefix("0x").unwrap_or(&hash_hex);
+                    if hash_hex.len() != 64 {
+                        return Err(format!(
+                            "--hash must be 64 hex chars (32 bytes); got {}",
+                            hash_hex.len()
+                        )
+                        .into());
+                    }
+                    let bytes = (0..hash_hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&hash_hex[i..i + 2], 16))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| format!("--hash hex: {e}"))?;
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&bytes);
+                    Some(net_core::types::Point::Specific { slot, hash: h })
+                }
+                (None, None) => None,
+                _ => return Err("must supply both --slot and --hash, or neither".into()),
+            };
+            blockfetch::run(&host, magic, point, dump_hex).await
+        }
         Command::Serve {
             port,
             magic,
