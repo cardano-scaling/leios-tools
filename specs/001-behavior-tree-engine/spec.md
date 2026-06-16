@@ -302,10 +302,19 @@ single-file config.
   `==`, etc.), boolean combinations (and/or/not) over `env`/`state` fields, and simple
   membership checks (as in the example `peers.contains(...)`). A fuller general-purpose
   expression DSL is explicitly out of scope for this feature.
-- The REST control interface reuses the existing `net-cluster`/`net-node` control
-  conventions already present in the codebase rather than introducing a new transport.
-- Authorization for the control/REST interface follows existing project conventions;
-  this tooling is for authorized adversarial testing only.
+- **Architecture (confirmed — Model B)**: the behavior tree is the *single* abstraction
+  for adversarial behaviour. The existing `Behaviour` hook trait (and its
+  `BehaviourOutcome`/`DecisionOutcome`/`CompositeBehaviour` flow control) is **replaced**
+  by a BT whose slot tick produces a typed `Directives` value; mechanical actuators read
+  it. The `BehaviourSpec` registry is **retained** as the leaf-action lookup. See
+  `design/unified-tick-model.md` for the full decision record.
+- **Control plane (confirmed)**: the MVP control plane is **static config only**
+  (`--config` / `--behaviour-tree`). The REST control surface (US2/US3) and runtime env
+  mutation are **deferred** to the Docker/coordination story — we are not running in
+  containers yet, so the legacy stdin hot-swap path is retired rather than ported.
+- Authorization for the eventual REST interface follows existing project conventions
+  (loopback, unauthenticated like the net-cluster server); this tooling is for
+  authorized adversarial testing only.
 - The slot/tick source is the node's existing slot clock; the engine consumes slot
   advances rather than maintaining its own timer.
 
