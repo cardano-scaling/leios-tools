@@ -118,7 +118,7 @@ async fn leios_generator(commands: mpsc::Sender<NetworkCommand>, rate: f64) {
                 slot,
                 eb_hash: hash,
                 voter_id: v as u16,
-                vote_signature: true,
+                vote_signature: Vec::new(),
             })
             .collect();
         let _ = commands

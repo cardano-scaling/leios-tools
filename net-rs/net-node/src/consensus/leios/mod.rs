@@ -470,8 +470,9 @@ impl LeiosConsensus {
             slot: eb_slot,
             eb_hash,
             voter_id,
-            // Signature is mocked in the prototype.
-            vote_signature: true,
+            // Real deployments emit a BLS signature here; the prototype
+            // doesn't run signing or verification, so we emit empty bytes.
+            vote_signature: Vec::new(),
         };
         info!(
             node_id = %node_id,
@@ -758,7 +759,7 @@ mod tests {
             slot,
             eb_hash,
             voter_id,
-            vote_signature: true,
+            vote_signature: vec![0xAB; 48],
         }
     }
 

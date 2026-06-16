@@ -1749,7 +1749,7 @@ mod tests {
             slot: 10,
             eb_hash: h(1),
             voter_id: 0,
-            vote_signature: true,
+            vote_signature: vec![0xAB; 48],
         };
         let fx = state.on_votes_received(vec![vote]);
         assert!(fx.iter().any(|e| matches!(
@@ -1766,7 +1766,7 @@ mod tests {
             slot: 10,
             eb_hash: h(1),
             voter_id: 7,
-            vote_signature: true,
+            vote_signature: vec![0xAB; 48],
         };
         let fx = state.on_votes_received(vec![vote]);
         assert!(fx.is_empty());

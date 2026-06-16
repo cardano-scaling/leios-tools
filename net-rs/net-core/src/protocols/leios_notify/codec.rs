@@ -12,7 +12,7 @@
 //!     slot           : uint
 //!     eb_hash        : bytes .size 32
 //!     voter_id       : word16
-//!     vote_signature : bool   (mocked; a real deployment carries a BLS sig)
+//!     vote_signature : bytes  (BLS signature; length set by the deployment)
 //!
 //! Decoders read the declared array length and skip any trailing
 //! elements they don't recognise, so a future field addition degrades
@@ -61,7 +61,7 @@ impl minicbor::Encode<()> for Message {
                     e.u64(vote.slot)?;
                     e.bytes(&vote.eb_hash)?;
                     e.u16(vote.voter_id)?;
-                    e.bool(vote.vote_signature)?;
+                    e.bytes(&vote.vote_signature)?;
                 }
             }
             Message::MsgDone => {
@@ -190,7 +190,7 @@ fn decode_vote(d: &mut Decoder<'_>) -> Result<Vote, DecodeError> {
     let mut eb_hash = [0u8; 32];
     eb_hash.copy_from_slice(hash_bytes);
     let voter_id = d.u16()?;
-    let vote_signature = d.bool()?;
+    let vote_signature = d.bytes()?.to_vec();
     skip_trailing(d, len, 4)?;
     Ok(Vote {
         slot,
@@ -295,19 +295,21 @@ mod tests {
 
     #[test]
     fn votes_round_trip() {
+        let sig_a = vec![0xAB; 48];
+        let sig_b = vec![0xCD; 48];
         let msg = Message::MsgLeiosVotes {
             votes: vec![
                 Vote {
                     slot: 100,
                     eb_hash: [0x11; 32],
                     voter_id: 130,
-                    vote_signature: true,
+                    vote_signature: sig_a.clone(),
                 },
                 Vote {
                     slot: 200,
                     eb_hash: [0x22; 32],
                     voter_id: 65535,
-                    vote_signature: false,
+                    vote_signature: sig_b.clone(),
                 },
             ],
         };
@@ -317,10 +319,10 @@ mod tests {
                 assert_eq!(votes.len(), 2);
                 assert_eq!(votes[0].slot, 100);
                 assert_eq!(votes[0].voter_id, 130);
-                assert!(votes[0].vote_signature);
+                assert_eq!(votes[0].vote_signature, sig_a);
                 assert_eq!(votes[1].eb_hash, [0x22; 32]);
                 assert_eq!(votes[1].voter_id, 65535);
-                assert!(!votes[1].vote_signature);
+                assert_eq!(votes[1].vote_signature, sig_b);
             }
             other => panic!("expected MsgLeiosVotes, got {other:?}"),
         }
@@ -366,24 +368,37 @@ mod tests {
         assert_eq!(minicbor::to_vec(&decoded).unwrap(), bytes);
     }
 
-    /// Real `msgLeiosVotes` bytes captured off the wire:
-    /// `[4, [[slot, eb_hash, voter_id, true]]]`.
+    /// Synthetic `msgLeiosVotes` bytes shaped like the live wire format:
+    /// `[4, [[slot, eb_hash, voter_id, bls_sig]]]` with a 48-byte BLS
+    /// signature.  Replace with a real captured frame once we have one
+    /// from the dev relay (TODO: capture and lock in the actual sig
+    /// length the deployment is using).
     #[test]
-    fn decode_captured_votes() {
-        let bytes = hex(
-            "820481841a0005dfc75820630ee36ae6a20e024a30cb582b3fcd1fd3a1aa0df16c1c7be53fea9ac3f1f70b1882f5",
-        );
+    fn decode_synthetic_bls_votes() {
+        let bytes = hex(concat!(
+            "82",                                                                 // array(2)
+            "04",                                                                 // tag = 4
+            "81",                                                                 // votes array(1)
+            "84",                                                                 // vote array(4)
+            "1a0005dfc7",                                                         // slot = 0x0005dfc7
+            "5820",                                                               // bytes(32) header
+            "630ee36ae6a20e024a30cb582b3fcd1fd3a1aa0df16c1c7be53fea9ac3f1f70b",   // eb_hash
+            "1882",                                                               // voter_id = 130
+            "5830",                                                               // bytes(48) header
+            "abababababababababababababababababababababababababababababababab",   // sig (32 bytes)
+            "abababababababababababababababab",                                   // sig (16 bytes) → 48 total
+        ));
         let decoded: Message = minicbor::decode(&bytes).unwrap();
         match &decoded {
             Message::MsgLeiosVotes { votes } => {
                 assert_eq!(votes.len(), 1);
                 assert_eq!(votes[0].slot, 0x0005_dfc7);
                 assert_eq!(votes[0].voter_id, 0x82); // 130
-                assert!(votes[0].vote_signature);
+                assert_eq!(votes[0].vote_signature, vec![0xAB; 48]);
             }
             other => panic!("expected MsgLeiosVotes, got {other:?}"),
         }
-        // Our encoder reproduces the captured bytes exactly.
+        // Our encoder reproduces the bytes exactly.
         assert_eq!(minicbor::to_vec(&decoded).unwrap(), bytes);
     }
 
@@ -400,7 +415,7 @@ mod tests {
         e.u64(7).unwrap();
         e.bytes(&[0xAB; 32]).unwrap();
         e.u16(3).unwrap();
-        e.bool(true).unwrap();
+        e.bytes(&[0xCD; 48]).unwrap();
         e.u64(999).unwrap(); // trailing field
         let decoded: Message = minicbor::decode(&buf).unwrap();
         match decoded {
@@ -476,7 +491,7 @@ mod tests {
             e.u64(i as u64).unwrap();
             e.bytes(&[0u8; 32]).unwrap();
             e.u16(1).unwrap();
-            e.bool(true).unwrap();
+            e.bytes(&[0u8; 48]).unwrap();
         }
 
         let result: Result<Message, _> = minicbor::decode(&buf);

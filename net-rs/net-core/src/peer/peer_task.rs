@@ -503,14 +503,32 @@ pub(crate) fn spawn_leios_notify(
                         .await;
                 }
                 Ok(LeiosNotifyEvent::Votes { votes }) => {
-                    tracing::info!(%peer_id, count = votes.len(), "leios_notify: votes received");
+                    let sig_lens: Vec<usize> =
+                        votes.iter().map(|v| v.vote_signature.len()).collect();
+                    let sig_prefix = votes
+                        .first()
+                        .map(|v| {
+                            v.vote_signature
+                                .iter()
+                                .take(8)
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default();
+                    tracing::info!(
+                        %peer_id,
+                        count = votes.len(),
+                        ?sig_lens,
+                        sig_prefix = %sig_prefix,
+                        "leios_notify: votes received"
+                    );
                     for v in &votes {
                         tracing::debug!(
                             %peer_id,
                             slot = v.slot,
                             eb_hash = %hex32(&v.eb_hash),
                             voter_id = v.voter_id,
-                            sig = v.vote_signature,
+                            sig_len = v.vote_signature.len(),
                             "leios_notify: vote"
                         );
                     }
@@ -1170,7 +1188,7 @@ mod tests {
                         slot: 100,
                         eb_hash: [0xAB; 32],
                         voter_id: 1,
-                        vote_signature: true,
+                        vote_signature: vec![0xAB; 48],
                     }],
                 })
                 .await
