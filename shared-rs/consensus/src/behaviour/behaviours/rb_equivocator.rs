@@ -96,7 +96,12 @@ impl Behaviour for RbHeaderEquivocator {
     }
 
     fn transform_outbound(&mut self, peer: PeerId, out: Outbound<'_>) -> OutboundDecision {
-        let Outbound::RbHeader { slot, header } = out;
+        // Only RB headers are this behaviour's concern; LeiosNotify
+        // offers and other future variants pass through unchanged.
+        let (slot, header) = match out {
+            Outbound::RbHeader { slot, header } => (slot, header),
+            _ => return OutboundDecision::Send,
+        };
         let Some(set) = self.variants.get(&slot) else {
             // Either this isn't a slot we equivocated on, or the cache
             // entry has been evicted.  Pass through honestly.

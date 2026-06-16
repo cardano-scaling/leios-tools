@@ -296,7 +296,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         bf_srv_recv,
         chain_store.clone(),
         peer_id,
-        outbound_behaviour,
+        outbound_behaviour.clone(),
     ));
     let ts_server = tokio::spawn(server_handlers::serve_txsubmission(
         ts_srv_send,
@@ -324,12 +324,18 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         let (lf_srv_send, lf_srv_recv) =
             resp_channels.next().expect("leios_fetch responder channel");
         let store = leios_store.expect("leios_store required when leios_enabled");
-        let ln_server = tokio::spawn(server_handlers::serve_leios_notify(
-            ln_srv_send,
-            ln_srv_recv,
-            store.clone(),
-            peer_id,
-        ));
+        let ln_outbound_behaviour = outbound_behaviour.clone();
+        let ln_store = store.clone();
+        let ln_server = tokio::spawn(async move {
+            server_handlers::serve_leios_notify(
+                ln_srv_send,
+                ln_srv_recv,
+                ln_store,
+                peer_id,
+                ln_outbound_behaviour.as_ref(),
+            )
+            .await
+        });
         let lf_server = tokio::spawn(server_handlers::serve_leios_fetch(
             lf_srv_send,
             lf_srv_recv,

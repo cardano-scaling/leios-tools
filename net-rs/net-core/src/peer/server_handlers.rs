@@ -243,6 +243,20 @@ async fn send_roll_forward(
                 })
                 .await;
         }
+        OutboundDecision::Replace(other) => {
+            // A behaviour returned a non-RB-header Replace from a
+            // ChainSync send (LeiosBlockOffer / LeiosBlockTxsOffer).
+            // Those belong on the LeiosNotify path; fall back to
+            // sending the honest RB header unchanged.
+            tracing::warn!(
+                peer = peer.0,
+                slot,
+                replaced = ?std::mem::discriminant(&other),
+                "behaviour returned non-RB-header Replace from ChainSync — \
+                 ignoring and sending honest header"
+            );
+            let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
+        }
         OutboundDecision::Augment(extras) => {
             let _ = runner
                 .send(&CsMsg::MsgRollForward {
@@ -254,7 +268,14 @@ async fn send_roll_forward(
                 let OwnedOutbound::RbHeader {
                     slot: _,
                     header: extra_bytes,
-                } = extra;
+                } = extra
+                else {
+                    tracing::warn!(
+                        peer = peer.0,
+                        "behaviour Augmented ChainSync with non-RB-header — ignoring"
+                    );
+                    continue;
+                };
                 let extra_header = WrappedHeader::new(extra_bytes);
                 let extra_tip = match extra_header.point() {
                     Some(p) => Tip {
@@ -725,14 +746,28 @@ fn notification_to_ln_msg(n: &crate::store::leios_store::LeiosNotification) -> L
 /// Sends notifications about available Leios data as the store is populated.
 /// Uses `LeiosStore::subscribe()` to wake when new items are injected.
 ///
-/// `peer` is the connected peer — notifications tagged with that peer
-/// as their source are skipped (no-echo gossip), so a duplex follower
-/// doesn't immediately re-offer fetched data back to its source.
+/// `peer` is the connected peer.  When `behaviour` is `None`, the
+/// honest CIP-0164 policy applies: notifications tagged with `peer` as
+/// their source are skipped (no-echo), and `eb_size` goes on the wire
+/// unchanged.  With a behaviour handle attached, two hooks fire per
+/// entry:
+///
+/// - [`allow_echo_to_source`](shared_consensus::behaviour::Behaviour::allow_echo_to_source)
+///   gates the no-echo skip (`EchoToSource` opens it).
+/// - [`transform_outbound`](shared_consensus::behaviour::Behaviour::transform_outbound)
+///   can `Drop` the entry, `Replace` the wire fields (e.g. `LieAboutEbSize`
+///   mutates `eb_size`), or pass it through with `Send`.
+///
+/// `Augment` is not currently supported on this path — the function
+/// returns one `LnMsg` per `MsgLeiosNotificationRequestNext`; a
+/// behaviour returning `Augment` falls back to the original message
+/// with a warning.
 pub async fn serve_leios_notify(
     ln_send: CodecSend,
     ln_recv: CodecRecv,
     store: Arc<LeiosStore>,
     peer: PeerId,
+    behaviour: Option<&BehaviourHandle>,
 ) {
     let mut runner = Runner::<LeiosNotify>::new(Role::Server, ln_send, ln_recv);
     // `None` until the first MsgLeiosNotificationRequestNext arrives, at
@@ -793,7 +828,8 @@ pub async fn serve_leios_notify(
                     snapped
                 });
                 if let Some(response) =
-                    next_outbound_notification(&store, cursor, peer, &mut subscription).await
+                    next_outbound_notification(&store, cursor, peer, &mut subscription, behaviour)
+                        .await
                 {
                     if runner.send(&response).await.is_err() {
                         break;
@@ -817,32 +853,107 @@ impl std::fmt::Debug for SourceIds<'_> {
     }
 }
 
-/// Find the next notification the wire actually sends to `peer`, skipping
-/// entries where `peer` is in the entry's `sources` (no-echo). Advances
-/// `read_index` past every skipped entry so the same notification isn't
-/// reconsidered next call. Awaits new injects when the queue is empty.
-/// Returns `None` on watch-channel close — the server task should exit.
+/// Find the next notification the wire actually sends to `peer`.
+///
+/// Honest policy skips entries where `peer` is in the entry's `sources`
+/// (no-echo); a configured Behaviour can override that gate
+/// (`allow_echo_to_source`) and/or mutate the outbound message
+/// (`transform_outbound`). Advances `read_index` past every consumed or
+/// skipped entry so the same notification isn't reconsidered next call,
+/// and awaits new injects when the queue is empty. Returns `None` on
+/// watch-channel close — the server task should exit.
 async fn next_outbound_notification(
     store: &Arc<LeiosStore>,
     read_index: &mut usize,
     peer: PeerId,
     subscription: &mut tokio::sync::watch::Receiver<u64>,
+    behaviour: Option<&BehaviourHandle>,
 ) -> Option<LnMsg> {
     use crate::store::leios_store::LeiosNotification;
     loop {
         let pending = store.notifications_after(read_index);
         for entry in &pending {
             *read_index += 1;
+            // Build the Outbound view (only for variants a behaviour
+            // can act on; Votes bypass the transform entirely for now).
+            // `source` presents the original received-from peer (first
+            // of the multi-source dedup set); current behaviours don't
+            // read it, but it keeps the honest Outbound semantics.
+            let source = entry.sources.first().copied();
+            let outbound = match &entry.notification {
+                LeiosNotification::BlockOffer { point, eb_size } => {
+                    Some(Outbound::LeiosBlockOffer {
+                        point,
+                        eb_size: *eb_size,
+                        source,
+                    })
+                }
+                LeiosNotification::BlockTxsOffer { point } => Some(Outbound::LeiosBlockTxsOffer {
+                    point,
+                    source,
+                }),
+                LeiosNotification::Votes { .. } => None,
+            };
+
+            // No-echo gate.  Honest policy drops echoes (peer among the
+            // entry's sources); a behaviour can override via
+            // allow_echo_to_source (EchoToSource).
             if entry.sources.contains(&peer) {
+                let allow = match (behaviour, outbound.as_ref()) {
+                    (Some(h), Some(ob)) => {
+                        let mut guard = h.lock().expect("behaviour mutex poisoned");
+                        guard.allow_echo_to_source(peer, ob)
+                    }
+                    // Votes have no Outbound variant yet — honest skip.
+                    // No behaviour attached — honest skip.
+                    _ => false,
+                };
+                if !allow {
+                    tracing::debug!(
+                        peer = peer.0,
+                        "leios_notify: skipping no-echo offer back to source"
+                    );
+                    continue;
+                }
                 tracing::debug!(
                     peer = peer.0,
-                    "leios_notify: skipping no-echo offer back to source"
+                    "leios_notify: behaviour opened echo-to-source gate"
                 );
-                continue;
             }
+            // Outbound transform.
+            let decision = match (behaviour, outbound) {
+                (Some(h), Some(ob)) => {
+                    let mut guard = h.lock().expect("behaviour mutex poisoned");
+                    guard.transform_outbound(peer, ob)
+                }
+                _ => OutboundDecision::Send,
+            };
+
+            let msg = match decision {
+                OutboundDecision::Send => notification_to_ln_msg(&entry.notification),
+                OutboundDecision::Drop => {
+                    tracing::debug!(
+                        peer = peer.0,
+                        "leios_notify: behaviour dropped outbound"
+                    );
+                    continue;
+                }
+                OutboundDecision::Replace(owned) => owned_outbound_to_ln_msg(owned)
+                    .unwrap_or_else(|| notification_to_ln_msg(&entry.notification)),
+                OutboundDecision::Augment(_) => {
+                    tracing::warn!(
+                        peer = peer.0,
+                        "leios_notify: behaviour returned Augment but this path only \
+                         sends one message per request — falling back to original"
+                    );
+                    notification_to_ln_msg(&entry.notification)
+                }
+            };
+
+            // Log the wire-level decision (post-transform).
             let sources = SourceIds(&entry.sources);
-            match &entry.notification {
-                LeiosNotification::BlockOffer { point, eb_size } => {
+            match &msg {
+                LnMsg::MsgLeiosBlockOffer { point, eb_size } => {
                     tracing::info!(
                         peer = peer.0,
                         %point,
@@ -851,7 +962,7 @@ async fn next_outbound_notification(
                         "leios_notify: serving EB offer"
                     );
                 }
-                LeiosNotification::BlockTxsOffer { point } => {
+                LnMsg::MsgLeiosBlockTxsOffer { point } => {
                     tracing::info!(
                         peer = peer.0,
                         %point,
@@ -859,7 +970,7 @@ async fn next_outbound_notification(
                         "leios_notify: serving EB-txs offer"
                     );
                 }
-                LeiosNotification::Votes { votes } => {
+                LnMsg::MsgLeiosVotes { votes } => {
                     tracing::debug!(
                         peer = peer.0,
                         count = votes.len(),
@@ -867,14 +978,31 @@ async fn next_outbound_notification(
                         "leios_notify: serving votes"
                     );
                 }
+                _ => {}
             }
-            return Some(notification_to_ln_msg(&entry.notification));
+            return Some(msg);
         }
         // Drained without finding a deliverable entry — wait for new
         // injects before trying again.
         if subscription.changed().await.is_err() {
             return None;
         }
+    }
+}
+
+/// Convert an [`OwnedOutbound`] from a behaviour's `Replace` back into
+/// a wire `LnMsg`.  Returns `None` if the variant doesn't map onto a
+/// LeiosNotify message (e.g. `OwnedOutbound::RbHeader`), in which case
+/// the caller falls back to the original.
+fn owned_outbound_to_ln_msg(owned: OwnedOutbound) -> Option<LnMsg> {
+    match owned {
+        OwnedOutbound::LeiosBlockOffer { point, eb_size, .. } => {
+            Some(LnMsg::MsgLeiosBlockOffer { point, eb_size })
+        }
+        OwnedOutbound::LeiosBlockTxsOffer { point, .. } => {
+            Some(LnMsg::MsgLeiosBlockTxsOffer { point })
+        }
+        OwnedOutbound::RbHeader { .. } => None,
     }
 }
 
@@ -1163,13 +1291,15 @@ mod tests {
 
         let (store, _rx) = LeiosStore::new(100);
 
-        // Start server with an empty store — it will snap its cursor
-        // forward on the first MsgLeiosNotificationRequestNext.
+        // Start server with an empty store (honest no-echo, no behaviour
+        // attached) — it snaps its cursor forward on the first
+        // MsgLeiosNotificationRequestNext.
         let server_handle = tokio::spawn(serve_leios_notify(
             server_send,
             server_recv,
             store.clone(),
             PeerId(0),
+            None,
         ));
 
         // Issue request_next concurrently with a delayed inject: the
@@ -1241,6 +1371,7 @@ mod tests {
             server_recv,
             store.clone(),
             connected_peer,
+            None,
         ));
 
         // Inject after the server has snapped its cursor on the first
@@ -1318,6 +1449,7 @@ mod tests {
             server_recv,
             store.clone(),
             connected_peer,
+            None,
         ));
 
         // Inject after the cursor snap: the no-echo gate then has to
@@ -1396,6 +1528,7 @@ mod tests {
             server_recv,
             store.clone(),
             downstream,
+            None,
         ));
 
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
@@ -1489,6 +1622,7 @@ mod tests {
             server_recv,
             store.clone(),
             downstream,
+            None,
         ));
 
         // Issue request_next + delayed post-snap inject of a sentinel.
@@ -1523,6 +1657,245 @@ mod tests {
                     "expected the post-snap sentinel, got a backlog entry — snap-forward is not engaging"
                 );
                 assert_eq!(eb_size, 20);
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn echo_to_source_behaviour_lets_echo_through() {
+        // Same setup as the no-echo test, but with EchoToSource attached
+        // — the offer from `connected_peer` must now be delivered back
+        // to `connected_peer`.  This is the reproduction path for the
+        // dev-relay bug.
+        use shared_consensus::behaviour::behaviours::EchoToSource;
+        use shared_consensus::behaviour::build_handle;
+        use shared_consensus::behaviour::BehaviourSpec;
+
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let connected_peer = PeerId(7);
+
+        // Sanity: EchoToSource is a real behaviour, not a free pass —
+        // build it via the registry path so the spec round-trip also
+        // exercises the registry wiring.
+        let _ = EchoToSource;
+        let handle = build_handle(&BehaviourSpec::EchoToSource, 0);
+
+        let server_store = store.clone();
+        let server_handle = tokio::spawn(async move {
+            serve_leios_notify(
+                server_send,
+                server_recv,
+                server_store,
+                connected_peer,
+                Some(&handle),
+            )
+            .await
+        });
+
+        // Inject after the server snaps its cursor on the first request,
+        // so the offer lands in the post-snap window.  Sourced from
+        // connected_peer — honest policy would drop this echo.
+        let inject_store = store.clone();
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 10,
+                        hash: [0xAA; 32],
+                    },
+                    vec![1, 2, 3, 4, 5],
+                    Some(connected_peer),
+                );
+            }
+        );
+        match event.unwrap() {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
+                assert_eq!(
+                    point,
+                    Point::Specific {
+                        slot: 10,
+                        hash: [0xAA; 32]
+                    },
+                    "EchoToSource should let the offer through to its source"
+                );
+                assert_eq!(eb_size, 5, "eb_size should be the honest length, not mutated");
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn lie_about_eb_size_behaviour_mutates_advertised_size() {
+        // LieAboutEbSize::zero() — the original bug shape.  The honest
+        // eb_size (the injected block's byte length) must be replaced
+        // with 0 on the wire.
+        use shared_consensus::behaviour::build_handle;
+        use shared_consensus::behaviour::BehaviourSpec;
+
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let connected_peer = PeerId(7);
+        let other_peer = PeerId(9);
+
+        let handle = build_handle(
+            &BehaviourSpec::LieAboutEbSize {
+                scale_num: 0,
+                scale_den: 1,
+                offset: 0,
+            },
+            0,
+        );
+
+        let server_store = store.clone();
+        let server_handle = tokio::spawn(async move {
+            serve_leios_notify(
+                server_send,
+                server_recv,
+                server_store,
+                connected_peer,
+                Some(&handle),
+            )
+            .await
+        });
+
+        // Inject after the snap.  Sourced from a different peer so the
+        // no-echo gate doesn't drop it before the transform runs.
+        let inject_store = store.clone();
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 42,
+                        hash: [0xCC; 32],
+                    },
+                    vec![0u8; 12345],
+                    Some(other_peer),
+                );
+            }
+        );
+        match event.unwrap() {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
+                assert_eq!(
+                    point,
+                    Point::Specific {
+                        slot: 42,
+                        hash: [0xCC; 32]
+                    },
+                );
+                assert_eq!(
+                    eb_size, 0,
+                    "LieAboutEbSize::zero should have replaced the honest 12345"
+                );
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn lie_about_eb_size_offset_only_preserves_scale() {
+        // scale_num=1, scale_den=1, offset=1 — every honest eb_size
+        // shifts up by 1.  Sanity check that the linear transform is
+        // wired correctly end-to-end and that scale_den=1 doesn't
+        // collapse to zero.
+        use shared_consensus::behaviour::build_handle;
+        use shared_consensus::behaviour::BehaviourSpec;
+
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let connected_peer = PeerId(7);
+        let other_peer = PeerId(9);
+
+        let handle = build_handle(
+            &BehaviourSpec::LieAboutEbSize {
+                scale_num: 1,
+                scale_den: 1,
+                offset: 1,
+            },
+            0,
+        );
+
+        let server_store = store.clone();
+        let server_handle = tokio::spawn(async move {
+            serve_leios_notify(
+                server_send,
+                server_recv,
+                server_store,
+                connected_peer,
+                Some(&handle),
+            )
+            .await
+        });
+
+        // Inject after the snap, sourced from a different peer.
+        let inject_store = store.clone();
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 100,
+                        hash: [0xDD; 32],
+                    },
+                    vec![0u8; 1000],
+                    Some(other_peer),
+                );
+            }
+        );
+        match event.unwrap() {
+            leios_notify::LeiosNotifyEvent::BlockOffer { eb_size, .. } => {
+                assert_eq!(eb_size, 1001, "expected honest 1000 + offset 1");
             }
             other => panic!("expected BlockOffer, got {other:?}"),
         }
