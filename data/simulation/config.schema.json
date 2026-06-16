@@ -278,6 +278,70 @@
         }
       },
       "type": "object"
+    },
+    "PartitionDirection": {
+      "description": "Which directions of a selected edge a partition cuts.  For `isolate`, the isolated set is the `from` side.",
+      "enum": ["both", "from-to", "to-from"],
+      "type": "string"
+    },
+    "PartitionSelector": {
+      "description": "Which directed edges a partition scenario cuts.  Tagged enum (kind = set-to-set|isolate).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["kind", "from", "to"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "set-to-set", "type": "string" },
+            "from": {
+              "description": "Node names on the `from` side of the cut.",
+              "items": { "type": "string" },
+              "type": "array"
+            },
+            "to": {
+              "description": "Node names on the `to` side of the cut.",
+              "items": { "type": "string" },
+              "type": "array"
+            },
+            "direction": { "$ref": "#/definitions/PartitionDirection", "default": "both" }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["kind", "nodes"],
+          "type": "object",
+          "properties": {
+            "kind": { "const": "isolate", "type": "string" },
+            "nodes": {
+              "description": "Node names to isolate from every other node in the topology.",
+              "items": { "type": "string" },
+              "type": "array"
+            },
+            "direction": { "$ref": "#/definitions/PartitionDirection", "default": "both" }
+          }
+        }
+      ]
+    },
+    "PartitionScenario": {
+      "description": "A time-windowed network-layer partition.  Cuts the selected directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.  Resolved against the topology at init; only supported by Rust simulation.",
+      "additionalProperties": false,
+      "required": ["name", "selector", "start-time-s"],
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Human-readable name, surfaced in partition telemetry events.",
+          "type": "string"
+        },
+        "selector": { "$ref": "#/definitions/PartitionSelector" },
+        "start-time-s": {
+          "description": "When the cut activates, in seconds from sim start.",
+          "type": "number"
+        },
+        "stop-time-s": {
+          "description": "When the cut heals, in seconds from sim start.  Omit to persist to end of sim.",
+          "type": ["number", "null"]
+        }
+      }
     }
   },
   "description": "A configuration for a Leios simulation.",
@@ -640,6 +704,12 @@
       "type": "integer",
       "minimum": 1,
       "default": 10
+    },
+    "partition-scenarios": {
+      "default": [],
+      "description": "Time-windowed network-layer partitions.\nEach scenario cuts a set of directed edges at start-time-s and, if stop-time-s is set, heals them at stop-time-s.\nResolved against the loaded topology at init; omitting the block leaves diffusion behaviour unchanged.\nOnly supported by Rust simulation.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/PartitionScenario" }
     },
     "timestamp-resolution-ms": {
       "description": "The smallest unit of time to simulate, in fractions of a millisecond.\nOnly supported by Rust simulation.",

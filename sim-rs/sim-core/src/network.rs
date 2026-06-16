@@ -13,6 +13,7 @@ use crate::{
 
 pub(crate) mod connection;
 pub(crate) mod coordinator;
+pub(crate) mod partition;
 pub mod stats;
 pub(crate) mod tcp_connection;
 
@@ -104,6 +105,17 @@ impl<TProtocol: Clone + Eq + Hash + Ord, TMessage: Debug> Network<TProtocol, TMe
         receiver: mpsc::UnboundedReceiver<CrossShardDelivery<TProtocol, TMessage>>,
     ) {
         self.coordinator.set_cross_shard_delivery(receiver);
+    }
+
+    /// Install this shard's partition runtime + telemetry tracker.
+    /// `pub(crate)`: only the engines call this, and `PartitionRuntime` is
+    /// itself crate-private.
+    pub(crate) fn set_partition(
+        &mut self,
+        runtime: crate::network::partition::PartitionRuntime,
+        tracker: crate::events::EventTracker,
+    ) {
+        self.coordinator.set_partition(runtime, tracker);
     }
 
     pub fn open(

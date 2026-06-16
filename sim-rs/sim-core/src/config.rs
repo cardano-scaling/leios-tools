@@ -350,6 +350,16 @@ pub struct RawParameters {
     pub late_eb_attack: Option<RawLateEBAttackConfig>,
     pub late_tx_attack: Option<RawLateTXAttackConfig>,
 
+    /// Time-windowed network-layer partitions.  Each scenario
+    /// schedules a set of directed edge cuts at `start-time-s` and an
+    /// optional heal at `stop-time-s`, resolved against the loaded
+    /// topology at init into a flat [`PartitionScheduleEntry`] schedule.
+    /// Omitting the block leaves diffusion behaviour unchanged.  Lives in
+    /// the network layer, so it applies to every variant under both
+    /// engines.  See `sim-rs/dynamic-edges-plan.md`.
+    #[serde(default)]
+    pub partition_scenarios: Vec<RawPartitionScenario>,
+
     /// Per-node consensus behaviours wired into the shared-consensus
     /// engine.  Each entry pairs a [`BehaviourSpec`] with a
     /// [`BehaviourSelection`] picking which nodes run it; overlapping
@@ -473,6 +483,230 @@ pub struct RawLateTXAttackConfig {
 pub enum NodeSelection {
     Nodes(HashSet<String>),
     StakeFraction(f64),
+}
+
+/// Which directions of an edge a partition selector cuts.  Applied at
+/// link-expansion time and not carried into the runtime schedule.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Direction {
+    /// Cut both directions of every selected edge.
+    #[default]
+    Both,
+    /// Cut only the `from → to` direction (`from`/`to` are the selector's
+    /// own sides; for `isolate`, `from` is the isolated set).
+    FromTo,
+    /// Cut only the `to → from` direction.
+    ToFrom,
+}
+
+/// One `partition-scenarios` entry as written in a parameter YAML.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawPartitionScenario {
+    /// Human-readable name, surfaced in partition telemetry events.
+    pub name: String,
+    pub selector: RawPartitionSelector,
+    /// When the cut activates, in seconds from sim start.
+    pub start_time_s: f64,
+    /// When the cut heals, in seconds from sim start.  Absent → the
+    /// partition persists to the end of the simulation.
+    #[serde(default)]
+    pub stop_time_s: Option<f64>,
+}
+
+/// The two Phase 1+2 selector shapes.  `predicate` (Phase 3) slots in as
+/// a third tagged variant without disturbing these.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RawPartitionSelector {
+    /// Cut edges between an explicit `from` set and an explicit `to` set.
+    SetToSet {
+        from: Vec<String>,
+        to: Vec<String>,
+        #[serde(default)]
+        direction: Direction,
+    },
+    /// Convenience: cut edges between a set and everyone else.  `from` in
+    /// the [`Direction`] sense is the isolated set.
+    Isolate {
+        nodes: Vec<String>,
+        #[serde(default)]
+        direction: Direction,
+    },
+}
+
+/// A directed edge between two nodes — the unit of partition state.  An
+/// undirected topology link `(a, b)` is two `Link`s: `a → b` and `b → a`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Link {
+    pub from: NodeId,
+    pub to: NodeId,
+}
+
+/// Whether a [`PartitionScheduleEntry`] cuts its links or restores them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartitionOp {
+    Activate,
+    Heal,
+}
+
+/// One compiled partition operation: at `timestamp`, apply `op` to every
+/// link in `links`.  Built once at sim init from the YAML scenarios plus
+/// the topology, then cloned into each shard's coordinator.  `links` is
+/// sorted lexicographically by `(from, to)` for deterministic telemetry.
+///
+/// `links` is an `Arc<[Link]>` because it is immutable after construction
+/// and heavily shared: an Activate and its matching Heal point at the same
+/// allocation, and every per-shard clone of the schedule is a refcount
+/// bump rather than a deep copy of the (potentially ~50k-element) slice.
+#[derive(Debug, Clone)]
+pub struct PartitionScheduleEntry {
+    pub timestamp: Timestamp,
+    pub op: PartitionOp,
+    pub links: Arc<[Link]>,
+    pub scenario_name: String,
+}
+
+impl PartitionScheduleEntry {
+    /// Compile YAML partition scenarios against a resolved topology into a
+    /// flat schedule.  Each scenario contributes one [`PartitionOp::Activate`]
+    /// entry at `start-time-s` and, when `stop-time-s` is set, one
+    /// [`PartitionOp::Heal`] entry at `stop-time-s`, both carrying the same
+    /// pre-resolved directed link set.  The returned `Vec` is in scenario
+    /// order; callers that need timestamp order sort or heap it themselves.
+    ///
+    /// Selector node names are resolved against the topology; an unknown
+    /// name is an error.  Resolved links are intersected with the directed
+    /// edges actually present in the topology, so a selector that names a
+    /// non-adjacent pair contributes nothing for that pair.
+    pub fn build_schedule(
+        scenarios: &[RawPartitionScenario],
+        topology: &Topology,
+    ) -> Result<Vec<PartitionScheduleEntry>> {
+        if scenarios.is_empty() {
+            return Ok(Vec::new());
+        }
+        let name_to_id: BTreeMap<&str, NodeId> = topology
+            .nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.id))
+            .collect();
+        // Directed edges present in the topology: each undirected link
+        // (a, b) admits both a → b and b → a.
+        let mut directed: HashSet<Link> = HashSet::new();
+        for link in &topology.links {
+            let (a, b) = link.nodes;
+            directed.insert(Link { from: a, to: b });
+            directed.insert(Link { from: b, to: a });
+        }
+
+        let mut entries = Vec::new();
+        for scenario in scenarios {
+            if !scenario.start_time_s.is_finite() || scenario.start_time_s < 0.0 {
+                bail!(
+                    "partition scenario {:?}: start-time-s must be a non-negative finite number, got {}",
+                    scenario.name,
+                    scenario.start_time_s,
+                );
+            }
+            if let Some(stop) = scenario.stop_time_s
+                && (!stop.is_finite() || stop <= scenario.start_time_s)
+            {
+                bail!(
+                    "partition scenario {:?}: stop-time-s ({}) must be a finite number greater than start-time-s ({})",
+                    scenario.name,
+                    stop,
+                    scenario.start_time_s,
+                );
+            }
+            // Resolve once; the Activate and Heal entries share the slice.
+            let links: Arc<[Link]> =
+                resolve_partition_links(&scenario.selector, &name_to_id, &directed, topology)?
+                    .into();
+            entries.push(PartitionScheduleEntry {
+                timestamp: Timestamp::zero() + Duration::from_secs_f64(scenario.start_time_s),
+                op: PartitionOp::Activate,
+                links: Arc::clone(&links),
+                scenario_name: scenario.name.clone(),
+            });
+            if let Some(stop) = scenario.stop_time_s {
+                entries.push(PartitionScheduleEntry {
+                    timestamp: Timestamp::zero() + Duration::from_secs_f64(stop),
+                    op: PartitionOp::Heal,
+                    links,
+                    scenario_name: scenario.name.clone(),
+                });
+            }
+        }
+        Ok(entries)
+    }
+}
+
+/// Expand a selector into the sorted set of directed links it cuts,
+/// intersected with the edges present in `directed`.
+fn resolve_partition_links(
+    selector: &RawPartitionSelector,
+    name_to_id: &BTreeMap<&str, NodeId>,
+    directed: &HashSet<Link>,
+    topology: &Topology,
+) -> Result<Vec<Link>> {
+    let resolve = |name: &str| -> Result<NodeId> {
+        name_to_id
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow!("partition selector references unknown node {name:?}"))
+    };
+    // BTreeSet gives sorted, deduplicated output for free.
+    let mut links = std::collections::BTreeSet::new();
+    let mut add = |a: NodeId, b: NodeId, direction: Direction| {
+        // `a` is the `from` side, `b` is the `to` side.
+        if matches!(direction, Direction::Both | Direction::FromTo) {
+            let l = Link { from: a, to: b };
+            if directed.contains(&l) {
+                links.insert(l);
+            }
+        }
+        if matches!(direction, Direction::Both | Direction::ToFrom) {
+            let l = Link { from: b, to: a };
+            if directed.contains(&l) {
+                links.insert(l);
+            }
+        }
+    };
+    match selector {
+        RawPartitionSelector::SetToSet {
+            from,
+            to,
+            direction,
+        } => {
+            let from_ids = from.iter().map(|n| resolve(n)).collect::<Result<Vec<_>>>()?;
+            let to_ids = to.iter().map(|n| resolve(n)).collect::<Result<Vec<_>>>()?;
+            for &f in &from_ids {
+                for &t in &to_ids {
+                    add(f, t, *direction);
+                }
+            }
+        }
+        RawPartitionSelector::Isolate { nodes, direction } => {
+            let inside = nodes
+                .iter()
+                .map(|n| resolve(n))
+                .collect::<Result<std::collections::BTreeSet<_>>>()?;
+            let outside: Vec<NodeId> = topology
+                .nodes
+                .iter()
+                .map(|n| n.id)
+                .filter(|id| !inside.contains(id))
+                .collect();
+            for &i in &inside {
+                for &o in &outside {
+                    add(i, o, *direction);
+                }
+            }
+        }
+    }
+    Ok(links.into_iter().collect())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1187,6 +1421,11 @@ pub struct SimConfiguration {
     pub(crate) sizes: BlockSizeConfig,
     pub(crate) transactions: TransactionConfig,
     pub(crate) attacks: AttackConfig,
+    /// Compiled network-partition schedule, resolved once from
+    /// `partition-scenarios` + topology at build time.  Empty when no
+    /// scenarios are configured.  Cloned into each shard's partition
+    /// runtime by both engines.
+    pub partition_schedule: Vec<PartitionScheduleEntry>,
     /// TX generation batching window for the sequential engine.
     pub(crate) tx_batch_window: Option<Duration>,
     /// Shared network stats collector (set by sequential engine, read by nodes).
@@ -1246,6 +1485,11 @@ impl SimConfiguration {
             params.seed,
         );
         let attacks = AttackConfig::build(&params, &mut topology);
+        // Resolve partition scenarios against the topology while it is
+        // still in scope (its links/names are about to be moved into the
+        // config below).
+        let partition_schedule =
+            PartitionScheduleEntry::build_schedule(&params.partition_scenarios, &topology)?;
         let vote_eligible_nodes = match params.committee_selection_algorithm {
             CommitteeSelectionAlgorithm::WfaLs | CommitteeSelectionAlgorithm::Everyone => {
                 HashSet::new()
@@ -1362,6 +1606,7 @@ impl SimConfiguration {
             sizes: BlockSizeConfig::new(&params),
             transactions: TransactionConfig::new(&params),
             attacks,
+            partition_schedule,
             tx_batch_window: params.tx_batch_window_ms.map(duration_ms),
             network_stats: None,
             consensus_behaviour_specs,
@@ -1770,5 +2015,329 @@ mod tcp_envelope_tests {
         let bad_high: RawTcpEnvelope =
             serde_yaml::from_str("loss-prob-per-segment: 1.5").unwrap();
         assert!(bad_high.apply(&mut cfg).is_err());
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+
+    /// Build a fully-connected topology over the given node names so that
+    /// every directed pair exists as an edge.  Node IDs are assigned in
+    /// the `BTreeMap` (alphabetical) ordering of the names.
+    fn fully_connected(names: &[&str]) -> Topology {
+        let mut nodes = BTreeMap::new();
+        for (i, &name) in names.iter().enumerate() {
+            // Wire each node to every later node; `from_raw` makes the
+            // resulting links undirected, so this covers all pairs once.
+            let mut producers = BTreeMap::new();
+            for &peer in &names[i + 1..] {
+                producers.insert(
+                    peer.to_string(),
+                    RawLinkInfo {
+                        latency_ms: 10.0,
+                        bandwidth_bytes_per_second: None,
+                        tcp_envelope: None,
+                    },
+                );
+            }
+            nodes.insert(
+                name.to_string(),
+                RawNode {
+                    stake: None,
+                    location: RawNodeLocation::Coords((0.0, 0.0)),
+                    cpu_core_count: None,
+                    tx_conflict_fraction: None,
+                    tx_generation_weight: None,
+                    producers,
+                    adversarial: None,
+                    behaviours: vec![],
+                },
+            );
+        }
+        RawTopology { nodes }.into()
+    }
+
+    fn id_of(topology: &Topology, name: &str) -> NodeId {
+        topology.nodes.iter().find(|n| n.name == name).unwrap().id
+    }
+
+    fn parse(yaml: &str) -> RawPartitionScenario {
+        serde_yaml::from_str(yaml).expect("parse failure")
+    }
+
+    #[test]
+    fn parses_set_to_set_with_all_three_directions() {
+        for (dir_str, expected) in [
+            ("both", Direction::Both),
+            ("from-to", Direction::FromTo),
+            ("to-from", Direction::ToFrom),
+        ] {
+            let scenario = parse(&format!(
+                "
+                name: eu-us-split
+                selector:
+                  kind: set-to-set
+                  from: [\"node-0\", \"node-3\"]
+                  to: [\"node-50\"]
+                  direction: {dir_str}
+                start-time-s: 300.0
+                stop-time-s: 900.0
+                "
+            ));
+            assert_eq!(scenario.name, "eu-us-split");
+            assert_eq!(scenario.start_time_s, 300.0);
+            assert_eq!(scenario.stop_time_s, Some(900.0));
+            match scenario.selector {
+                RawPartitionSelector::SetToSet {
+                    from,
+                    to,
+                    direction,
+                } => {
+                    assert_eq!(from, vec!["node-0", "node-3"]);
+                    assert_eq!(to, vec!["node-50"]);
+                    assert_eq!(direction, expected);
+                }
+                other => panic!("expected set-to-set, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parses_isolate_and_defaults() {
+        // No direction → Both; no stop-time-s → None.
+        let scenario = parse(
+            "
+            name: eu-isolated
+            selector:
+              kind: isolate
+              nodes: [\"node-0\", \"node-3\", \"node-7\"]
+            start-time-s: 400.0
+            ",
+        );
+        assert_eq!(scenario.stop_time_s, None);
+        match scenario.selector {
+            RawPartitionSelector::Isolate { nodes, direction } => {
+                assert_eq!(nodes, vec!["node-0", "node-3", "node-7"]);
+                assert_eq!(direction, Direction::Both);
+            }
+            other => panic!("expected isolate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn isolate_single_node_cuts_all_directed_edges_both_ways() {
+        // 5-node fully-connected topology; isolate "a" vs the other four
+        // → 4 undirected edges × 2 directions = 8 directed links.
+        let topology = fully_connected(&["a", "b", "c", "d", "e"]);
+        let scenario = RawPartitionScenario {
+            name: "iso".into(),
+            selector: RawPartitionSelector::Isolate {
+                nodes: vec!["a".into()],
+                direction: Direction::Both,
+            },
+            start_time_s: 100.0,
+            stop_time_s: None,
+        };
+        let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
+        assert_eq!(schedule.len(), 1, "no stop-time → activate only");
+        let entry = &schedule[0];
+        assert_eq!(entry.op, PartitionOp::Activate);
+        assert_eq!(entry.links.len(), 8);
+        // Every link touches "a", and both directions are present.
+        let a = id_of(&topology, "a");
+        for link in entry.links.iter() {
+            assert!(link.from == a || link.to == a);
+        }
+        for other in ["b", "c", "d", "e"] {
+            let o = id_of(&topology, other);
+            assert!(entry.links.contains(&Link { from: a, to: o }));
+            assert!(entry.links.contains(&Link { from: o, to: a }));
+        }
+        // Sorted lexicographically by (from, to).
+        let mut sorted = entry.links.to_vec();
+        sorted.sort();
+        assert_eq!(&entry.links[..], sorted.as_slice());
+    }
+
+    #[test]
+    fn set_to_set_from_to_cuts_one_direction_only() {
+        let topology = fully_connected(&["a", "b", "c"]);
+        let scenario = RawPartitionScenario {
+            name: "one-way".into(),
+            selector: RawPartitionSelector::SetToSet {
+                from: vec!["a".into()],
+                to: vec!["b".into()],
+                direction: Direction::FromTo,
+            },
+            start_time_s: 0.0,
+            stop_time_s: None,
+        };
+        let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
+        let a = id_of(&topology, "a");
+        let b = id_of(&topology, "b");
+        assert_eq!(&schedule[0].links[..], &[Link { from: a, to: b }]);
+    }
+
+    #[test]
+    fn set_to_set_to_from_cuts_reverse_direction_only() {
+        let topology = fully_connected(&["a", "b", "c"]);
+        let scenario = RawPartitionScenario {
+            name: "rev".into(),
+            selector: RawPartitionSelector::SetToSet {
+                from: vec!["a".into()],
+                to: vec!["b".into()],
+                direction: Direction::ToFrom,
+            },
+            start_time_s: 0.0,
+            stop_time_s: None,
+        };
+        let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
+        let a = id_of(&topology, "a");
+        let b = id_of(&topology, "b");
+        assert_eq!(&schedule[0].links[..], &[Link { from: b, to: a }]);
+    }
+
+    #[test]
+    fn stop_time_produces_a_matching_heal_entry() {
+        let topology = fully_connected(&["a", "b"]);
+        let scenario = RawPartitionScenario {
+            name: "windowed".into(),
+            selector: RawPartitionSelector::SetToSet {
+                from: vec!["a".into()],
+                to: vec!["b".into()],
+                direction: Direction::Both,
+            },
+            start_time_s: 300.0,
+            stop_time_s: Some(900.0),
+        };
+        let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
+        assert_eq!(schedule.len(), 2);
+        assert_eq!(schedule[0].op, PartitionOp::Activate);
+        assert_eq!(schedule[0].timestamp, Timestamp::zero() + Duration::from_secs(300));
+        assert_eq!(schedule[1].op, PartitionOp::Heal);
+        assert_eq!(schedule[1].timestamp, Timestamp::zero() + Duration::from_secs(900));
+        // Activate and heal cut the identical link set.
+        assert_eq!(schedule[0].links, schedule[1].links);
+    }
+
+    #[test]
+    fn links_intersect_with_topology_edges() {
+        // "a" and "c" are not adjacent in this line topology a-b-c, so a
+        // set-to-set between them resolves to nothing.
+        let mut nodes = BTreeMap::new();
+        let mut b_producers = BTreeMap::new();
+        b_producers.insert(
+            "a".to_string(),
+            RawLinkInfo {
+                latency_ms: 10.0,
+                bandwidth_bytes_per_second: None,
+                tcp_envelope: None,
+            },
+        );
+        b_producers.insert(
+            "c".to_string(),
+            RawLinkInfo {
+                latency_ms: 10.0,
+                bandwidth_bytes_per_second: None,
+                tcp_envelope: None,
+            },
+        );
+        for name in ["a", "c"] {
+            nodes.insert(
+                name.to_string(),
+                RawNode {
+                    stake: None,
+                    location: RawNodeLocation::Coords((0.0, 0.0)),
+                    cpu_core_count: None,
+                    tx_conflict_fraction: None,
+                    tx_generation_weight: None,
+                    producers: BTreeMap::new(),
+                    adversarial: None,
+                    behaviours: vec![],
+                },
+            );
+        }
+        nodes.insert(
+            "b".to_string(),
+            RawNode {
+                stake: None,
+                location: RawNodeLocation::Coords((0.0, 0.0)),
+                cpu_core_count: None,
+                tx_conflict_fraction: None,
+                tx_generation_weight: None,
+                producers: b_producers,
+                adversarial: None,
+                behaviours: vec![],
+            },
+        );
+        let topology: Topology = RawTopology { nodes }.into();
+        let scenario = RawPartitionScenario {
+            name: "no-edge".into(),
+            selector: RawPartitionSelector::SetToSet {
+                from: vec!["a".into()],
+                to: vec!["c".into()],
+                direction: Direction::Both,
+            },
+            start_time_s: 0.0,
+            stop_time_s: None,
+        };
+        let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
+        assert!(schedule[0].links.is_empty());
+    }
+
+    #[test]
+    fn unknown_node_name_is_an_error() {
+        let topology = fully_connected(&["a", "b"]);
+        let scenario = RawPartitionScenario {
+            name: "bad".into(),
+            selector: RawPartitionSelector::Isolate {
+                nodes: vec!["does-not-exist".into()],
+                direction: Direction::Both,
+            },
+            start_time_s: 0.0,
+            stop_time_s: None,
+        };
+        assert!(PartitionScheduleEntry::build_schedule(&[scenario], &topology).is_err());
+    }
+
+    #[test]
+    fn empty_scenarios_compile_to_empty_schedule() {
+        let topology = fully_connected(&["a", "b"]);
+        let schedule = PartitionScheduleEntry::build_schedule(&[], &topology).unwrap();
+        assert!(schedule.is_empty());
+    }
+
+    /// Invalid time windows are config errors, not panics.  The NaN cases
+    /// guard a subtle trap: NaN comparisons are always false, so rejection
+    /// relies on the explicit is_finite() checks, not on `stop <= start`.
+    #[test]
+    fn rejects_invalid_time_windows() {
+        let topology = fully_connected(&["a", "b"]);
+        let bad: [(f64, Option<f64>); 6] = [
+            (60.0, Some(30.0)),         // inverted window
+            (30.0, Some(30.0)),         // zero-length window
+            (-5.0, None),               // negative start
+            (f64::NAN, None),           // NaN start
+            (f64::INFINITY, None),      // infinite start
+            (10.0, Some(f64::NAN)),     // NaN stop
+        ];
+        for (start, stop) in bad {
+            let scenario = RawPartitionScenario {
+                name: "window".into(),
+                selector: RawPartitionSelector::Isolate {
+                    nodes: vec!["a".into()],
+                    direction: Direction::Both,
+                },
+                start_time_s: start,
+                stop_time_s: stop,
+            };
+            let err = PartitionScheduleEntry::build_schedule(&[scenario], &topology)
+                .expect_err(&format!("start={start}, stop={stop:?} should be rejected"));
+            assert!(
+                err.to_string().contains("time-s"),
+                "unexpected error for start={start}, stop={stop:?}: {err}"
+            );
+        }
     }
 }
