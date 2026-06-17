@@ -49,6 +49,7 @@ pub async fn serve_chainsync(
     let mut read_index: Option<usize> = None;
     let mut read_point: Option<Point> = None;
     let mut subscription = store.subscribe();
+    let mut first_recv = true;
 
     loop {
         let msg = match runner.recv().await {
@@ -62,19 +63,30 @@ pub async fn serve_chainsync(
                 break;
             }
         };
+        if first_recv {
+            tracing::info!(peer = peer.0, "chainsync: downstream opened protocol with us");
+            first_recv = false;
+        }
 
         match msg {
-            CsMsg::MsgFindIntersect { points } => match store.find_intersection(&points) {
-                Some((point, tip)) => {
-                    read_index = store.index_of(&point);
-                    read_point = Some(point.clone());
-                    let _ = runner.send(&CsMsg::MsgIntersectFound { point, tip }).await;
+            CsMsg::MsgFindIntersect { points } => {
+                tracing::info!(
+                    peer = peer.0,
+                    candidates = points.len(),
+                    "chainsync: downstream sent MsgFindIntersect (wants to sync chain from us)"
+                );
+                match store.find_intersection(&points) {
+                    Some((point, tip)) => {
+                        read_index = store.index_of(&point);
+                        read_point = Some(point.clone());
+                        let _ = runner.send(&CsMsg::MsgIntersectFound { point, tip }).await;
+                    }
+                    None => {
+                        let tip = store.tip();
+                        let _ = runner.send(&CsMsg::MsgIntersectNotFound { tip }).await;
+                    }
                 }
-                None => {
-                    let tip = store.tip();
-                    let _ = runner.send(&CsMsg::MsgIntersectNotFound { tip }).await;
-                }
-            },
+            }
             CsMsg::MsgRequestNext => {
                 // Check if our read pointer was invalidated by a rollback.
                 // Point-matching detects the case where a rollback + re-append
@@ -107,6 +119,10 @@ pub async fn serve_chainsync(
                         )
                         .await;
                     } else {
+                        tracing::info!(
+                            peer = peer.0,
+                            "chainsync: sending MsgAwaitReply (entering StMustReply — no chain past downstream's intersection)"
+                        );
                         let _ = runner.send(&CsMsg::MsgAwaitReply).await;
 
                         loop {
@@ -273,6 +289,7 @@ pub async fn serve_blockfetch(
     behaviour: Option<BehaviourHandle>,
 ) {
     let mut runner = Runner::<BlockFetch>::new(Role::Server, bf_send, bf_recv);
+    let mut first_recv = true;
 
     loop {
         let msg = match runner.recv().await {
@@ -285,9 +302,18 @@ pub async fn serve_blockfetch(
                 break;
             }
         };
+        if first_recv {
+            tracing::info!("blockfetch: downstream opened protocol with us");
+            first_recv = false;
+        }
 
         match msg {
             BfMsg::MsgRequestRange { from, to } => {
+                tracing::info!(
+                    %from,
+                    %to,
+                    "blockfetch: downstream requested range (wants blocks from us)"
+                );
                 let blocks = store.get_range(&from, &to);
                 if !blocks.is_empty() {
                     let _ = runner.send(&BfMsg::MsgStartBatch).await;
@@ -367,15 +393,28 @@ pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerI
         match recv_result {
             Ok(KaMsg::MsgKeepAlive { cookie }) => {
                 msg_count += 1;
-                tracing::info!(
-                    peer = peer.0,
-                    msg_count,
-                    cookie,
-                    "cardano-keepalive: received MsgKeepAlive, echoing"
-                );
+                // First MsgKeepAlive marks the downstream becoming hot
+                // (~15 min after connect) — surface at info so the hot
+                // window is visible in operator logs.  Subsequent
+                // rounds drop to debug to avoid one log per ~10s per
+                // active peer.
+                if msg_count == 1 {
+                    tracing::info!(
+                        peer = peer.0,
+                        cookie,
+                        "cardano-keepalive: first MsgKeepAlive received (downstream is now hot)"
+                    );
+                } else {
+                    tracing::debug!(
+                        peer = peer.0,
+                        msg_count,
+                        cookie,
+                        "cardano-keepalive: received MsgKeepAlive, echoing"
+                    );
+                }
                 match runner.send(&KaMsg::MsgKeepAliveResponse { cookie }).await {
                     Ok(()) => {
-                        tracing::info!(
+                        tracing::debug!(
                             peer = peer.0,
                             cookie,
                             "cardano-keepalive: sent MsgKeepAliveResponse"
@@ -452,6 +491,10 @@ pub async fn serve_txsubmission(
         );
         return;
     }
+    tracing::info!(
+        peer = peer_id.0,
+        "txsubmission: downstream opened protocol with us (MsgInit)"
+    );
 
     let mut outstanding: usize = 0;
 
@@ -604,6 +647,7 @@ pub async fn serve_peersharing(
     peer_provider: Arc<dyn Fn(u8) -> Vec<PeerAddress> + Send + Sync>,
 ) {
     let mut runner = Runner::<PeerSharing>::new(Role::Server, ps_send, ps_recv);
+    let mut first_recv = true;
 
     loop {
         let msg = match runner.recv().await {
@@ -616,9 +660,17 @@ pub async fn serve_peersharing(
                 break;
             }
         };
+        if first_recv {
+            tracing::info!("peersharing: downstream opened protocol with us");
+            first_recv = false;
+        }
 
         match msg {
             PsMsg::MsgShareRequest { amount } => {
+                tracing::info!(
+                    amount,
+                    "peersharing: downstream requested peers from us"
+                );
                 let peers = peer_provider(amount);
                 let _ = runner.send(&PsMsg::MsgSharePeers { peers }).await;
             }
@@ -687,6 +739,7 @@ pub async fn serve_leios_notify(
     // chainsync instead.
     let mut read_index: Option<usize> = None;
     let mut subscription = store.subscribe();
+    let mut first_recv = true;
 
     loop {
         let msg = match runner.recv().await {
@@ -699,6 +752,10 @@ pub async fn serve_leios_notify(
                 break;
             }
         };
+        if first_recv {
+            tracing::info!("leios_notify: downstream opened protocol with us");
+            first_recv = false;
+        }
 
         match msg {
             LnMsg::MsgLeiosNotificationRequestNext => {
@@ -805,6 +862,7 @@ async fn next_outbound_notification(
 /// Responds to block and vote fetch requests from the Leios store.
 pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Arc<LeiosStore>) {
     let mut runner = Runner::<LeiosFetch>::new(Role::Server, lf_send, lf_recv);
+    let mut first_recv = true;
 
     loop {
         let msg = match runner.recv().await {
@@ -817,9 +875,14 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
                 break;
             }
         };
+        if first_recv {
+            tracing::info!("leios_fetch: downstream opened protocol with us");
+            first_recv = false;
+        }
 
         match msg {
             LfMsg::MsgLeiosBlockRequest { point } => {
+                tracing::info!(%point, "leios_fetch: downstream requested EB body from us");
                 let block = match &point {
                     Point::Specific { slot, hash } => store.get_block(*slot, hash),
                     Point::Origin => None,
@@ -833,6 +896,11 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
                 }
             }
             LfMsg::MsgLeiosBlockTxsRequest { point, bitmap } => {
+                tracing::info!(
+                    %point,
+                    bitmap_chunks = bitmap.len(),
+                    "leios_fetch: downstream requested EB txs from us"
+                );
                 let transactions = match &point {
                     Point::Specific { slot, hash } => store.get_block_txs(*slot, hash, &bitmap),
                     Point::Origin => None,
