@@ -116,12 +116,22 @@ where
                 });
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                // Protocol channel was dropped — the protocol has terminated.
+                // Protocol channel was dropped — the protocol task has
+                // terminated.  Bytes we just read from the wire are
+                // silently dropped from here on out: any further
+                // segments for this (protocol, mode) hit the same
+                // closed channel.  This costs us inbound visibility
+                // (the remote keeps sending and times out waiting for
+                // a reply that can never come), so it's surfaced at
+                // warn — not debug — to make it obvious in logs.
                 state.counter.sub(payload_len);
-                tracing::debug!(
+                tracing::warn!(
                     protocol = protocol_id,
                     mode = mode,
-                    "protocol channel closed, removing"
+                    payload_bytes = payload_len,
+                    "mux: protocol channel closed, dropping incoming segment and \
+                     deregistering — further segments on this (protocol, mode) \
+                     will be silently lost until the connection is torn down"
                 );
                 protocols.remove(&key);
                 continue;

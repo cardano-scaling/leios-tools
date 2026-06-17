@@ -53,7 +53,14 @@ pub async fn serve_chainsync(
     loop {
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    peer = peer.0,
+                    err = %e,
+                    "chainsync: serve_chainsync recv error, exiting"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -270,7 +277,13 @@ pub async fn serve_blockfetch(
     loop {
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    err = %e,
+                    "blockfetch: serve_blockfetch recv error, exiting"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -326,24 +339,85 @@ fn lookup_variant_body(
     Some(BlockBody::new(body_bytes))
 }
 
-/// Serve KeepAlive for one connection. Stateless echo.
-pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv) {
+/// Serve KeepAlive for one connection.  Stateless echo.
+///
+/// The first `MsgKeepAlive` is awaited with **no timeout**: cardano-node
+/// doesn't activate the keepalive miniprotocol on cold/warm peers, so
+/// applying the 97s `TIMEOUT_CLIENT` deadline from connection time
+/// would kill the responder before the first hot promotion ever lands
+/// (~15 min in).  Once we've echoed the first round, subsequent rounds
+/// use the normal state-driven timeout (`recv()` here) so the liveness
+/// watchdog still fires if the relay goes silent after starting the
+/// protocol.
+///
+/// On exit, the task drops its ingress channel.  The outer duplex_task
+/// watches `ka_server`'s JoinHandle and tears down the whole connection
+/// when this function returns — that's the watchdog's actual effect.
+pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerId) {
     let mut runner = Runner::<KeepAlive>::new(Role::Server, ka_send, ka_recv);
+    tracing::info!(peer = peer.0, "cardano-keepalive: serve_keepalive task started");
 
-    loop {
-        let msg = match runner.recv().await {
-            Ok(msg) => msg,
-            Err(_) => break,
+    let mut msg_count: u64 = 0;
+    let exit_reason: &'static str = loop {
+        let recv_result = if msg_count == 0 {
+            runner.recv_untimed().await
+        } else {
+            runner.recv().await
         };
-
-        match msg {
-            KaMsg::MsgKeepAlive { cookie } => {
-                let _ = runner.send(&KaMsg::MsgKeepAliveResponse { cookie }).await;
+        match recv_result {
+            Ok(KaMsg::MsgKeepAlive { cookie }) => {
+                msg_count += 1;
+                tracing::info!(
+                    peer = peer.0,
+                    msg_count,
+                    cookie,
+                    "cardano-keepalive: received MsgKeepAlive, echoing"
+                );
+                match runner.send(&KaMsg::MsgKeepAliveResponse { cookie }).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            peer = peer.0,
+                            cookie,
+                            "cardano-keepalive: sent MsgKeepAliveResponse"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            peer = peer.0,
+                            cookie,
+                            err = %e,
+                            "cardano-keepalive: failed to send MsgKeepAliveResponse"
+                        );
+                        break "send-error";
+                    }
+                }
             }
-            KaMsg::MsgDone => break,
-            _ => break,
+            Ok(KaMsg::MsgDone) => break "client-done",
+            Ok(other) => {
+                tracing::warn!(
+                    peer = peer.0,
+                    ?other,
+                    "cardano-keepalive: unexpected message variant, terminating"
+                );
+                break "unexpected-message";
+            }
+            Err(e) => {
+                tracing::info!(
+                    peer = peer.0,
+                    msg_count,
+                    err = %e,
+                    "cardano-keepalive: recv error, exiting"
+                );
+                break "recv-error";
+            }
         }
-    }
+    };
+    tracing::info!(
+        peer = peer.0,
+        msg_count,
+        reason = exit_reason,
+        "cardano-keepalive: serve_keepalive task exiting"
+    );
 }
 
 /// Serve TxSubmission for one connection (transaction consumer).
@@ -361,9 +435,21 @@ pub async fn serve_txsubmission(
     // Receive MsgInit.
     let msg = match runner.recv().await {
         Ok(msg) => msg,
-        Err(_) => return,
+        Err(e) => {
+            tracing::warn!(
+                peer = peer_id.0,
+                err = %e,
+                "txsubmission: serve_txsubmission recv MsgInit failed, exiting"
+            );
+            return;
+        }
     };
     if !matches!(msg, TsMsg::MsgInit) {
+        tracing::warn!(
+            peer = peer_id.0,
+            ?msg,
+            "txsubmission: expected MsgInit, got other variant, exiting"
+        );
         return;
     }
 
@@ -393,7 +479,14 @@ pub async fn serve_txsubmission(
 
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    peer = peer_id.0,
+                    err = %e,
+                    "txsubmission: recv after MsgRequestTxIds* failed"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -410,7 +503,14 @@ pub async fn serve_txsubmission(
 
                     let msg = match runner.recv().await {
                         Ok(msg) => msg,
-                        Err(_) => break,
+                        Err(e) => {
+                            tracing::warn!(
+                                peer = peer_id.0,
+                                err = %e,
+                                "txsubmission: recv after non-blocking-empty retry failed"
+                            );
+                            break;
+                        }
                     };
 
                     match msg {
@@ -425,7 +525,14 @@ pub async fn serve_txsubmission(
 
                             let msg = match runner.recv().await {
                                 Ok(msg) => msg,
-                                Err(_) => break,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        peer = peer_id.0,
+                                        err = %e,
+                                        "txsubmission: recv MsgReplyTxs failed (retry path)"
+                                    );
+                                    break;
+                                }
                             };
                             match msg {
                                 TsMsg::MsgReplyTxs { txs } => {
@@ -458,7 +565,14 @@ pub async fn serve_txsubmission(
 
                 let msg = match runner.recv().await {
                     Ok(msg) => msg,
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::warn!(
+                            peer = peer_id.0,
+                            err = %e,
+                            "txsubmission: recv MsgReplyTxs failed"
+                        );
+                        break;
+                    }
                 };
                 match msg {
                     TsMsg::MsgReplyTxs { txs } => {
@@ -494,7 +608,13 @@ pub async fn serve_peersharing(
     loop {
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    err = %e,
+                    "peersharing: serve_peersharing recv error, exiting"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -571,7 +691,13 @@ pub async fn serve_leios_notify(
     loop {
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    err = %e,
+                    "leios_notify: serve_leios_notify recv error, exiting"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -683,7 +809,13 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
     loop {
         let msg = match runner.recv().await {
             Ok(msg) => msg,
-            Err(_) => break,
+            Err(e) => {
+                tracing::warn!(
+                    err = %e,
+                    "leios_fetch: serve_leios_fetch recv error, exiting"
+                );
+                break;
+            }
         };
 
         match msg {
@@ -908,7 +1040,7 @@ mod tests {
         let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
             mux_pair_for_protocol(&ka_proto);
 
-        let server_handle = tokio::spawn(serve_keepalive(server_send, server_recv));
+        let server_handle = tokio::spawn(serve_keepalive(server_send, server_recv, PeerId(0)));
 
         let mut client = Runner::<KeepAlive>::new(Role::Client, client_send, client_recv);
         let rtt = keepalive::keep_alive(&mut client, 42).await.unwrap();
