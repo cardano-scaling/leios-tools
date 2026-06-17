@@ -572,10 +572,10 @@ pub async fn serve_leios_notify(
 }
 
 /// Find the next notification the wire actually sends to `peer`, skipping
-/// entries whose source equals `peer` (no-echo). Advances `read_index`
-/// past every skipped entry so the same notification isn't reconsidered
-/// next call. Awaits new injects when the queue is empty. Returns `None`
-/// on watch-channel close — the server task should exit.
+/// entries where `peer` is in the entry's `sources` (no-echo). Advances
+/// `read_index` past every skipped entry so the same notification isn't
+/// reconsidered next call. Awaits new injects when the queue is empty.
+/// Returns `None` on watch-channel close — the server task should exit.
 async fn next_outbound_notification(
     store: &Arc<LeiosStore>,
     read_index: &mut usize,
@@ -587,20 +587,21 @@ async fn next_outbound_notification(
         let pending = store.notifications_after(read_index);
         for entry in &pending {
             *read_index += 1;
-            if entry.source == Some(peer) {
+            if entry.sources.contains(&peer) {
                 tracing::debug!(
                     peer = peer.0,
                     "leios_notify: skipping no-echo offer back to source"
                 );
                 continue;
             }
+            let sources: Vec<u64> = entry.sources.iter().map(|p| p.0).collect();
             match &entry.notification {
                 LeiosNotification::BlockOffer { point, eb_size } => {
                     tracing::info!(
                         peer = peer.0,
                         %point,
                         eb_size,
-                        source = ?entry.source.map(|p| p.0),
+                        ?sources,
                         "leios_notify: serving EB offer"
                     );
                 }
@@ -608,7 +609,7 @@ async fn next_outbound_notification(
                     tracing::info!(
                         peer = peer.0,
                         %point,
-                        source = ?entry.source.map(|p| p.0),
+                        ?sources,
                         "leios_notify: serving EB-txs offer"
                     );
                 }
@@ -616,7 +617,7 @@ async fn next_outbound_notification(
                     tracing::debug!(
                         peer = peer.0,
                         count = votes.len(),
-                        source = ?entry.source.map(|p| p.0),
+                        ?sources,
                         "leios_notify: serving votes"
                     );
                 }
@@ -996,6 +997,154 @@ mod tests {
                 assert_eq!(eb_size, 4, "eb_size should match the injected block length");
             }
             other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn leios_notify_server_skips_offers_with_connected_peer_in_sources() {
+        // Multi-source no-echo: an EB advertised to us by two peers
+        // (one of them the connected one) must not be re-offered back,
+        // even though the connected peer is just one of multiple
+        // sources after dedup.
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let connected_peer = PeerId(7);
+        let other_peer = PeerId(9);
+        let third_peer = PeerId(13);
+
+        // Same EB advertised by other_peer then by connected_peer —
+        // dedup collapses these into a single entry whose `sources`
+        // contains both. The server must still skip it for connected_peer.
+        let point = Point::Specific {
+            slot: 10,
+            hash: [0xAA; 32],
+        };
+        store.inject_block(point.clone(), vec![1, 2, 3], Some(other_peer));
+        store.inject_block(point.clone(), vec![1, 2, 3], Some(connected_peer));
+
+        // A separate EB advertised by third_peer — this one must be
+        // delivered.
+        store.inject_block(
+            Point::Specific {
+                slot: 11,
+                hash: [0xBB; 32],
+            },
+            vec![4, 5, 6, 7],
+            Some(third_peer),
+        );
+
+        let server_handle = tokio::spawn(serve_leios_notify(
+            server_send,
+            server_recv,
+            store,
+            connected_peer,
+        ));
+
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let event = leios_notify::request_next(&mut client).await.unwrap();
+        match event {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, .. } => {
+                assert_eq!(
+                    point,
+                    Point::Specific {
+                        slot: 11,
+                        hash: [0xBB; 32]
+                    },
+                    "expected the third-peer offer; the connected_peer-sourced one must be filtered"
+                );
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn leios_notify_server_dedups_same_eb_to_one_offer() {
+        // Two advertisements from different sources for the same EB
+        // must produce a single wire offer downstream. Without dedup
+        // the server would emit two MsgLeiosBlockOffer messages.
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let downstream = PeerId(99);
+        let point = Point::Specific {
+            slot: 21,
+            hash: [0x12; 32],
+        };
+        // Same point advertised by two distinct upstream peers — dedup
+        // must merge into one notification entry.
+        store.inject_block(point.clone(), vec![0xCD; 17], Some(PeerId(1)));
+        store.inject_block(point.clone(), vec![0xCD; 17], Some(PeerId(2)));
+
+        // Sentinel notification with a distinct point — its arrival
+        // proves the first offer was the only one served for the
+        // duped point (no second copy hiding in the queue).
+        store.inject_block(
+            Point::Specific {
+                slot: 22,
+                hash: [0x34; 32],
+            },
+            vec![0xEF; 5],
+            Some(PeerId(3)),
+        );
+
+        let server_handle = tokio::spawn(serve_leios_notify(
+            server_send,
+            server_recv,
+            store,
+            downstream,
+        ));
+
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+
+        let first = leios_notify::request_next(&mut client).await.unwrap();
+        match first {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point: p, eb_size } => {
+                assert_eq!(p, point);
+                assert_eq!(eb_size, 17);
+            }
+            other => panic!("expected first BlockOffer for duped point, got {other:?}"),
+        }
+
+        let second = leios_notify::request_next(&mut client).await.unwrap();
+        match second {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point: p, .. } => {
+                assert_eq!(
+                    p,
+                    Point::Specific {
+                        slot: 22,
+                        hash: [0x34; 32]
+                    },
+                    "second offer should be the sentinel — the duped point must not appear again"
+                );
+            }
+            other => panic!("expected sentinel BlockOffer, got {other:?}"),
         }
 
         let _ = leios_notify::done(&mut client).await;
