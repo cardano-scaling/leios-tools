@@ -983,9 +983,29 @@ async fn next_outbound_notification(
             return Some(msg);
         }
         // Drained without finding a deliverable entry — wait for new
-        // injects before trying again.
-        if subscription.changed().await.is_err() {
-            return None;
+        // injects, but send an empty MsgLeiosVotes as a keepalive
+        // before any protocol-level StBusy timer can expire.  Note this
+        // is *necessary but not sufficient*: the dev relay also
+        // enforces a hard 60s hot-dwell wall (peer-selection policy,
+        // not protocol-state) that demotes us regardless of wire
+        // activity.  The keepalive only ensures we don't get killed by
+        // a protocol-state timeout in addition to the dwell-policy
+        // demote.  Replace with the dedicated "No offer" message once
+        // the network team adds it to the protocol.
+        const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(50);
+        tokio::select! {
+            result = subscription.changed() => {
+                if result.is_err() {
+                    return None;
+                }
+            }
+            _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                tracing::info!(
+                    peer = peer.0,
+                    "leios_notify: sending empty-votes keepalive"
+                );
+                return Some(LnMsg::MsgLeiosVotes { votes: Vec::new() });
+            }
         }
     }
 }
