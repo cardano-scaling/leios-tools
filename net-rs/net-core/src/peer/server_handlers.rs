@@ -543,7 +543,29 @@ pub async fn serve_leios_notify(
     peer: PeerId,
 ) {
     let mut runner = Runner::<LeiosNotify>::new(Role::Server, ln_send, ln_recv);
-    let mut read_index: usize = 0;
+    // `None` until the first MsgLeiosNotificationRequestNext arrives, at
+    // which point we snap forward to `store.notification_count()` —
+    // skipping every notification that landed in the queue *before* the
+    // upstream peer-selection governor promoted this connection to hot
+    // and started polling us.
+    //
+    // Why: a peer can sit cold/warm for the full ~15-min churn cycle
+    // while OTHER connections to the same node are hot and pulling EBs
+    // into the shared LeiosStore.  Those EBs push notification entries
+    // that our serve_leios_notify task can't deliver — nobody is asking.
+    // Without this snap, the first LNRequestNext after eventual hot
+    // promotion would drain the entire backlog in a single burst, often
+    // 10+ MsgLeiosBlockOffer messages in <100ms.  Observed behaviour:
+    // the dev relay either rate-limits this burst into a tight hot
+    // window or treats us as misbehaving and disconnects within ~1s of
+    // promotion (the "quick-drop" cluster we measured on 2026-06-17).
+    //
+    // Snapping forward also matches the wire semantics a downstream
+    // peer would expect: LeiosNotify is for offers fresh enough to be
+    // useful; anything older than ~15 min is already past the EB
+    // freshness window and the peer learns about it via the RB cert on
+    // chainsync instead.
+    let mut read_index: Option<usize> = None;
     let mut subscription = store.subscribe();
 
     loop {
@@ -554,9 +576,20 @@ pub async fn serve_leios_notify(
 
         match msg {
             LnMsg::MsgLeiosNotificationRequestNext => {
+                let cursor = read_index.get_or_insert_with(|| {
+                    let snapped = store.notification_count();
+                    if snapped > 0 {
+                        tracing::info!(
+                            peer = peer.0,
+                            snapped_past = snapped,
+                            "leios_notify: first request — snapping cursor to queue tail, \
+                             skipping backlog accumulated while cold/warm"
+                        );
+                    }
+                    snapped
+                });
                 if let Some(response) =
-                    next_outbound_notification(&store, &mut read_index, peer, &mut subscription)
-                        .await
+                    next_outbound_notification(&store, cursor, peer, &mut subscription).await
                 {
                     if runner.send(&response).await.is_err() {
                         break;
@@ -890,29 +923,39 @@ mod tests {
         let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
             mux_pair_for_protocol(&ln_proto);
 
-        // Create and populate LeiosStore.
         let (store, _rx) = LeiosStore::new(100);
-        store.inject_block(
-            Point::Specific {
-                slot: 42,
-                hash: [0xAB; 32],
-            },
-            vec![1, 2, 3],
-            None,
-        );
 
-        // Start server.
+        // Start server with an empty store — it will snap its cursor
+        // forward on the first MsgLeiosNotificationRequestNext.
         let server_handle = tokio::spawn(serve_leios_notify(
             server_send,
             server_recv,
-            store,
+            store.clone(),
             PeerId(0),
         ));
 
-        // Client: request next notification.
+        // Issue request_next concurrently with a delayed inject: the
+        // request reaches the server first, the server snaps and starts
+        // awaiting fresh notifications, and the inject lands afterwards
+        // so the response comes from a post-snap entry.
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let event = leios_notify::request_next(&mut client).await.unwrap();
-        match event {
+        let inject_store = store.clone();
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 42,
+                        hash: [0xAB; 32],
+                    },
+                    vec![1, 2, 3],
+                    None,
+                );
+            }
+        );
+
+        match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                 assert_eq!(
                     point,
@@ -921,13 +964,11 @@ mod tests {
                         hash: [0xAB; 32]
                     }
                 );
-                // eb_size is the byte length of the injected block body.
                 assert_eq!(eb_size, 3);
             }
             other => panic!("expected BlockOffer, got {other:?}"),
         }
 
-        // Clean up.
         let _ = leios_notify::done(&mut client).await;
         server_handle.await.ok();
         mux_a.abort();
@@ -956,35 +997,43 @@ mod tests {
         let (store, _rx) = LeiosStore::new(100);
         let connected_peer = PeerId(7);
         let other_peer = PeerId(9);
-        // From connected_peer — must be filtered out.
-        store.inject_block(
-            Point::Specific {
-                slot: 10,
-                hash: [0xAA; 32],
-            },
-            vec![1, 2, 3],
-            Some(connected_peer),
-        );
-        // From a different peer — must be delivered.
-        store.inject_block(
-            Point::Specific {
-                slot: 11,
-                hash: [0xBB; 32],
-            },
-            vec![4, 5, 6, 7],
-            Some(other_peer),
-        );
 
         let server_handle = tokio::spawn(serve_leios_notify(
             server_send,
             server_recv,
-            store,
+            store.clone(),
             connected_peer,
         ));
 
+        // Inject after the server has snapped its cursor on the first
+        // request — both offers land in the post-snap window so the
+        // no-echo gate alone decides which one reaches the wire.
+        let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let event = leios_notify::request_next(&mut client).await.unwrap();
-        match event {
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 10,
+                        hash: [0xAA; 32],
+                    },
+                    vec![1, 2, 3],
+                    Some(connected_peer),
+                );
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 11,
+                        hash: [0xBB; 32],
+                    },
+                    vec![4, 5, 6, 7],
+                    Some(other_peer),
+                );
+            }
+        );
+
+        match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                 assert_eq!(
                     point,
@@ -1026,37 +1075,43 @@ mod tests {
         let other_peer = PeerId(9);
         let third_peer = PeerId(13);
 
-        // Same EB advertised by other_peer then by connected_peer —
-        // dedup collapses these into a single entry whose `sources`
-        // contains both. The server must still skip it for connected_peer.
-        let point = Point::Specific {
-            slot: 10,
-            hash: [0xAA; 32],
-        };
-        store.inject_block(point.clone(), vec![1, 2, 3], Some(other_peer));
-        store.inject_block(point.clone(), vec![1, 2, 3], Some(connected_peer));
-
-        // A separate EB advertised by third_peer — this one must be
-        // delivered.
-        store.inject_block(
-            Point::Specific {
-                slot: 11,
-                hash: [0xBB; 32],
-            },
-            vec![4, 5, 6, 7],
-            Some(third_peer),
-        );
-
         let server_handle = tokio::spawn(serve_leios_notify(
             server_send,
             server_recv,
-            store,
+            store.clone(),
             connected_peer,
         ));
 
+        // Inject after the cursor snap: the no-echo gate then has to
+        // decide between two queued entries on its own.
+        let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let event = leios_notify::request_next(&mut client).await.unwrap();
-        match event {
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                // Same EB advertised by other_peer then by connected_peer —
+                // dedup collapses these into a single entry whose `sources`
+                // contains both. The server must still skip it for connected_peer.
+                let point = Point::Specific {
+                    slot: 10,
+                    hash: [0xAA; 32],
+                };
+                inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(other_peer));
+                inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(connected_peer));
+                // A separate EB advertised by third_peer — this one must be delivered.
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 11,
+                        hash: [0xBB; 32],
+                    },
+                    vec![4, 5, 6, 7],
+                    Some(third_peer),
+                );
+            }
+        );
+
+        match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, .. } => {
                 assert_eq!(
                     point,
@@ -1097,34 +1152,40 @@ mod tests {
             slot: 21,
             hash: [0x12; 32],
         };
-        // Same point advertised by two distinct upstream peers — dedup
-        // must merge into one notification entry.
-        store.inject_block(point.clone(), vec![0xCD; 17], Some(PeerId(1)));
-        store.inject_block(point.clone(), vec![0xCD; 17], Some(PeerId(2)));
-
-        // Sentinel notification with a distinct point — its arrival
-        // proves the first offer was the only one served for the
-        // duped point (no second copy hiding in the queue).
-        store.inject_block(
-            Point::Specific {
-                slot: 22,
-                hash: [0x34; 32],
-            },
-            vec![0xEF; 5],
-            Some(PeerId(3)),
-        );
 
         let server_handle = tokio::spawn(serve_leios_notify(
             server_send,
             server_recv,
-            store,
+            store.clone(),
             downstream,
         ));
 
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
 
-        let first = leios_notify::request_next(&mut client).await.unwrap();
-        match first {
+        // Inject all three (two duped + sentinel) after the cursor
+        // snap.  The first request_next then surfaces the deduped
+        // offer; the second surfaces the sentinel, proving the duped
+        // point did not appear twice.
+        let inject_store = store.clone();
+        let point_for_inject = point.clone();
+        let (first, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(point_for_inject.clone(), vec![0xCD; 17], Some(PeerId(1)));
+                inject_store.inject_block(point_for_inject, vec![0xCD; 17], Some(PeerId(2)));
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 22,
+                        hash: [0x34; 32],
+                    },
+                    vec![0xEF; 5],
+                    Some(PeerId(3)),
+                );
+            }
+        );
+
+        match first.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point: p, eb_size } => {
                 assert_eq!(p, point);
                 assert_eq!(eb_size, 17);
@@ -1145,6 +1206,87 @@ mod tests {
                 );
             }
             other => panic!("expected sentinel BlockOffer, got {other:?}"),
+        }
+
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn leios_notify_server_snaps_past_backlog_on_first_request() {
+        // Cold-period accumulation must not flood the wire on the
+        // first MsgLeiosNotificationRequestNext: every offer that was
+        // queued *before* the first request is silently skipped, and
+        // only the offer that lands *after* the snap is delivered.
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let downstream = PeerId(42);
+
+        // Pre-server-start backlog: three EBs from a different peer
+        // that landed while we were cold/warm.  After the snap, none
+        // of these should reach the wire.
+        for slot in 1u64..=3 {
+            let mut hash = [0u8; 32];
+            hash[0] = slot as u8;
+            store.inject_block(
+                Point::Specific { slot, hash },
+                vec![0xAA; 10],
+                Some(PeerId(7)),
+            );
+        }
+
+        let server_handle = tokio::spawn(serve_leios_notify(
+            server_send,
+            server_recv,
+            store.clone(),
+            downstream,
+        ));
+
+        // Issue request_next + delayed post-snap inject of a sentinel.
+        // The sentinel slot (100) is unmistakable; if the snap is
+        // broken, the test will surface the slot-1 backlog entry
+        // instead and the assertion below catches it.
+        let inject_store = store.clone();
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let (event, _) = tokio::join!(
+            leios_notify::request_next(&mut client),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                inject_store.inject_block(
+                    Point::Specific {
+                        slot: 100,
+                        hash: [0xEE; 32],
+                    },
+                    vec![0xBB; 20],
+                    Some(PeerId(8)),
+                );
+            }
+        );
+
+        match event.unwrap() {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
+                assert_eq!(
+                    point,
+                    Point::Specific {
+                        slot: 100,
+                        hash: [0xEE; 32]
+                    },
+                    "expected the post-snap sentinel, got a backlog entry — snap-forward is not engaging"
+                );
+                assert_eq!(eb_size, 20);
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
         }
 
         let _ = leios_notify::done(&mut client).await;
