@@ -143,6 +143,7 @@ pub enum BehaviourKind {
     Selector { children: Vec<BehaviourId> },   // ordered OR  (first to succeed)
     Sequence { children: Vec<BehaviourId> },   // ordered AND (stop on first failure)
     Join     { children: Vec<BehaviourId> },   // concurrent AND, fail-fast (no policy field)
+    ForTicks { count: u32, child: BehaviourId }, // decorator; run child for at most `count` ticks
     Condition { expr: ConditionExpr },         // -> Success/Failure (immediate)
     Action(ActionKind),                        // leaf; contributes to ControlSignal when active
 }
@@ -161,6 +162,10 @@ operational semantics + the `halt`/abort relation are in
 - `Join` (concurrent AND, fail-fast): tick every not-yet-succeeded child each tick;
   **any** `Failure` halts all children and → `Failure`; **all** `Success` → `Success`;
   otherwise `Running`. Policy is fixed (all-succeed); there is no `success_policy` field.
+- `ForTicks { count, child }` (decorator, duration cap): run `child` for at most `count`
+  ticks; while it is `Running`, return `Running`; at the budget, `halt` the child and
+  return `Success` (an early child terminal status propagates). `count` is in ticks
+  (slot-based). See `design/bt-grammar-and-semantics.md` §5.
 
 ### `ActionKind` (leaf actions = control-signal contributors)
 A leaf, when its branch is active this tick, contributes to the `ControlSignal` accumulator
@@ -235,6 +240,12 @@ pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
   rule** (D13): deep-merge the document and its includes table-by-table, closer-to-root
   wins (no per-section special handling). It detects cycles (behaviour graph + include graph),
   then `validate()`s and compiles to `BehaviourTree`.
+- **Name references expand.** The config is a map of named definitions whose `children` ids
+  may reference the same definition from more than one site (a DAG). Compilation **expands**
+  each reference into an **independent instance**, so the `BehaviourTree` the engine ticks is
+  a tree, and each instance owns its node-local state (`ForTicks` `elapsed`, `Join`
+  `succeeded`, action progress) and its own `ControlSignal` contribution. A reference to an
+  undefined name, or a reference cycle, is a load error.
 - `EnvValue` is a small typed union (`U64`/`F64`/`Str`/`Bool`) so conditions can
   type-check references.
 

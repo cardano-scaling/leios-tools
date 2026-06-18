@@ -33,6 +33,7 @@ The id is the table key; there is no `id =` field, and duplicate ids are impossi
 | `Selector`           | `children = [id, …]` | ordered OR: first child Success → Success; all fail → Failure |
 | `Sequence`           | `children = [id, …]` | ordered AND: all Success → Success; first Failure → Failure |
 | `Join`               | `children = [id, …]` | concurrent AND, fail-fast: succeed iff all succeed; first failure halts the rest and fails (no `success_policy` field) |
+| `ForTicks`           | `count = <int≥1>`, `child = id` | run `child` for at most `count` ticks, then halt it and return Success (decorator) |
 | `Condition`          | `expression = "<expr>"` | immediate Success/Failure (never Running) |
 | `Action` leaves      | `action`-specific fields (see below) | Success/Failure/Running |
 

@@ -28,13 +28,15 @@ context for a tick is a read-only snapshot of the world — the node's chain sta
 
 ## 2. Behaviour kinds (informal)
 
-Two families: **composites** (inner behaviours, ≥1 child) and **leaves** (no children).
+Three families: **composites** (≥1 child), the **`ForTicks` decorator** (exactly one child),
+and **leaves** (no children).
 
 | Kind | Family | One-line semantics |
 |------|--------|--------------------|
 | `Sequence` | composite | ordered **AND** — succeed iff *all* children succeed; fail on the first failure. |
 | `Selector` | composite | ordered **OR** / fallback — succeed on the first child that succeeds; fail iff *all* fail. |
 | `Join` | composite | concurrent **AND** — tick *all* children each tick; succeed iff all succeed; **fail-fast**: the first child failure halts the rest and fails. Policy is fixed (no `success_policy` field). |
+| `ForTicks` | decorator | run `child` for at most `count` ticks; while the child is `Running`, return `Running`; at the budget, `halt` the child and return `Success`. A child `Success`/`Failure` before the budget propagates. Bounds a subtree's active lifetime (e.g. "attack for 2 slots"); `count` is in **ticks** (our tick base is the slot). |
 | `Condition` | leaf | evaluate a predicate over `Γ`; return `Success` or `Failure` **immediately** (never `Running`). Used as a precondition inside a `Sequence`. |
 | `Action` | leaf | act on the world (contribute to `ControlSignal`); may return `Success`, `Failure`, or `Running`. |
 
@@ -44,24 +46,43 @@ Two families: **composites** (inner behaviours, ≥1 child) and **leaves** (no c
 ## 3. Abstract grammar (EBNF)
 
 ```ebnf
-behaviour  ::= sequence | selector | join | condition | action
+document   ::= { behaviour } root            (* named top-level defs, then the entry *)
+root       ::= "root" "[" child "]"          (* required; the single entry behaviour *)
 
-sequence   ::= "Sequence" "[" behaviour { "," behaviour } "]"
-selector   ::= "Selector" "[" behaviour { "," behaviour } "]"
-join       ::= "Join" "[" behaviour { "," behaviour } "]"
+behaviour  ::= sequence | selector | join | forticks | condition | action
 
-condition  ::= "Condition" "(" predicate ")"
-action     ::= "Action"    "(" action_id { "," param } ")"
+sequence   ::= "Sequence" [ name ] "[" child { "," child } "]"
+selector   ::= "Selector" [ name ] "[" child { "," child } "]"
+join       ::= "Join"     [ name ] "[" child { "," child } "]"
+
+forticks   ::= "ForTicks" [ name ] "(" count "," child ")"    (* count >= 1 *)
+
+condition  ::= "Condition" [ name ] "(" predicate ")"
+action     ::= "Action"    [ name ] "(" action_id { "," param } ")"
+
+child      ::= reference | behaviour         (* a child is a name OR an inline behaviour *)
+reference  ::= name                          (* use of a previously-defined name *)
+name       ::= IDENT | STRING                (* T14, "attack" — document-unique *)
 ```
 
-- Composites (`Sequence`, `Selector`, `Join`) take **one or more** child behaviours in
-  declaration order; leaves (`Condition`, `Action`) take none.
+- Composites (`Sequence`, `Selector`, `Join`) take **one or more** children in declaration
+  order; the `ForTicks` decorator takes a positive tick `count` and **exactly one** child;
+  leaves (`Condition`, `Action`) take none.
+- **Names are optional** and come right after the kind keyword; they are document-unique. A
+  child that is a bare `name` is a **reference** to the so-named behaviour (distinct from an
+  `action_id`, which appears only inside `Action(...)`).
+- **`root` is required** and names the single entry behaviour (reference or inline); multiple
+  entries are composed under an explicit `Selector`/`Join`. Behaviours defined but not
+  reachable from `root` are allowed but unused (a lint).
+- **References expand (template semantics):** each reference resolves to its definition and
+  is instantiated as an **independent copy** — the structure stays a tree, and every instance
+  has its own node-local state (`ForTicks` `elapsed`, `Join` `succeeded`, action progress) and
+  its own `ControlSignal` contribution. A reference to an undefined name is a load-time error.
 - `predicate` is the minimal boolean expression language (comparisons, `and`/`or`/`not`,
   membership) over `env.*` and `cardano.*` — see the config schema.
 - `action_id` names a registered action (the action registry); `param`s configure it.
-- A tree is a single root `behaviour`. The concrete TOML encodes this as keyed
-  `[behaviours.<id>]` tables with `children` referencing ids; the abstract grammar above is
-  what those resolve to.
+- This maps 1:1 to the TOML config: `name` → the `[behaviours.<name>]` key, a `reference` →
+  a `children` id, `root` → `[run].root`. The abstract grammar is what those resolve to.
 
 ## 4. Evaluation model
 
@@ -193,11 +214,38 @@ nothing on the next tick, so the world reverts toward honest — this is how a r
 removes an adversarial effect. (See the control-signal seam in
 [`unified-tick-model.md`](./unified-tick-model.md) and `../data-model.md`.)
 
+### ForTicks (decorator, duration cap)
+
+Runs `child` for at most `n` ticks of active life, then stops it. `elapsed` is node-local
+carried state (like `Join`'s `succeeded`), reset by `halt` — so a re-selected `ForTicks`
+re-arms.
+
+```text
+state: elapsed = 0                     # active ticks so far; persists; reset by halt
+
+tick(ForTicks[n, child], Γ):           # n >= 1
+    if elapsed >= n:                   # budget already spent: stable "done"
+        halt(child)
+        return Success
+    s = tick(child, Γ)
+    elapsed += 1
+    if s == Running and elapsed < n:
+        return Running                 # within budget, keep going
+    if s == Running:                   # hit the budget on this tick
+        halt(child)
+        return Success
+    return s                           # child finished early: propagate Success/Failure
+```
+
+Intended for a continuous (`Running`) child — it bounds the subtree's active lifetime to
+`n` ticks (e.g. `ForTicks(2, Join[...])` = "run this attack for two slots").
+
 ### halt (abort) — summary
 
 ```text
 halt(Sequence|Selector S) = for c in S.children: halt(c)
 halt(Join P)          = (for c in P.children: halt(c)); P.succeeded = ∅
+halt(ForTicks[_, child]) = halt(child); elapsed = 0
 halt(Condition)           = no-op
 halt(Action a)            = a.stop()
 ```
@@ -247,3 +295,83 @@ A whole-tree tick yields `(Status, ControlSignal)`: the `Status` of the root plu
 "decide in the tick" half of the design; the consensus *actuators* then consume `ControlSignal`.
 Halted Actions drop out of the accumulation, so the control-signal set always reflects exactly
 the currently-active leaves. (See [`unified-tick-model.md`](./unified-tick-model.md).)
+
+## 9. Examples — the existing adversaries
+
+The faithful translation of each shipped adversary is a single `Action`: these behaviours
+are "always on" when installed, and un-overridden `ControlSignal` fields stay honest by
+default, so no explicit fallback is needed (`action_id` is the registry `kind`; `reason` and
+`ways` have defaults). The example below is a **complete document** — (optionally named)
+top-level definitions, then the required `root` — showing reuse by name (`"T14"` is
+referenced from `"attack"`) and a definition (`gated`) that `root` never reaches, so it is
+unused. References **expand** to independent instances (§3).
+
+```text
+Action "deep-reorg" ("deep-reorg", every_slots = 50, depth = 10)
+Action "honest" ("honest")
+
+# gated — honest until a trigger slot, then equivocate. Defined but unreachable from root → unused.
+Selector "gated" [
+  Sequence[ Condition(cardano.current_slot >= env.trigger_slot),
+            Action("rb-header-equivocator", ways = 2) ],
+  "honest"
+]
+
+# composite — reorg + inbound reset concurrently after a trigger (replaces old Composite)
+Sequence "T14" [
+  Condition(cardano.current_slot >= env.trigger_slot),
+  Join[ "deep-reorg",                                       # reference (expands to its own instance)
+        Action("drop-inbound-peers", probability = 0.5) ]
+]
+
+Join "attack" [ "T14", Action("rb-header-equivocator", ways = 2) ]
+
+root [ Selector[ "attack", "honest" ] ]
+```
+
+`ControlSignal` each drives: lazy-voter → `leios.vote = Abstain`; rb-header-equivocator →
+`praos.production = Equivocate` + `praos.outbound = EquivocateRouting`; deep-reorg →
+`praos.reorg_depth`; drop-inbound-peers → `praos.drop_inbound`; t22 → `mempool.tx_filter`.
+
+**Internal gating stays in the action.** deep-reorg (periodic) and drop-inbound-peers
+(stochastic) self-gate deterministically from `(seed, slot)` — they are *not* `Condition`s
+because the grammar (§3) has no modulo or randomness. The BT does coarse gating via
+`Condition`s over `env`/`state`; periodic/stochastic timing lives in the seeded action.
+
+**Composition.** The old `Composite` becomes a `Join` (run all): deep-reorg and
+drop-inbound-peers write distinct `ControlSignal` fields, so they compose without conflict.
+Use `Sequence`/`Selector` when you want AND/OR ordering instead of concurrency.
+
+### Concrete TOML
+
+The "gated" example above as a `[behaviours.<id>]` config (encoding per
+[`../contracts/bt-config.schema.md`](../contracts/bt-config.schema.md)):
+
+```toml
+[run]
+name = "slot-trigger equivocator"
+seed = 1234567
+root = "root"
+
+[env]
+trigger_slot = 345600
+
+[behaviours.root]
+type = "Selector"
+children = ["attack", "honest"]
+
+[behaviours.attack]
+type = "Sequence"
+children = ["cond", "equivocate"]
+
+[behaviours.cond]
+type = "Condition"
+expression = "cardano.current_slot >= env.trigger_slot"
+
+[behaviours.equivocate]
+type = "Action"
+spec = { kind = "rb-header-equivocator", ways = 2 }
+
+[behaviours.honest]
+type = "HonestAction"
+```
