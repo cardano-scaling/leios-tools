@@ -981,7 +981,7 @@ mod tests {
             slot,
             eb_hash: [voter_id as u8; 32],
             voter_id,
-            vote_signature: true,
+            vote_signature: vec![0xAB; 48],
         }
     }
 
