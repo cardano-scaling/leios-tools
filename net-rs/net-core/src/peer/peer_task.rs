@@ -503,14 +503,36 @@ pub(crate) fn spawn_leios_notify(
                         .await;
                 }
                 Ok(LeiosNotifyEvent::Votes { votes }) => {
-                    tracing::info!(%peer_id, count = votes.len(), "leios_notify: votes received");
+                    // BLS vote signatures are fixed-size, so a min/max
+                    // summary is enough here — individual lengths are
+                    // logged per-vote at debug just below.
+                    let sig_min = votes.iter().map(|v| v.vote_signature.len()).min().unwrap_or(0);
+                    let sig_max = votes.iter().map(|v| v.vote_signature.len()).max().unwrap_or(0);
+                    let sig_prefix = votes
+                        .first()
+                        .map(|v| {
+                            v.vote_signature
+                                .iter()
+                                .take(8)
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default();
+                    tracing::info!(
+                        %peer_id,
+                        count = votes.len(),
+                        sig_min,
+                        sig_max,
+                        sig_prefix = %sig_prefix,
+                        "leios_notify: votes received"
+                    );
                     for v in &votes {
                         tracing::debug!(
                             %peer_id,
                             slot = v.slot,
                             eb_hash = %hex32(&v.eb_hash),
                             voter_id = v.voter_id,
-                            sig = v.vote_signature,
+                            sig_len = v.vote_signature.len(),
                             "leios_notify: vote"
                         );
                     }
@@ -1170,7 +1192,7 @@ mod tests {
                         slot: 100,
                         eb_hash: [0xAB; 32],
                         voter_id: 1,
-                        vote_signature: true,
+                        vote_signature: vec![0xAB; 48],
                     }],
                 })
                 .await

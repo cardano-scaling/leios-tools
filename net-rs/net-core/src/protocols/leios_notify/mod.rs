@@ -361,13 +361,13 @@ mod tests {
                             slot: 100,
                             eb_hash: [0x11; 32],
                             voter_id: 1,
-                            vote_signature: true,
+                            vote_signature: vec![0xAB; 48],
                         },
                         Vote {
                             slot: 101,
                             eb_hash: [0x22; 32],
                             voter_id: 2,
-                            vote_signature: false,
+                            vote_signature: vec![0xCD; 48],
                         },
                     ],
                 })
@@ -433,7 +433,7 @@ mod tests {
                             slot: 100,
                             eb_hash: [0x11; 32],
                             voter_id: 1,
-                            vote_signature: true,
+                            vote_signature: vec![0xAB; 48],
                         }
                     );
                     assert_eq!(
@@ -442,7 +442,7 @@ mod tests {
                             slot: 101,
                             eb_hash: [0x22; 32],
                             voter_id: 2,
-                            vote_signature: false,
+                            vote_signature: vec![0xCD; 48],
                         }
                     );
                 }
