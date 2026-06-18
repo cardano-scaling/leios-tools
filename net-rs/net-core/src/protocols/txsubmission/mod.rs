@@ -48,14 +48,10 @@ impl TxId {
         tx_vec.into_iter().map(|tx| Self(tx)).collect()
     }
 
-    pub fn vec_to_consensus_txid (tx_vec: Vec<Self>) -> Vec<shared_consensus::mempool::TxId> {
+    pub fn vec_to_consensus_txid(tx_vec: Vec<Self>) -> Vec<shared_consensus::mempool::TxId> {
         tx_vec.into_iter().map(|tx| tx.get_con_tx_id().clone()).collect()
     }
 
-    //pub fn new_with_vec(tx: Vec<u8>) -> Self {
-    //    let array = tx.as_array::<32>().unwrap();
-    //    Self(shared_consensus::mempool::TxId::new_with_array(array.clone()))
-    //}
 
     pub fn new_with_tx(tx: shared_consensus::mempool::TxId) -> Self {
         Self(tx)
