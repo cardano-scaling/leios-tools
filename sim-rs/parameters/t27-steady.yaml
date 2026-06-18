@@ -1,0 +1,18 @@
+# T27 steady-state load override — layer LAST after sim-cli/configs/mainnet.yaml.
+#
+# Purpose: put the offered load BELOW the chain's Leios certification ceiling so
+# the baseline sits in true steady state (flat mempool / pending age). Only then
+# can an A/B isolate a partition's effect — at the default 200 kB/s the chain is
+# saturated and "partition damage" can't be told apart from "an overloaded chain
+# can't drain a backlog".
+#
+# Load math: rate = 1000 / value(ms) tx/s, each tx tx-size bytes.
+#   12.5 ms -> 80 tx/s x 1500 B = 120 kB/s   (~25% under the ~107-160 kB/s ceiling estimate)
+#
+# tx-stop-time = run length keeps generation continuous, so we measure SUSTAINED
+# recovery after heal, not a one-off backlog drain.
+
+tx-generation-distribution:
+  distribution: constant
+  value: 12.5            # ~80 tx/s  ->  ~120 kB/s offered
+tx-stop-time: 1500       # generate for the whole 1500-slot run
