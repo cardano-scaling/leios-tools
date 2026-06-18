@@ -1774,16 +1774,11 @@ impl SharedConsensus {
             slot: eb_id.slot,
             hash: eb_hash,
         };
-<<<<<<< HEAD
         let manifest: Vec<TxId> = eb.txs.iter().map(|tx| tx_id_for(tx.id)).collect();
-        let _ = self.leios.on_eb_received(point, Some(manifest));
-=======
-        let manifest: Vec<[u8; 32]> = eb.txs.iter().map(|tx| tx_id_hash(tx.id)).collect();
         // Sim doesn't model the per-peer LeiosNotify source filter, so
         // pass None — the resulting RecordLeiosEbManifest effect is a
         // no-op in sim's dispatcher anyway.
         let _ = self.leios.on_eb_received(None, point, Some(manifest));
->>>>>>> 0acc016707d0e20f56344590f8d73d3ab82da3dd
     }
 
     /// Wire an EB (locally produced or peer-received) into
