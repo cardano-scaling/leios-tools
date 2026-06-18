@@ -295,6 +295,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         bf_srv_send,
         bf_srv_recv,
         chain_store.clone(),
+        peer_id,
         outbound_behaviour,
     ));
     let ts_server = tokio::spawn(server_handlers::serve_txsubmission(
@@ -306,6 +307,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
     let ps_server = tokio::spawn(server_handlers::serve_peersharing(
         ps_srv_send,
         ps_srv_recv,
+        peer_id,
         peer_provider,
     ));
     let mut ka_server = tokio::spawn(server_handlers::serve_keepalive(
@@ -332,6 +334,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
             lf_srv_send,
             lf_srv_recv,
             store,
+            peer_id,
         ));
         Some((ln_server, lf_server))
     } else {

@@ -286,6 +286,7 @@ pub async fn serve_blockfetch(
     bf_send: CodecSend,
     bf_recv: CodecRecv,
     store: Arc<ChainStore>,
+    peer: PeerId,
     behaviour: Option<BehaviourHandle>,
 ) {
     let mut runner = Runner::<BlockFetch>::new(Role::Server, bf_send, bf_recv);
@@ -296,6 +297,7 @@ pub async fn serve_blockfetch(
             Ok(msg) => msg,
             Err(e) => {
                 tracing::warn!(
+                    peer = peer.0,
                     err = %e,
                     "blockfetch: serve_blockfetch recv error, exiting"
                 );
@@ -303,13 +305,14 @@ pub async fn serve_blockfetch(
             }
         };
         if first_recv {
-            tracing::info!("blockfetch: downstream opened protocol with us");
+            tracing::info!(peer = peer.0, "blockfetch: downstream opened protocol with us");
             first_recv = false;
         }
 
         match msg {
             BfMsg::MsgRequestRange { from, to } => {
                 tracing::info!(
+                    peer = peer.0,
                     %from,
                     %to,
                     "blockfetch: downstream requested range (wants blocks from us)"
@@ -441,7 +444,7 @@ pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerI
                 break "unexpected-message";
             }
             Err(e) => {
-                tracing::info!(
+                tracing::warn!(
                     peer = peer.0,
                     msg_count,
                     err = %e,
@@ -629,7 +632,14 @@ pub async fn serve_txsubmission(
                         }
                         outstanding = count;
                     }
-                    _ => break,
+                    other => {
+                        tracing::warn!(
+                            peer = peer_id.0,
+                            ?other,
+                            "txsubmission: unexpected message awaiting MsgReplyTxs, exiting"
+                        );
+                        break;
+                    }
                 }
             }
             TsMsg::MsgDone => break,
@@ -644,6 +654,7 @@ pub async fn serve_txsubmission(
 pub async fn serve_peersharing(
     ps_send: CodecSend,
     ps_recv: CodecRecv,
+    peer: PeerId,
     peer_provider: Arc<dyn Fn(u8) -> Vec<PeerAddress> + Send + Sync>,
 ) {
     let mut runner = Runner::<PeerSharing>::new(Role::Server, ps_send, ps_recv);
@@ -654,6 +665,7 @@ pub async fn serve_peersharing(
             Ok(msg) => msg,
             Err(e) => {
                 tracing::warn!(
+                    peer = peer.0,
                     err = %e,
                     "peersharing: serve_peersharing recv error, exiting"
                 );
@@ -661,13 +673,14 @@ pub async fn serve_peersharing(
             }
         };
         if first_recv {
-            tracing::info!("peersharing: downstream opened protocol with us");
+            tracing::info!(peer = peer.0, "peersharing: downstream opened protocol with us");
             first_recv = false;
         }
 
         match msg {
             PsMsg::MsgShareRequest { amount } => {
                 tracing::info!(
+                    peer = peer.0,
                     amount,
                     "peersharing: downstream requested peers from us"
                 );
@@ -675,7 +688,14 @@ pub async fn serve_peersharing(
                 let _ = runner.send(&PsMsg::MsgSharePeers { peers }).await;
             }
             PsMsg::MsgDone => break,
-            _ => break,
+            other => {
+                tracing::warn!(
+                    peer = peer.0,
+                    ?other,
+                    "peersharing: unexpected message variant, terminating"
+                );
+                break;
+            }
         }
     }
 }
@@ -746,6 +766,7 @@ pub async fn serve_leios_notify(
             Ok(msg) => msg,
             Err(e) => {
                 tracing::warn!(
+                    peer = peer.0,
                     err = %e,
                     "leios_notify: serve_leios_notify recv error, exiting"
                 );
@@ -753,7 +774,7 @@ pub async fn serve_leios_notify(
             }
         };
         if first_recv {
-            tracing::info!("leios_notify: downstream opened protocol with us");
+            tracing::info!(peer = peer.0, "leios_notify: downstream opened protocol with us");
             first_recv = false;
         }
 
@@ -860,7 +881,12 @@ async fn next_outbound_notification(
 /// Serve LeiosFetch for one connection.
 ///
 /// Responds to block and vote fetch requests from the Leios store.
-pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Arc<LeiosStore>) {
+pub async fn serve_leios_fetch(
+    lf_send: CodecSend,
+    lf_recv: CodecRecv,
+    store: Arc<LeiosStore>,
+    peer: PeerId,
+) {
     let mut runner = Runner::<LeiosFetch>::new(Role::Server, lf_send, lf_recv);
     let mut first_recv = true;
 
@@ -869,6 +895,7 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
             Ok(msg) => msg,
             Err(e) => {
                 tracing::warn!(
+                    peer = peer.0,
                     err = %e,
                     "leios_fetch: serve_leios_fetch recv error, exiting"
                 );
@@ -876,13 +903,13 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
             }
         };
         if first_recv {
-            tracing::info!("leios_fetch: downstream opened protocol with us");
+            tracing::info!(peer = peer.0, "leios_fetch: downstream opened protocol with us");
             first_recv = false;
         }
 
         match msg {
             LfMsg::MsgLeiosBlockRequest { point } => {
-                tracing::info!(%point, "leios_fetch: downstream requested EB body from us");
+                tracing::info!(peer = peer.0, %point, "leios_fetch: downstream requested EB body from us");
                 let block = match &point {
                     Point::Specific { slot, hash } => store.get_block(*slot, hash),
                     Point::Origin => None,
@@ -897,6 +924,7 @@ pub async fn serve_leios_fetch(lf_send: CodecSend, lf_recv: CodecRecv, store: Ar
             }
             LfMsg::MsgLeiosBlockTxsRequest { point, bitmap } => {
                 tracing::info!(
+                    peer = peer.0,
                     %point,
                     bitmap_chunks = bitmap.len(),
                     "leios_fetch: downstream requested EB txs from us"
@@ -1073,7 +1101,8 @@ mod tests {
             );
         }
 
-        let server_handle = tokio::spawn(serve_blockfetch(server_send, server_recv, store, None));
+        let server_handle =
+            tokio::spawn(serve_blockfetch(server_send, server_recv, store, PeerId(0), None));
 
         let mut client = Runner::<BlockFetch>::new(Role::Client, client_send, client_recv);
 
@@ -1529,7 +1558,7 @@ mod tests {
         );
 
         // Start server.
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store));
+        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
 
         // Client: fetch block.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -1566,7 +1595,7 @@ mod tests {
         // Empty store — no blocks injected.
         let (store, _rx) = LeiosStore::new(100);
 
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store));
+        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
 
         // Client: request a block that doesn't exist.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -1612,7 +1641,7 @@ mod tests {
         store.inject_block_txs_full(point.clone(), txs, None);
 
         let server_handle =
-            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone()));
+            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone(), PeerId(0)));
 
         // Client: ask for indices 0, 5, 64, 99.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -1678,7 +1707,7 @@ mod tests {
         store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         let server_handle =
-            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone()));
+            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone(), PeerId(0)));
 
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
         let bitmap = crate::protocols::leios_fetch::bitmap::from_indices(&[0, 2]);
@@ -1708,7 +1737,7 @@ mod tests {
         // Empty store — no block txs injected.
         let (store, _rx) = LeiosStore::new(100);
 
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store));
+        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
 
         // Client: request txs for a block that doesn't exist.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
