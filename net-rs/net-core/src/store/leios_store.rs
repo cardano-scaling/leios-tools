@@ -40,12 +40,20 @@ pub enum LeiosNotification {
     Votes { votes: Vec<Vote> },
 }
 
-/// A queued notification with the peer it came from (`None` when this
-/// node produced the data locally). `serve_leios_notify` consults
-/// `source` to skip re-offering data back to the peer that supplied it.
+/// A queued notification with every peer that has advertised this data
+/// to us so far (empty `sources` when locally produced).
+/// `serve_leios_notify` consults `sources` to skip re-offering data back
+/// to any peer that supplied it.
+///
+/// `BlockOffer` and `BlockTxsOffer` entries are deduplicated by point in
+/// `push_notification`: a second advertisement for the same EB appends
+/// its source to an existing queued entry instead of pushing another
+/// entry, so a downstream peer never sees the same offer twice in a
+/// burst.  `Votes` entries are not deduplicated — different injections
+/// carry distinct vote sets.
 #[derive(Debug, Clone)]
 pub struct NotificationEntry {
-    pub source: Option<PeerId>,
+    pub sources: Vec<PeerId>,
     pub notification: LeiosNotification,
 }
 
@@ -226,12 +234,13 @@ impl LeiosStore {
             u32::MAX
         });
         let mut inner = self.inner.lock().unwrap();
-        inner.blocks.insert(BlockKey { slot, hash }, block);
+        let was_new = inner.blocks.insert(BlockKey { slot, hash }, block).is_none();
         inner.max_slot = inner.max_slot.max(slot);
         Self::push_notification(
             &mut inner,
             source,
             LeiosNotification::BlockOffer { point, eb_size },
+            was_new,
         );
         self.bump_version(&mut inner);
     }
@@ -265,18 +274,17 @@ impl LeiosStore {
         };
         let mut inner = self.inner.lock().unwrap();
         let entry = inner.block_txs.entry(BlockKey { slot, hash }).or_default();
-        let first_injection = entry.is_empty();
+        let was_new = entry.is_empty();
         for (idx, body) in indexed {
             entry.entry(idx).or_insert(body);
         }
         inner.max_slot = inner.max_slot.max(slot);
-        if first_injection {
-            Self::push_notification(
-                &mut inner,
-                source,
-                LeiosNotification::BlockTxsOffer { point },
-            );
-        }
+        Self::push_notification(
+            &mut inner,
+            source,
+            LeiosNotification::BlockTxsOffer { point },
+            was_new,
+        );
         self.bump_version(&mut inner);
     }
 
@@ -309,13 +317,26 @@ impl LeiosStore {
         }
         let mut inner = self.inner.lock().unwrap();
         let max_in_batch = votes.iter().map(|v| v.slot).max().unwrap_or(0);
-        for vote in &votes {
-            inner
-                .votes
-                .insert((vote.slot, vote.eb_hash, vote.voter_id), vote.clone());
+        // Filter to genuinely-new votes — anything already in `inner.votes`
+        // has been advertised previously and would generate a duplicate
+        // wire notification if we re-pushed the full batch.
+        let mut new_votes = Vec::with_capacity(votes.len());
+        for vote in votes {
+            let key = (vote.slot, vote.eb_hash, vote.voter_id);
+            if !inner.votes.contains_key(&key) {
+                new_votes.push(vote.clone());
+            }
+            inner.votes.insert(key, vote);
         }
         inner.max_slot = inner.max_slot.max(max_in_batch);
-        Self::push_notification(&mut inner, source, LeiosNotification::Votes { votes });
+        if !new_votes.is_empty() {
+            Self::push_notification(
+                &mut inner,
+                source,
+                LeiosNotification::Votes { votes: new_votes },
+                true,
+            );
+        }
         self.bump_version(&mut inner);
     }
 
@@ -343,14 +364,16 @@ impl LeiosStore {
             Point::Origin => return,
         };
         let mut inner = self.inner.lock().unwrap();
-        inner
+        let was_new = inner
             .eb_tx_hashes
-            .insert(BlockKey { slot, hash }, tx_hashes);
+            .insert(BlockKey { slot, hash }, tx_hashes)
+            .is_none();
         inner.max_slot = inner.max_slot.max(slot);
         Self::push_notification(
             &mut inner,
             source,
             LeiosNotification::BlockTxsOffer { point },
+            was_new,
         );
         self.bump_version(&mut inner);
     }
@@ -496,25 +519,62 @@ impl LeiosStore {
         self.inner.lock().unwrap().version
     }
 
-    /// Push a notification, dropping it on the floor if all the slots it
-    /// references are already below the retention cutoff.  The front-only
-    /// pop_front eviction loop in `evict_old` can't reach a notification
-    /// queued at the back, so a late-arriving offer for data that's
-    /// already past retention has to be filtered at the source.  Caller
-    /// must have updated `max_slot` already so the cutoff reflects the
-    /// post-inject state.
+    /// Push a notification, applying content-based dedup before adding a
+    /// new entry to the queue.  `was_new` tells us whether the inject
+    /// just brought genuinely-new data into storage; combined with the
+    /// queue scan it covers both dedup regimes:
+    ///
+    /// 1. Matching entry still queued (multi-peer advertisements during
+    ///    the same fan-out): append `source` to the queued entry's
+    ///    `sources` list and return.  Preserves no-echo coverage for
+    ///    every peer that supplied the data while only one wire
+    ///    notification reaches downstream peers.
+    /// 2. Matching entry already drained, `was_new = false`: the data
+    ///    has been advertised once before and is not new in storage —
+    ///    a re-advertisement now would push a redundant wire offer to
+    ///    every connected peer.  Drop silently.
+    /// 3. Matching entry already drained, `was_new = true`: only
+    ///    possible if storage was pruned between the original and this
+    ///    inject (slot retention).  Push a fresh entry.
+    ///
+    /// Also filters out notifications whose referenced slots all sit
+    /// below the retention cutoff — the front-only pop_front loop in
+    /// `evict_old` can't reach a notification queued at the back, so a
+    /// late-arriving offer for data already past retention has to be
+    /// dropped here.  Caller must have updated `max_slot` already so
+    /// the cutoff reflects the post-inject state.
     fn push_notification(
         inner: &mut LeiosStoreInner,
         source: Option<PeerId>,
         notif: LeiosNotification,
+        was_new: bool,
     ) {
         let cutoff = inner.max_slot.saturating_sub(inner.retention_slots);
-        if cutoff == 0 || !notification_evictable(&notif, cutoff) {
-            inner.notifications.push_back(NotificationEntry {
-                source,
-                notification: notif,
-            });
+        if cutoff > 0 && notification_evictable(&notif, cutoff) {
+            return;
         }
+        if let Some(point) = offer_point(&notif) {
+            for entry in inner.notifications.iter_mut().rev() {
+                if same_offer_kind(&entry.notification, &notif)
+                    && offer_point(&entry.notification) == Some(point)
+                {
+                    if let Some(peer) = source {
+                        if !entry.sources.contains(&peer) {
+                            entry.sources.push(peer);
+                        }
+                    }
+                    return;
+                }
+            }
+            if !was_new {
+                return;
+            }
+        }
+        let sources = source.map_or_else(Vec::new, |p| vec![p]);
+        inner.notifications.push_back(NotificationEntry {
+            sources,
+            notification: notif,
+        });
     }
 
     /// Run slot-window eviction across all maps plus the capacity backstop
@@ -594,6 +654,33 @@ impl LeiosStore {
         let version = inner.version;
         let _ = self.notify.send(version);
     }
+}
+
+/// The point an offer-type notification refers to. `None` for `Votes`
+/// (which carries vote bodies, not a single point).  Used by
+/// `push_notification` for offer dedup.
+fn offer_point(n: &LeiosNotification) -> Option<&Point> {
+    match n {
+        LeiosNotification::BlockOffer { point, .. } | LeiosNotification::BlockTxsOffer { point } => {
+            Some(point)
+        }
+        LeiosNotification::Votes { .. } => None,
+    }
+}
+
+/// True iff `a` and `b` are the same offer variant (both `BlockOffer`
+/// or both `BlockTxsOffer`).  Returns `false` if either is `Votes`.
+fn same_offer_kind(a: &LeiosNotification, b: &LeiosNotification) -> bool {
+    matches!(
+        (a, b),
+        (
+            LeiosNotification::BlockOffer { .. },
+            LeiosNotification::BlockOffer { .. }
+        ) | (
+            LeiosNotification::BlockTxsOffer { .. },
+            LeiosNotification::BlockTxsOffer { .. }
+        )
+    )
 }
 
 /// True iff every slot the notification references is below `cutoff`
@@ -929,12 +1016,162 @@ mod tests {
 
         let entries = store.notifications_after(&mut 0);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source, Some(PeerId(7)));
+        assert_eq!(entries[0].sources, vec![PeerId(7)]);
         match entries[0].notification {
             LeiosNotification::BlockOffer { eb_size, .. } => assert_eq!(eb_size, 1234),
             ref other => panic!("expected BlockOffer, got {other:?}"),
         }
     }
+
+    #[test]
+    fn inject_block_dedups_by_point_across_sources() {
+        // Two peers advertising the same EB must collapse into a single
+        // queued notification, with both peers recorded as sources.
+        let (store, _rx) = LeiosStore::new(100);
+        let point = Point::Specific {
+            slot: 7,
+            hash: [0xAB; 32],
+        };
+        store.inject_block(point.clone(), vec![0xCD; 200], Some(PeerId(11)));
+        store.inject_block(point.clone(), vec![0xCD; 200], Some(PeerId(22)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(
+            entries.len(),
+            1,
+            "second advertisement must dedup against the first"
+        );
+        assert_eq!(entries[0].sources, vec![PeerId(11), PeerId(22)]);
+        match &entries[0].notification {
+            LeiosNotification::BlockOffer { eb_size, .. } => assert_eq!(*eb_size, 200),
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inject_block_dedup_does_not_add_duplicate_source() {
+        // A peer advertising the same EB twice must not appear twice in
+        // the entry's `sources`.
+        let (store, _rx) = LeiosStore::new(100);
+        let point = Point::Specific {
+            slot: 3,
+            hash: [0x44; 32],
+        };
+        store.inject_block(point.clone(), vec![0xEE; 50], Some(PeerId(9)));
+        store.inject_block(point.clone(), vec![0xEE; 50], Some(PeerId(9)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sources, vec![PeerId(9)]);
+    }
+
+    #[test]
+    fn inject_block_different_points_each_get_their_own_entry() {
+        // Sanity — the dedup is per-point, not global.
+        let (store, _rx) = LeiosStore::new(100);
+        let a = Point::Specific {
+            slot: 1,
+            hash: [0x11; 32],
+        };
+        let b = Point::Specific {
+            slot: 2,
+            hash: [0x22; 32],
+        };
+        store.inject_block(a, vec![0xAA; 10], Some(PeerId(1)));
+        store.inject_block(b, vec![0xBB; 10], Some(PeerId(1)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn inject_block_dedup_does_not_merge_across_kinds() {
+        // A BlockOffer for point P and a BlockTxsOffer for point P are
+        // different notifications and must remain distinct entries.
+        let (store, _rx) = LeiosStore::new(100);
+        let point = Point::Specific {
+            slot: 5,
+            hash: [0x55; 32],
+        };
+        store.inject_block(point.clone(), vec![0xCC; 30], Some(PeerId(3)));
+        store.record_eb_manifest(point.clone(), vec![[0xDD; 32]], Some(PeerId(4)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            entries[0].notification,
+            LeiosNotification::BlockOffer { .. }
+        ));
+        assert!(matches!(
+            entries[1].notification,
+            LeiosNotification::BlockTxsOffer { .. }
+        ));
+    }
+
+    #[test]
+    fn record_eb_manifest_dedups_by_point_across_sources() {
+        // Same EB's manifest advertised by two peers must dedup into a
+        // single BlockTxsOffer entry with both peers as sources.
+        let (store, _rx) = LeiosStore::new(100);
+        let point = Point::Specific {
+            slot: 9,
+            hash: [0x99; 32],
+        };
+        store.record_eb_manifest(point.clone(), vec![[0x11; 32]], Some(PeerId(5)));
+        store.record_eb_manifest(point.clone(), vec![[0x11; 32]], Some(PeerId(6)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].sources, vec![PeerId(5), PeerId(6)]);
+    }
+
+    #[test]
+    fn inject_votes_distinct_batches_each_get_their_own_entry() {
+        // Vote notifications carry payload — distinct injections produce
+        // distinct entries when their votes are content-different.
+        let (store, _rx) = LeiosStore::new(100);
+        store.inject_votes(vec![vote(10, 1)], Some(PeerId(1)));
+        store.inject_votes(vec![vote(11, 2)], Some(PeerId(1)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn inject_votes_filters_already_seen_votes_from_notification() {
+        // Re-sending the exact same vote (same key) must not produce a
+        // second wire notification — the duplicate is silently
+        // absorbed because the vote is already in storage.
+        let (store, _rx) = LeiosStore::new(100);
+        store.inject_votes(vec![vote(10, 1)], Some(PeerId(1)));
+        store.inject_votes(vec![vote(10, 1)], Some(PeerId(2)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 1, "duplicate vote must not generate a second notification");
+    }
+
+    #[test]
+    fn inject_votes_overlapping_batch_only_propagates_new_votes() {
+        // First batch [v1, v2], second batch [v2, v3]: the second
+        // notification must carry only [v3], not the redundant v2.
+        let (store, _rx) = LeiosStore::new(100);
+        let v1 = vote(10, 1);
+        let v2 = vote(10, 2);
+        let v3 = vote(10, 3);
+        store.inject_votes(vec![v1.clone(), v2.clone()], Some(PeerId(1)));
+        store.inject_votes(vec![v2.clone(), v3.clone()], Some(PeerId(2)));
+
+        let entries = store.notifications_after(&mut 0);
+        assert_eq!(entries.len(), 2);
+        match &entries[1].notification {
+            LeiosNotification::Votes { votes } => {
+                assert_eq!(votes.len(), 1, "second batch must filter out v2");
+                assert_eq!(votes[0].voter_id, v3.voter_id);
+            }
+            other => panic!("expected Votes, got {other:?}"),
+        }
+    }
+
 
     #[test]
     fn notifications_accumulate() {
