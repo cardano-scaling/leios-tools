@@ -562,7 +562,13 @@ pub async fn serve_txsubmission(
                     match msg {
                         TsMsg::MsgDone => break,
                         TsMsg::MsgReplyTxIds { tx_ids } if !tx_ids.is_empty() => {
-                            let ids: Vec<_> = tx_ids.iter().map(|t| t.tx_id.clone()).collect();
+                            let ids: Vec<_> = tx_ids
+                                .iter()
+                                .map(|t| txsubmission::EraTxId {
+                                    era: t.era,
+                                    tx_id: t.tx_id.clone(),
+                                })
+                                .collect();
                             let count = ids.len();
                             runner
                                 .send(&TsMsg::MsgRequestTxs { tx_ids: ids })
@@ -602,7 +608,13 @@ pub async fn serve_txsubmission(
                     continue;
                 }
 
-                let ids: Vec<_> = tx_ids.iter().map(|t| t.tx_id.clone()).collect();
+                let ids: Vec<_> = tx_ids
+                    .iter()
+                    .map(|t| txsubmission::EraTxId {
+                        era: t.era,
+                        tx_id: t.tx_id.clone(),
+                    })
+                    .collect();
                 let count = ids.len();
                 runner
                     .send(&TsMsg::MsgRequestTxs { tx_ids: ids })
