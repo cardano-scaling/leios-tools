@@ -116,12 +116,25 @@ where
                 });
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                // Protocol channel was dropped — the protocol has terminated.
+                // Protocol channel was dropped — the protocol task has
+                // terminated.  Bytes we just read from the wire are
+                // dropped from here on out: after deregistration, any
+                // further segments for this (protocol, mode) hit the
+                // "unregistered protocol/direction" path above, which
+                // logs each one at warn.  This costs us inbound
+                // visibility (the remote keeps sending and times out
+                // waiting for a reply that can never come), so it's
+                // surfaced at warn — not debug — to make it obvious in
+                // logs.
                 state.counter.sub(payload_len);
-                tracing::debug!(
+                tracing::warn!(
                     protocol = protocol_id,
                     mode = mode,
-                    "protocol channel closed, removing"
+                    payload_bytes = payload_len,
+                    "mux: protocol channel closed, dropping incoming segment and \
+                     deregistering — further segments on this (protocol, mode) \
+                     will be dropped (and logged via the unregistered-protocol \
+                     path) until the connection is torn down"
                 );
                 protocols.remove(&key);
                 continue;
