@@ -218,7 +218,13 @@ impl LeiosStore {
             Point::Specific { slot, hash } => (*slot, *hash),
             Point::Origin => return,
         };
-        let eb_size = block.len() as u32;
+        let eb_size = u32::try_from(block.len()).unwrap_or_else(|_| {
+            tracing::warn!(
+                len = block.len(),
+                "EB exceeds u32::MAX; clamping advertised eb_size"
+            );
+            u32::MAX
+        });
         let mut inner = self.inner.lock().unwrap();
         inner.blocks.insert(BlockKey { slot, hash }, block);
         inner.max_slot = inner.max_slot.max(slot);
