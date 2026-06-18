@@ -604,6 +604,15 @@ pub async fn serve_leios_notify(
     }
 }
 
+/// Lazily formats a peer-source list as bare ids (`[1, 2]`) without
+/// allocating — only materialised when the tracing level is enabled.
+struct SourceIds<'a>(&'a [PeerId]);
+impl std::fmt::Debug for SourceIds<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.0.iter().map(|p| p.0)).finish()
+    }
+}
+
 /// Find the next notification the wire actually sends to `peer`, skipping
 /// entries where `peer` is in the entry's `sources` (no-echo). Advances
 /// `read_index` past every skipped entry so the same notification isn't
@@ -627,7 +636,7 @@ async fn next_outbound_notification(
                 );
                 continue;
             }
-            let sources: Vec<u64> = entry.sources.iter().map(|p| p.0).collect();
+            let sources = SourceIds(&entry.sources);
             match &entry.notification {
                 LeiosNotification::BlockOffer { point, eb_size } => {
                     tracing::info!(
