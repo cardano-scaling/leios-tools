@@ -503,8 +503,11 @@ pub(crate) fn spawn_leios_notify(
                         .await;
                 }
                 Ok(LeiosNotifyEvent::Votes { votes }) => {
-                    let sig_lens: Vec<usize> =
-                        votes.iter().map(|v| v.vote_signature.len()).collect();
+                    // BLS vote signatures are fixed-size, so a min/max
+                    // summary is enough here — individual lengths are
+                    // logged per-vote at debug just below.
+                    let sig_min = votes.iter().map(|v| v.vote_signature.len()).min().unwrap_or(0);
+                    let sig_max = votes.iter().map(|v| v.vote_signature.len()).max().unwrap_or(0);
                     let sig_prefix = votes
                         .first()
                         .map(|v| {
@@ -518,7 +521,8 @@ pub(crate) fn spawn_leios_notify(
                     tracing::info!(
                         %peer_id,
                         count = votes.len(),
-                        ?sig_lens,
+                        sig_min,
+                        sig_max,
                         sig_prefix = %sig_prefix,
                         "leios_notify: votes received"
                     );
