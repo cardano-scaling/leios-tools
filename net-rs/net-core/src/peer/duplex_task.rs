@@ -225,7 +225,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         event_sender.clone(),
         cs_reintersect_receiver,
     );
-    let ka_client = spawn_keepalive(
+    let mut ka_client = spawn_keepalive(
         ka_send,
         ka_recv,
         peer_id,
@@ -295,6 +295,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         bf_srv_send,
         bf_srv_recv,
         chain_store.clone(),
+        peer_id,
         outbound_behaviour,
     ));
     let ts_server = tokio::spawn(server_handlers::serve_txsubmission(
@@ -306,9 +307,14 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
     let ps_server = tokio::spawn(server_handlers::serve_peersharing(
         ps_srv_send,
         ps_srv_recv,
+        peer_id,
         peer_provider,
     ));
-    let ka_server = tokio::spawn(server_handlers::serve_keepalive(ka_srv_send, ka_srv_recv));
+    let mut ka_server = tokio::spawn(server_handlers::serve_keepalive(
+        ka_srv_send,
+        ka_srv_recv,
+        peer_id,
+    ));
 
     // Conditionally spawn Leios server sub-tasks.
     let leios_server_handles = if leios_enabled {
@@ -328,6 +334,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
             lf_srv_send,
             lf_srv_recv,
             store,
+            peer_id,
         ));
         Some((ln_server, lf_server))
     } else {
@@ -343,7 +350,18 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         chainsync_reintersect: cs_reintersect_sender,
     };
 
-    // Main select loop: dispatch commands and detect ChainSync client exit.
+    // Main select loop: dispatch commands and detect liveness-critical
+    // sub-task exit.  We watch:
+    // - cs_client (our outbound chainsync) — if it dies, the connection
+    //   is effectively useless to us as a follower.
+    // - ka_client (our outbound keepalive) — we promised the relay
+    //   periodic pings; if we stop sending, they will eventually drop
+    //   us anyway, so tear down promptly.
+    // - ka_server (our inbound keepalive responder) — the keepalive
+    //   liveness watchdog.  If it exits (e.g. 97s without an inbound
+    //   MsgKeepAlive after the relay activated the protocol), that's
+    //   the relay's side of the keepalive going silent.  Per spec we
+    //   must drop the connection.
     loop {
         tokio::select! {
             cmd = command_receiver.recv() => {
@@ -354,6 +372,26 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
             result = &mut cs_client => {
                 if let Err(e) = result {
                     tracing::warn!("peer {peer_id}: chainsync client panicked: {e}");
+                }
+                break;
+            }
+            result = &mut ka_client => {
+                if let Err(e) = result {
+                    tracing::warn!("peer {peer_id}: keepalive client panicked: {e}");
+                } else {
+                    tracing::warn!(
+                        "peer {peer_id}: keepalive client exited — tearing down connection"
+                    );
+                }
+                break;
+            }
+            result = &mut ka_server => {
+                if let Err(e) = result {
+                    tracing::warn!("peer {peer_id}: keepalive server panicked: {e}");
+                } else {
+                    tracing::warn!(
+                        "peer {peer_id}: keepalive responder exited (liveness watchdog) — tearing down connection"
+                    );
                 }
                 break;
             }

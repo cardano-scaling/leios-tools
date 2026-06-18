@@ -191,6 +191,24 @@ impl<P: Protocol> Runner<P> {
     /// reads and decodes a message, validates the transition, and advances
     /// the state. Returns the received message.
     pub async fn recv(&mut self) -> Result<P::Message, ProtocolError> {
+        self.recv_inner(P::timeout(&self.state)).await
+    }
+
+    /// Like [`recv`](Self::recv) but with no per-state timeout, no matter
+    /// what `P::timeout()` returns.  Use when the per-state watchdog
+    /// should be armed by a prior application-level event rather than
+    /// on every receive: e.g. the keepalive responder waits indefinitely
+    /// for the *first* `MsgKeepAlive` (cardano-node doesn't activate
+    /// keepalive on cold/warm peers), then falls back to `recv()` for
+    /// subsequent rounds so the 97s liveness check still applies.
+    pub async fn recv_untimed(&mut self) -> Result<P::Message, ProtocolError> {
+        self.recv_inner(None).await
+    }
+
+    async fn recv_inner(
+        &mut self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<P::Message, ProtocolError> {
         let agency = P::agency(&self.state);
         if agency == Agency::Nobody {
             return Err(ProtocolError::Terminated);
@@ -212,7 +230,7 @@ impl<P: Protocol> Runner<P> {
         // message's wire size against `P::size_limit(state)` and returns
         // `MuxError::MessageTooLarge` for spec-violating peers.
         let max_msg_size = P::size_limit(&self.state);
-        let msg: P::Message = match P::timeout(&self.state) {
+        let msg: P::Message = match timeout {
             Some(duration) => {
                 match tokio::time::timeout(duration, self.codec_recv.recv(max_msg_size)).await {
                     Ok(result) => result?,
