@@ -6,18 +6,32 @@
 //! `PraosState`, and dispatches the returned `Vec<PraosEffect>` to the
 //! network-command channel and the validator actor.
 
-use std::time::Instant;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
-#[cfg(test)]
 use net_core::peer::PeerId;
 use net_core::types::{BlockBody, Point, Tip, WrappedHeader};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use shared_consensus::chain_tree::ChainTreeEntry;
 use shared_consensus::praos::{ParsedHeaderInfo, PraosEffect, PraosState};
 
 use crate::validation::{LedgerCommand, LedgerOutcome, Validator};
+
+/// Per-peer cooldown between header-parse-failure WARNs.  The signal is
+/// "this peer just sent us a header our decoder couldn't handle"; a
+/// misencoding-bug peer would otherwise spam the log once per skipped
+/// block.  Matches `GAP_WARNING_INTERVAL` in shared-consensus.
+const HEADER_PARSE_WARN_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How many leading raw bytes of an unparseable header to capture in the
+/// WARN.  64 bytes covers the outer `[era_tag, #6.24(bstr)]` framing plus
+/// the first ~40 bytes of the inner header_body — enough to identify the
+/// CBOR shape and confirm whether it's the CIP-0164 EB-announcement
+/// encoding we expect.
+const PARSE_FAILURE_HEX_PREFIX_BYTES: usize = 64;
 
 // Re-export the selection types so callers (tests, telemetry,
 // production code) can keep importing them from `crate::consensus::praos`.
@@ -39,6 +53,11 @@ pub struct PraosConsensus {
     /// CIP-0164 `LateRBHeader` voting predicate can run with real
     /// arrival times instead of best-case fallbacks.
     pub(crate) current_slot: u64,
+    /// Throttle map for the header-parse-failure WARN.  Keyed by peer
+    /// because a misencoding upstream would otherwise drown the log;
+    /// cleared on disconnect alongside the shared-consensus per-peer
+    /// state.
+    last_parse_failure_warning_at: BTreeMap<PeerId, Instant>,
 }
 
 impl PraosConsensus {
@@ -53,6 +72,7 @@ impl PraosConsensus {
             commands,
             validator,
             current_slot: 0,
+            last_parse_failure_warning_at: BTreeMap::new(),
         }
     }
 
@@ -191,6 +211,42 @@ impl PraosConsensus {
         }
     }
 
+    /// Emit a throttled WARN when ChainSync delivers a header our
+    /// decoder can't handle.  Distinguishes "we silently dropped the
+    /// announcement" from "upstream skipped a block" — both manifest
+    /// downstream as `prev_hash` mismatches in the peer's announced
+    /// chain, but only the latter is an upstream bug.
+    fn warn_on_header_parse_failure(
+        &mut self,
+        peer_id: PeerId,
+        tip: &Tip,
+        header: &WrappedHeader,
+        now: Instant,
+    ) {
+        let throttled = matches!(
+            self.last_parse_failure_warning_at.get(&peer_id),
+            Some(last) if now.saturating_duration_since(*last) < HEADER_PARSE_WARN_INTERVAL,
+        );
+        if throttled {
+            return;
+        }
+        let take = header.raw.len().min(PARSE_FAILURE_HEX_PREFIX_BYTES);
+        let hex_prefix: String = header.raw[..take]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        warn!(
+            node_id = %self.state.node_id,
+            %peer_id,
+            tip_block_no = tip.block_no,
+            tip_point = %tip.point,
+            header_len = header.raw.len(),
+            header_hex_prefix = %hex_prefix,
+            "ChainSync delivered a header we cannot parse — dropped silently; the next non-contiguous header WARN may misattribute this gap to upstream"
+        );
+        self.last_parse_failure_warning_at.insert(peer_id, now);
+    }
+
     /// Translate a `WrappedHeader` to logical metadata when it was
     /// successfully parsed; `None` for opaque headers.
     fn parse_header(header: &WrappedHeader) -> Option<ParsedHeaderInfo> {
@@ -199,6 +255,7 @@ impl PraosConsensus {
             slot: i.slot,
             prev_hash: i.prev_hash,
             announced_eb_hash: i.announced_eb.map(|(hash, _size)| hash),
+            announced_eb_size: i.announced_eb.map(|(_hash, size)| size),
             certified_eb: i.certified_eb.unwrap_or(false),
             // CIP-0164 RB-header equivocation tracker keys on issuer
             // identity.  `issuer_vkey` is the Shelley+ header field
@@ -221,7 +278,7 @@ impl PraosConsensus {
         if let Point::Specific { hash, .. } = point {
             self.state.note_header_first_seen(*hash, self.current_slot);
         }
-        let tx_count = body.praos_tx_count().unwrap_or(0);
+        let tx_count = body.praos_inspect().tx_count;
         let fx = self.state.register_self_produced(
             point.clone(),
             header.raw.clone(),
@@ -270,7 +327,19 @@ impl PraosConsensus {
                     }
                     // Opaque header: nothing to record, but still re-run
                     // selection in case other peers' state has changed.
-                    None => Vec::new(),
+                    //
+                    // Surface this — a header we silently drop here also
+                    // silently breaks the next entry in the peer's
+                    // announced chain (its `prev_hash` won't link to our
+                    // previous record), and the shared-consensus
+                    // "non-contiguous header" WARN will then mis-attribute
+                    // the gap to upstream when in fact we rejected the
+                    // intermediate header ourselves.  Capture the raw
+                    // bytes so an operator can tell which side is wrong.
+                    None => {
+                        self.warn_on_header_parse_failure(*peer_id, tip, header, now);
+                        Vec::new()
+                    }
                 };
                 (true, fx)
             }
@@ -282,13 +351,13 @@ impl PraosConsensus {
                 if let Point::Specific { hash, .. } = point {
                     self.state.note_header_first_seen(*hash, self.current_slot);
                 }
-                let tx_count = body.praos_tx_count().unwrap_or(0);
+                let parsed_body = body.praos_inspect();
                 let fx = self.state.on_block_received(
                     point.clone(),
                     header.raw.clone(),
                     body.raw.clone(),
                     parsed,
-                    tx_count,
+                    parsed_body,
                 );
                 (true, fx)
             }
@@ -297,6 +366,7 @@ impl PraosConsensus {
                 (true, fx)
             }
             NetworkEvent::PeerDisconnected { peer_id, .. } => {
+                self.last_parse_failure_warning_at.remove(peer_id);
                 let fx = self.state.on_peer_disconnected(*peer_id, now);
                 (false, fx)
             }
@@ -464,13 +534,13 @@ impl PraosConsensus {
             .header()
             .unwrap_or_else(|| WrappedHeader::opaque(Vec::new()));
         let parsed = Self::parse_header(&header);
-        let tx_count = body.praos_tx_count().unwrap_or(0);
+        let parsed_body = body.praos_inspect();
         let fx = self.state.on_block_received(
             point.clone(),
             header.raw.clone(),
             body.raw.clone(),
             parsed,
-            tx_count,
+            parsed_body,
         );
         self.dispatch(fx).await;
     }
@@ -764,6 +834,55 @@ mod tests {
             .await;
 
         assert!(!consensus.state.peer_chains.contains_key(&peer));
+    }
+
+    #[tokio::test]
+    async fn unparseable_header_records_throttle_and_clears_on_disconnect() {
+        let (mut consensus, _cmd_rx, _val_rx) = make_consensus();
+        let peer = PeerId(7);
+        // Real Tip but the header bytes are trivial CBOR — won't parse
+        // as a Shelley+ header, so the TipAdvanced None arm fires.
+        let (tip, _real_header) = make_tip(1, 1, None);
+        let bad_header = WrappedHeader::opaque(vec![0x00, 0x01, 0x02]);
+
+        consensus
+            .handle_event(&NetworkEvent::TipAdvanced {
+                peer_id: peer,
+                tip: tip.clone(),
+                header: bad_header.clone(),
+            })
+            .await;
+
+        assert!(
+            consensus.last_parse_failure_warning_at.contains_key(&peer),
+            "first parse failure should register the throttle"
+        );
+        let first = consensus.last_parse_failure_warning_at[&peer];
+
+        // Second failure within the throttle interval must not refresh
+        // the timestamp (otherwise repeated failures would never throttle).
+        consensus
+            .handle_event(&NetworkEvent::TipAdvanced {
+                peer_id: peer,
+                tip,
+                header: bad_header,
+            })
+            .await;
+        assert_eq!(
+            consensus.last_parse_failure_warning_at[&peer], first,
+            "follow-up within HEADER_PARSE_WARN_INTERVAL must be throttled (no timestamp update)"
+        );
+
+        consensus
+            .handle_event(&NetworkEvent::PeerDisconnected {
+                peer_id: peer,
+                reason: "test".to_string(),
+            })
+            .await;
+        assert!(
+            !consensus.last_parse_failure_warning_at.contains_key(&peer),
+            "disconnect must clear the per-peer throttle entry"
+        );
     }
 
     #[tokio::test]

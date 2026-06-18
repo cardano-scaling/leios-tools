@@ -193,7 +193,12 @@ struct Coordinator {
     /// Receives NetworkCommand from the application.
     network_commands: mpsc::Receiver<NetworkCommand>,
 
-    /// Best known tip (for deduplication).
+    /// High-water mark of any peer's reported tip — informational only.
+    /// Updated when a `HeaderAnnounced`'s tip strictly exceeds the
+    /// current value; never lowered on rollback. Not used for chain
+    /// selection — that responsibility lives in Praos
+    /// (`shared_consensus::praos`), which drives `chain_store` mutations
+    /// via `NetworkCommand::InjectBlock` / `InjectRollback`.
     best_tip: Option<Tip>,
     /// Pending block fetch requests: point → peer that's fetching it.
     pending_fetches: HashMap<Point, PeerId>,
@@ -464,12 +469,26 @@ impl Coordinator {
                     self.sync_fragment_size(peer_id, len);
                 }
 
-                // Update best tip tracker.
+                // Update best tip tracker.  Log every advance — gives operators
+                // a clear "the relay is at block X" line without having to probe
+                // out-of-band with chain-sync. Fires once per new block the
+                // peer produces (or once at start if a new peer's tip dominates).
                 let dominated = match &self.best_tip {
                     None => false,
                     Some(best) => tip.block_no <= best.block_no,
                 };
                 if !dominated {
+                    let (tip_slot, tip_hash) = match &tip.point {
+                        Point::Specific { slot, hash } => (Some(*slot), Some(*hash)),
+                        Point::Origin => (None, None),
+                    };
+                    tracing::info!(
+                        peer = peer_id.0,
+                        tip_block_no = tip.block_no,
+                        tip_slot,
+                        tip_hash = ?tip_hash.map(|h| format!("{:02x}{:02x}", h[30], h[31])),
+                        "best peer tip advanced"
+                    );
                     self.best_tip = Some(tip.clone());
                 }
 
@@ -502,15 +521,17 @@ impl Coordinator {
                     self.sync_fragment_size(peer_id, len);
                 }
 
-                // If this peer's rollback lowers our best tip, update the
-                // best tip and the local chain store. This mirrors the
-                // prior behaviour but is no longer gated on forwarding.
-                if let Some(best) = &self.best_tip {
-                    if tip.block_no < best.block_no {
-                        self.best_tip = Some(tip.clone());
-                        self.chain_store.rollback_to(&point);
-                    }
-                }
+                // `best_tip` deliberately stays as the high-water mark — a
+                // peer rollback doesn't lower it (another peer may still be
+                // at the higher tip), and `chain_store` is not touched here.
+                // Praos owns chain selection: it consumes the forwarded
+                // `NetworkEvent::RolledBack` below, runs `on_peer_rolled_back`,
+                // and only emits `PraosEffect::InjectRollback` (→
+                // `NetworkCommand::InjectRollback` → `chain_store.rollback_to`)
+                // when its chain selector actually switches off the rolled-back
+                // chain. Direct mutation here (kept until 2026-06) racing with
+                // Praos could truncate `chain_store` even when Praos stays on
+                // a still-ahead peer's chain.
 
                 // Always forward (unless deduped) so consensus can retire
                 // headers from the peer's candidate chain.
@@ -603,7 +624,7 @@ impl Coordinator {
                 let fresh = self.leios_offer_dedup.fresh_votes(peer_id, votes);
                 if !fresh.is_empty() {
                     if let Some(ref store) = self.leios_store {
-                        store.inject_votes(fresh.clone());
+                        store.inject_votes(fresh.clone(), Some(peer_id));
                     }
                     self.emit_event(NetworkEvent::LeiosVotesReceived {
                         peer_id,
@@ -617,9 +638,13 @@ impl Coordinator {
                 // the consensus layer clears the entry on `on_eb_received`.
                 // Populate leios store for responder peers.
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point.clone(), block.clone());
+                    store.inject_block(point.clone(), block.clone(), Some(peer_id));
                 }
-                self.emit_event(NetworkEvent::LeiosBlockReceived { point, block });
+                self.emit_event(NetworkEvent::LeiosBlockReceived {
+                    source: Some(peer_id),
+                    point,
+                    block,
+                });
             }
 
             PeerEvent::LeiosBlockTxsFetched {
@@ -647,7 +672,7 @@ impl Coordinator {
                             })
                             .collect();
                         if !indexed.is_empty() {
-                            store.inject_block_txs(point.clone(), indexed);
+                            store.inject_block_txs(point.clone(), indexed, Some(peer_id));
                         }
                     }
                 }
@@ -844,7 +869,7 @@ impl Coordinator {
 
             NetworkCommand::InjectLeiosBlock { point, block } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point, block);
+                    store.inject_block(point, block, None);
                 }
             }
 
@@ -857,19 +882,23 @@ impl Coordinator {
                     // ordered body list. Receiver-side merging from
                     // partial fetches happens in the LeiosBlockTxsFetched
                     // handler, not here.
-                    store.inject_block_txs_full(point, transactions);
+                    store.inject_block_txs_full(point, transactions, None);
                 }
             }
 
-            NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
+            NetworkCommand::RecordLeiosEbManifest {
+                source,
+                point,
+                tx_hashes,
+            } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, tx_hashes);
+                    store.record_eb_manifest(point, tx_hashes, source);
                 }
             }
 
             NetworkCommand::InjectLeiosVotes { votes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_votes(votes);
+                    store.inject_votes(votes, None);
                 }
             }
 
@@ -2222,6 +2251,92 @@ mod tests {
         assert!(!frag.contains(&p102));
     }
 
+    /// A peer rollback below `best_tip` must NOT mutate `chain_store`.
+    /// Praos owns chain selection (`PraosEffect::InjectRollback` →
+    /// `NetworkCommand::InjectRollback` → `chain_store.rollback_to`);
+    /// the coordinator forwards `NetworkEvent::RolledBack` and leaves
+    /// the store alone so a single peer's rollback can't truncate a
+    /// chain that Praos still considers adopted.
+    #[tokio::test]
+    async fn peer_rollback_does_not_truncate_chain_store() {
+        let (peer_event_sender, peer_event_receiver) = mpsc::channel(256);
+        let (net_event_sender, _net_event_receiver) = mpsc::channel(64);
+        let (_net_cmd_sender, net_cmd_receiver) = mpsc::channel(64);
+        let (chain_store, _chain_rx) = ChainStore::new(100);
+
+        // Praos has already published two blocks to chain_store.
+        let p100 = Point::Specific {
+            slot: 100,
+            hash: [1u8; 32],
+        };
+        let p101 = Point::Specific {
+            slot: 101,
+            hash: [2u8; 32],
+        };
+        chain_store.append_block(
+            p100.clone(),
+            WrappedHeader::opaque(vec![0xA0]),
+            crate::types::BlockBody::opaque(vec![0xB0]),
+            100,
+        );
+        chain_store.append_block(
+            p101.clone(),
+            WrappedHeader::opaque(vec![0xA1]),
+            crate::types::BlockBody::opaque(vec![0xB1]),
+            101,
+        );
+        let adopted_tip_before = chain_store.tip();
+
+        let mut coordinator = Coordinator::new(
+            CoordinatorConfig::default(),
+            peer_event_sender,
+            peer_event_receiver,
+            net_event_sender,
+            net_cmd_receiver,
+            chain_store.clone(),
+            None,
+        );
+        let peer_a = PeerId(0);
+        insert_peer(&mut coordinator, peer_a, None);
+
+        // Peer reports its tip is at block 101 — sets best_tip to 101.
+        coordinator
+            .handle_peer_event(
+                peer_a,
+                PeerEvent::HeaderAnnounced {
+                    header: WrappedHeader::opaque(vec![0xA1]),
+                    tip: Tip {
+                        point: p101.clone(),
+                        block_no: 101,
+                    },
+                },
+            )
+            .await;
+
+        // Peer rolls back to p100 with a lower tip — would previously
+        // have triggered chain_store.rollback_to(p100).
+        coordinator
+            .handle_peer_event(
+                peer_a,
+                PeerEvent::RolledBack {
+                    point: p100.clone(),
+                    tip: Tip {
+                        point: p100.clone(),
+                        block_no: 100,
+                    },
+                },
+            )
+            .await;
+
+        // chain_store is untouched.
+        assert_eq!(
+            chain_store.tip(),
+            adopted_tip_before,
+            "coordinator-level rollback must not mutate chain_store"
+        );
+        assert_eq!(chain_store.stored_count(), 2, "blocks remain stored");
+    }
+
     #[tokio::test]
     async fn block_fetch_failed_removes_from_fragment_and_notifies() {
         let (mut coordinator, mut net_rx) = make_fragment_coordinator();
@@ -2571,6 +2686,7 @@ mod tests {
         };
         net_cmd_sender
             .send(NetworkCommand::RecordLeiosEbManifest {
+                source: None,
                 point,
                 tx_hashes: vec![
                     TxId::new_with_array(h0),
@@ -2691,7 +2807,7 @@ mod tests {
             slot: 12,
             hash: eb_hash,
         };
-        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         // Simulate a partial response from an upstream peer: indices 0
         // and 2 only. Order is reversed to confirm we don't rely on

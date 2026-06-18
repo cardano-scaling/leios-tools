@@ -12,7 +12,7 @@ use crate::{
     config::{LeiosVariant, NodeId, SimConfiguration},
     events::EventTracker,
     model::Transaction,
-    network::{Network, ShardLookup},
+    network::{Network, ShardLookup, partition::PartitionRuntime},
     sharding::shard::{Shard, build_shards},
 };
 
@@ -120,13 +120,27 @@ impl ActorSimulation {
             .map(|clock| EventTracker::new(event_sender.clone(), clock.clone(), &config.nodes))
             .collect();
 
-        let (nodes, actors, tx_sinks, networks) = Self::init_nodes(
+        let (nodes, actors, tx_sinks, mut networks) = Self::init_nodes(
             &config,
             &trackers,
             &clocks,
             &shard_lookup,
             additional_actors_fn,
         )?;
+
+        // Install per-shard partition runtimes. Shard 0 is the
+        // designated telemetry emitter, so each window edge fires exactly
+        // one event regardless of shard count.
+        if !config.partition_schedule.is_empty() {
+            for (shard, network) in networks.iter_mut().enumerate() {
+                if let Some(runtime) =
+                    PartitionRuntime::new(config.partition_schedule.clone(), shard == 0)
+                {
+                    network.set_partition(runtime, trackers[shard].clone());
+                }
+            }
+        }
+
         let shards = build_shards(
             &config,
             &clocks,

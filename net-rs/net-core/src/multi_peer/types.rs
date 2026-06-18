@@ -82,8 +82,15 @@ pub enum NetworkEvent {
     /// Leios: an EB's transactions are available for download from a peer.
     LeiosBlockTxsOffered { peer_id: PeerId, point: Point },
 
-    /// Leios: a fetched endorser block arrived.
-    LeiosBlockReceived { point: Point, block: Vec<u8> },
+    /// Leios: a fetched endorser block arrived. `source` is the peer
+    /// it was fetched from (`None` for self-produced EBs, which the
+    /// node feeds through the same receive path so manifest-recording
+    /// fires identically).
+    LeiosBlockReceived {
+        source: Option<PeerId>,
+        point: Point,
+        block: Vec<u8>,
+    },
 
     /// Leios: votes delivered inline by a peer (no fetch round-trip).
     LeiosVotesReceived { peer_id: PeerId, votes: Vec<Vote> },
@@ -175,8 +182,12 @@ pub enum NetworkCommand {
     /// Record the ordered tx-hash list of an EB whose body the receiver
     /// has already fetched and decoded. Lets the responder side serve
     /// `MsgLeiosBlockTxsRequest` by resolving each requested hash via the
-    /// configured `TxBodyResolver` (typically the local mempool).
+    /// configured `TxBodyResolver` (typically the local mempool). `source`
+    /// is the peer that supplied the EB body (`None` if self-produced);
+    /// the resulting `BlockTxsOffer` is tagged with it so LeiosNotify
+    /// skips re-offering tx availability back to that peer.
     RecordLeiosEbManifest {
+        source: Option<PeerId>,
         point: Point,
         tx_hashes: Vec<TxId>,
     },

@@ -490,6 +490,7 @@ impl NodeImpl for SharedConsensus {
             non_persistent_vote_bytes: vote_bytes_per_bundle as usize,
             persistent_seats,
             retry_vote_in_window: sim_config.retry_vote_in_window,
+            evaluate_votes: true,
         };
 
         let mut leios = LeiosState::new(config.name.clone(), elections, voting_config, pipeline);
@@ -1773,8 +1774,16 @@ impl SharedConsensus {
             slot: eb_id.slot,
             hash: eb_hash,
         };
+<<<<<<< HEAD
         let manifest: Vec<TxId> = eb.txs.iter().map(|tx| tx_id_for(tx.id)).collect();
         let _ = self.leios.on_eb_received(point, Some(manifest));
+=======
+        let manifest: Vec<[u8; 32]> = eb.txs.iter().map(|tx| tx_id_hash(tx.id)).collect();
+        // Sim doesn't model the per-peer LeiosNotify source filter, so
+        // pass None — the resulting RecordLeiosEbManifest effect is a
+        // no-op in sim's dispatcher anyway.
+        let _ = self.leios.on_eb_received(None, point, Some(manifest));
+>>>>>>> 0acc016707d0e20f56344590f8d73d3ab82da3dd
     }
 
     /// Wire an EB (locally produced or peer-received) into
@@ -1934,10 +1943,16 @@ impl SharedConsensus {
         let hash = synthesize_rb_hash(id);
         self.rb_hash_to_id.insert(hash, id);
         let parsed = parsed_header_from_rb(&rb);
-        let tx_count = rb.transactions.len() as u32;
+        // Sim doesn't ship wire-format bodies, so the wrapper feeds in
+        // logical args only: tx_count from the rb model, the rest of
+        // ParsedBodyInfo defaults to zero/None.
+        let parsed_body = shared_consensus::praos::ParsedBodyInfo {
+            tx_count: rb.transactions.len() as u32,
+            ..Default::default()
+        };
         let fx = self
             .praos
-            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), tx_count);
+            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
         self.dispatch_praos_effects(out, fx);
     }
 
@@ -2279,6 +2294,10 @@ fn parsed_header_from_rb(rb: &LinearRankingBlock) -> ParsedHeaderInfo {
         slot: h.id.slot,
         prev_hash: h.parent.map(synthesize_rb_hash),
         announced_eb_hash: h.eb_announcement.map(synthesize_eb_hash),
+        // The sim model doesn't track per-EB byte sizes — sim EBs are
+        // logical handles, not wire-encoded.  Leaving `None` keeps the
+        // sim's chain-tracking semantics unchanged.
+        announced_eb_size: None,
         certified_eb: rb.endorsement.is_some(),
         // CIP-0164 equivocation detection keys on (slot, issuer).
         // Sim doesn't have signing keys, so encode `NodeId` (a u64

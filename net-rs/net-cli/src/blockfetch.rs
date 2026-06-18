@@ -10,7 +10,12 @@ use net_core::types::Point;
 
 use crate::connect;
 
-pub async fn run(host: &str, magic: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn run(
+    host: &str,
+    magic: u64,
+    point: Option<Point>,
+    dump_hex: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cs_proto = ProtocolConfig {
         id: chainsync::PROTOCOL_ID,
         traffic_class: TrafficClass::Priority,
@@ -32,31 +37,40 @@ pub async fn run(host: &str, magic: u64) -> Result<(), Box<dyn std::error::Error
     let (cs_send, cs_recv) = channels.next().expect("chainsync channel");
     let (bf_send, bf_recv) = channels.next().expect("blockfetch channel");
 
-    // ChainSync: find the tip so we have a point for BlockFetch.
     let mut cs_runner = Runner::<ChainSync>::new(Role::Client, cs_send, cs_recv);
 
-    println!("finding intersection...");
-    let result = chainsync::find_intersection(&mut cs_runner, vec![Point::Origin]).await?;
-    let tip = match result {
-        Some((_point, tip)) => {
-            println!("intersection found, tip: {tip}");
-            tip
+    let fetch_point = match point {
+        Some(p) => {
+            println!("fetching at supplied point {p}...");
+            p
         }
         None => {
-            println!("no intersection found");
-            running.abort();
-            return Ok(());
+            // ChainSync: find the tip so we have a point for BlockFetch.
+            println!("finding intersection...");
+            let result =
+                chainsync::find_intersection(&mut cs_runner, vec![Point::Origin]).await?;
+            let tip = match result {
+                Some((_point, tip)) => {
+                    println!("intersection found, tip: {tip}");
+                    tip
+                }
+                None => {
+                    println!("no intersection found");
+                    running.abort();
+                    return Ok(());
+                }
+            };
+
+            let fetch_point = tip.point.clone();
+            if fetch_point == Point::Origin {
+                println!("tip is origin, nothing to fetch");
+                chainsync::done(&mut cs_runner).await?;
+                running.abort();
+                return Ok(());
+            }
+            fetch_point
         }
     };
-
-    // Use the tip point for a single-block BlockFetch request.
-    let fetch_point = tip.point.clone();
-    if fetch_point == Point::Origin {
-        println!("tip is origin, nothing to fetch");
-        chainsync::done(&mut cs_runner).await?;
-        running.abort();
-        return Ok(());
-    }
 
     println!("fetching block at {fetch_point}...");
 
@@ -69,11 +83,15 @@ pub async fn run(host: &str, magic: u64) -> Result<(), Box<dyn std::error::Error
         let mut block_count = 0u64;
         while let Some(body) = blockfetch::recv_block(&mut bf_runner).await? {
             block_count += 1;
-            println!(
-                "  block #{block_count}: {} bytes  tip={}",
-                body.raw.len(),
-                tip
-            );
+            println!("  block #{block_count}: {} bytes", body.raw.len());
+            if dump_hex {
+                use std::fmt::Write as _;
+                let mut s = String::with_capacity(body.raw.len() * 2);
+                for b in &body.raw {
+                    let _ = write!(s, "{b:02x}");
+                }
+                println!("  hex: {s}");
+            }
         }
         println!("batch complete: {block_count} block(s)");
     } else {
