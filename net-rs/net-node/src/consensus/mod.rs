@@ -246,7 +246,7 @@ impl Consensus {
         // Mirror manifest sizes onto the chain-tree node on receive so
         // they survive the LeiosState cache TTL — see
         // `register_self_produced_eb` for the same on the produce path.
-        if let NetworkEvent::LeiosBlockReceived { point, block } = event {
+        if let NetworkEvent::LeiosBlockReceived { point, block, .. } = event {
             self.record_announced_eb_tx_count_from_blob(point, block);
         }
         match event {

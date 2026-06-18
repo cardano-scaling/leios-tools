@@ -509,14 +509,15 @@ pub async fn serve_peersharing(
 }
 
 /// Translate a stored notification into the LeiosNotify wire message.
-/// `eb_size` isn't tracked store-side, so block offers serve `0` (the
-/// CDDL marks the field redundant with the announcement).
+/// `eb_size` is the byte length captured at `inject_block` time —
+/// CIP-0164 requires the real size; advertising `0` makes the dev relay
+/// drop the connection.
 fn notification_to_ln_msg(n: &crate::store::leios_store::LeiosNotification) -> LnMsg {
     use crate::store::leios_store::LeiosNotification;
     match n {
-        LeiosNotification::BlockOffer { point } => LnMsg::MsgLeiosBlockOffer {
+        LeiosNotification::BlockOffer { point, eb_size } => LnMsg::MsgLeiosBlockOffer {
             point: point.clone(),
-            eb_size: 0,
+            eb_size: *eb_size,
         },
         LeiosNotification::BlockTxsOffer { point } => LnMsg::MsgLeiosBlockTxsOffer {
             point: point.clone(),
@@ -531,7 +532,16 @@ fn notification_to_ln_msg(n: &crate::store::leios_store::LeiosNotification) -> L
 ///
 /// Sends notifications about available Leios data as the store is populated.
 /// Uses `LeiosStore::subscribe()` to wake when new items are injected.
-pub async fn serve_leios_notify(ln_send: CodecSend, ln_recv: CodecRecv, store: Arc<LeiosStore>) {
+///
+/// `peer` is the connected peer — notifications tagged with that peer
+/// as their source are skipped (no-echo gossip), so a duplex follower
+/// doesn't immediately re-offer fetched data back to its source.
+pub async fn serve_leios_notify(
+    ln_send: CodecSend,
+    ln_recv: CodecRecv,
+    store: Arc<LeiosStore>,
+    peer: PeerId,
+) {
     let mut runner = Runner::<LeiosNotify>::new(Role::Server, ln_send, ln_recv);
     let mut read_index: usize = 0;
     let mut subscription = store.subscribe();
@@ -544,33 +554,79 @@ pub async fn serve_leios_notify(ln_send: CodecSend, ln_recv: CodecRecv, store: A
 
         match msg {
             LnMsg::MsgLeiosNotificationRequestNext => {
-                let pending = store.notifications_after(&mut read_index);
-                if let Some(notification) = pending.first() {
-                    read_index += 1;
-                    let response = notification_to_ln_msg(notification);
+                if let Some(response) =
+                    next_outbound_notification(&store, &mut read_index, peer, &mut subscription)
+                        .await
+                {
                     if runner.send(&response).await.is_err() {
                         break;
                     }
                 } else {
-                    // No pending notifications — wait for new items.
-                    loop {
-                        if subscription.changed().await.is_err() {
-                            return;
-                        }
-                        let pending = store.notifications_after(&mut read_index);
-                        if let Some(notification) = pending.first() {
-                            read_index += 1;
-                            let response = notification_to_ln_msg(notification);
-                            if runner.send(&response).await.is_err() {
-                                return;
-                            }
-                            break;
-                        }
-                    }
+                    return;
                 }
             }
             LnMsg::MsgDone => break,
             _ => break,
+        }
+    }
+}
+
+/// Find the next notification the wire actually sends to `peer`, skipping
+/// entries whose source equals `peer` (no-echo). Advances `read_index`
+/// past every skipped entry so the same notification isn't reconsidered
+/// next call. Awaits new injects when the queue is empty. Returns `None`
+/// on watch-channel close — the server task should exit.
+async fn next_outbound_notification(
+    store: &Arc<LeiosStore>,
+    read_index: &mut usize,
+    peer: PeerId,
+    subscription: &mut tokio::sync::watch::Receiver<u64>,
+) -> Option<LnMsg> {
+    use crate::store::leios_store::LeiosNotification;
+    loop {
+        let pending = store.notifications_after(read_index);
+        for entry in &pending {
+            *read_index += 1;
+            if entry.source == Some(peer) {
+                tracing::debug!(
+                    peer = peer.0,
+                    "leios_notify: skipping no-echo offer back to source"
+                );
+                continue;
+            }
+            match &entry.notification {
+                LeiosNotification::BlockOffer { point, eb_size } => {
+                    tracing::info!(
+                        peer = peer.0,
+                        %point,
+                        eb_size,
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving EB offer"
+                    );
+                }
+                LeiosNotification::BlockTxsOffer { point } => {
+                    tracing::info!(
+                        peer = peer.0,
+                        %point,
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving EB-txs offer"
+                    );
+                }
+                LeiosNotification::Votes { votes } => {
+                    tracing::debug!(
+                        peer = peer.0,
+                        count = votes.len(),
+                        source = ?entry.source.map(|p| p.0),
+                        "leios_notify: serving votes"
+                    );
+                }
+            }
+            return Some(notification_to_ln_msg(&entry.notification));
+        }
+        // Drained without finding a deliverable entry — wait for new
+        // injects before trying again.
+        if subscription.changed().await.is_err() {
+            return None;
         }
     }
 }
@@ -841,10 +897,16 @@ mod tests {
                 hash: [0xAB; 32],
             },
             vec![1, 2, 3],
+            None,
         );
 
         // Start server.
-        let server_handle = tokio::spawn(serve_leios_notify(server_send, server_recv, store));
+        let server_handle = tokio::spawn(serve_leios_notify(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+        ));
 
         // Client: request next notification.
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
@@ -858,15 +920,84 @@ mod tests {
                         hash: [0xAB; 32]
                     }
                 );
-                // The server emits offers with eb_size=0 since the store
-                // doesn't track per-EB byte sizes (see
-                // `notification_to_ln_msg` above).
-                assert_eq!(eb_size, 0);
+                // eb_size is the byte length of the injected block body.
+                assert_eq!(eb_size, 3);
             }
             other => panic!("expected BlockOffer, got {other:?}"),
         }
 
         // Clean up.
+        let _ = leios_notify::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn leios_notify_server_skips_offers_from_connected_peer() {
+        // No-echo: an EB or vote that was sourced from peer P must not
+        // be re-offered to P on the same connection. Two notifications
+        // are queued — one from PeerId(7), one from PeerId(9). The
+        // server is talking to PeerId(7), so only the second one
+        // should reach the wire. Without filtering, the duplex
+        // follower would reflect a fetched EB back to its source and
+        // (because the size was hardcoded to 0) crash the dev relay.
+        let ln_proto = ProtocolConfig {
+            id: leios_notify::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: leios_notify::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&ln_proto);
+
+        let (store, _rx) = LeiosStore::new(100);
+        let connected_peer = PeerId(7);
+        let other_peer = PeerId(9);
+        // From connected_peer — must be filtered out.
+        store.inject_block(
+            Point::Specific {
+                slot: 10,
+                hash: [0xAA; 32],
+            },
+            vec![1, 2, 3],
+            Some(connected_peer),
+        );
+        // From a different peer — must be delivered.
+        store.inject_block(
+            Point::Specific {
+                slot: 11,
+                hash: [0xBB; 32],
+            },
+            vec![4, 5, 6, 7],
+            Some(other_peer),
+        );
+
+        let server_handle = tokio::spawn(serve_leios_notify(
+            server_send,
+            server_recv,
+            store,
+            connected_peer,
+        ));
+
+        let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
+        let event = leios_notify::request_next(&mut client).await.unwrap();
+        match event {
+            leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
+                assert_eq!(
+                    point,
+                    Point::Specific {
+                        slot: 11,
+                        hash: [0xBB; 32]
+                    },
+                    "expected the offer from other_peer, not the echo from connected_peer"
+                );
+                assert_eq!(eb_size, 4, "eb_size should match the injected block length");
+            }
+            other => panic!("expected BlockOffer, got {other:?}"),
+        }
+
         let _ = leios_notify::done(&mut client).await;
         server_handle.await.ok();
         mux_a.abort();
@@ -894,6 +1025,7 @@ mod tests {
                 hash: [0xAB; 32],
             },
             vec![0xA0],
+            None,
         );
 
         // Start server.
@@ -977,7 +1109,7 @@ mod tests {
         // Each tx body is a single valid CBOR value (a 3-byte bytestring,
         // 0x43 = bytes(3)) — the codec passes txs through as raw CBOR.
         let txs: Vec<Vec<u8>> = (0..100u8).map(|i| vec![0x43, i, i, i]).collect();
-        store.inject_block_txs_full(point.clone(), txs);
+        store.inject_block_txs_full(point.clone(), txs, None);
 
         let server_handle =
             tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone()));
@@ -1043,7 +1175,7 @@ mod tests {
         let (store, _rx) = LeiosStore::new_with_resolver(100, Some(resolver));
         let hash = [0xEFu8; 32];
         let point = Point::Specific { slot: 33, hash };
-        store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         let server_handle =
             tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone()));

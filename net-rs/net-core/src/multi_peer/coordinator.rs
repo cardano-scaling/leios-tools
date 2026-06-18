@@ -469,12 +469,26 @@ impl Coordinator {
                     self.sync_fragment_size(peer_id, len);
                 }
 
-                // Update best tip tracker.
+                // Update best tip tracker.  Log every advance — gives operators
+                // a clear "the relay is at block X" line without having to probe
+                // out-of-band with chain-sync. Fires once per new block the
+                // peer produces (or once at start if a new peer's tip dominates).
                 let dominated = match &self.best_tip {
                     None => false,
                     Some(best) => tip.block_no <= best.block_no,
                 };
                 if !dominated {
+                    let (tip_slot, tip_hash) = match &tip.point {
+                        Point::Specific { slot, hash } => (Some(*slot), Some(*hash)),
+                        Point::Origin => (None, None),
+                    };
+                    tracing::info!(
+                        peer = peer_id.0,
+                        tip_block_no = tip.block_no,
+                        tip_slot,
+                        tip_hash = ?tip_hash.map(|h| format!("{:02x}{:02x}", h[30], h[31])),
+                        "best peer tip advanced"
+                    );
                     self.best_tip = Some(tip.clone());
                 }
 
@@ -610,7 +624,7 @@ impl Coordinator {
                 let fresh = self.leios_offer_dedup.fresh_votes(peer_id, votes);
                 if !fresh.is_empty() {
                     if let Some(ref store) = self.leios_store {
-                        store.inject_votes(fresh.clone());
+                        store.inject_votes(fresh.clone(), Some(peer_id));
                     }
                     self.emit_event(NetworkEvent::LeiosVotesReceived {
                         peer_id,
@@ -624,9 +638,13 @@ impl Coordinator {
                 // the consensus layer clears the entry on `on_eb_received`.
                 // Populate leios store for responder peers.
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point.clone(), block.clone());
+                    store.inject_block(point.clone(), block.clone(), Some(peer_id));
                 }
-                self.emit_event(NetworkEvent::LeiosBlockReceived { point, block });
+                self.emit_event(NetworkEvent::LeiosBlockReceived {
+                    source: Some(peer_id),
+                    point,
+                    block,
+                });
             }
 
             PeerEvent::LeiosBlockTxsFetched {
@@ -654,7 +672,7 @@ impl Coordinator {
                             })
                             .collect();
                         if !indexed.is_empty() {
-                            store.inject_block_txs(point.clone(), indexed);
+                            store.inject_block_txs(point.clone(), indexed, Some(peer_id));
                         }
                     }
                 }
@@ -851,7 +869,7 @@ impl Coordinator {
 
             NetworkCommand::InjectLeiosBlock { point, block } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_block(point, block);
+                    store.inject_block(point, block, None);
                 }
             }
 
@@ -864,19 +882,23 @@ impl Coordinator {
                     // ordered body list. Receiver-side merging from
                     // partial fetches happens in the LeiosBlockTxsFetched
                     // handler, not here.
-                    store.inject_block_txs_full(point, transactions);
+                    store.inject_block_txs_full(point, transactions, None);
                 }
             }
 
-            NetworkCommand::RecordLeiosEbManifest { point, tx_hashes } => {
+            NetworkCommand::RecordLeiosEbManifest {
+                source,
+                point,
+                tx_hashes,
+            } => {
                 if let Some(ref store) = self.leios_store {
-                    store.record_eb_manifest(point, tx_hashes);
+                    store.record_eb_manifest(point, tx_hashes, source);
                 }
             }
 
             NetworkCommand::InjectLeiosVotes { votes } => {
                 if let Some(ref store) = self.leios_store {
-                    store.inject_votes(votes);
+                    store.inject_votes(votes, None);
                 }
             }
 
@@ -2669,6 +2691,7 @@ mod tests {
         };
         net_cmd_sender
             .send(NetworkCommand::RecordLeiosEbManifest {
+                source: None,
                 point,
                 tx_hashes: vec![h0, h1],
             })
@@ -2786,7 +2809,7 @@ mod tests {
             slot: 12,
             hash: eb_hash,
         };
-        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2]);
+        leios_store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
         // Simulate a partial response from an upstream peer: indices 0
         // and 2 only. Order is reversed to confirm we don't rely on

@@ -322,6 +322,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
             ln_srv_send,
             ln_srv_recv,
             store.clone(),
+            peer_id,
         ));
         let lf_server = tokio::spawn(server_handlers::serve_leios_fetch(
             lf_srv_send,
