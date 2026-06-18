@@ -1,10 +1,15 @@
 <!--
 SYNC IMPACT REPORT
 ==================
-Version change: (unratified template) → 1.0.0
-Bump rationale: Initial ratification. The constitution file previously contained
-only unfilled template placeholders; this is the first concrete adoption, so the
-version starts at 1.0.0 per semantic versioning.
+Version change: 1.0.0 → 1.1.0
+Bump rationale: MINOR — materially expanded guidance to Principle I (Test-Driven
+Development): added that AI must not change tests to match the code without human
+approval. No principle removed or redefined; no governance change. Templates
+unaffected (the TDD-mandatory guidance they already carry still holds).
+
+Prior: (unratified template) → 1.0.0 — Initial ratification. The constitution file
+previously contained only unfilled template placeholders; this was the first
+concrete adoption, so the version started at 1.0.0 per semantic versioning.
 
 Modified principles (placeholder → concrete):
 - [PRINCIPLE_1_NAME] → I. Test-Driven Development (NON-NEGOTIABLE)
@@ -44,7 +49,7 @@ write a failing test that captures the intended behavior or defect, confirm it
 fails for the expected reason, implement the minimum code to make it pass, then
 refactor with tests green. Tests MUST pass before any commit. No production code
 is committed without an accompanying test that exercises it, except where Principle
-II's manual-confirmation path explicitly applies.
+II's manual-confirmation path explicitly applies. AI will not change the tests to match the code without a human approval.
 
 **Rationale**: This is a Red Team effort against consensus-critical software.
 Untested behavior is unverified behavior, and unverified behavior cannot be trusted
@@ -135,4 +140,4 @@ Compliance is verified at commit and review time. Any violation requires either
 remediation before merge or an explicit, documented justification. Use `CLAUDE.md`
 and the active plan for runtime development guidance.
 
-**Version**: 1.0.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-06-15
+**Version**: 1.1.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-06-17
