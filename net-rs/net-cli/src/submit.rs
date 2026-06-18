@@ -13,9 +13,11 @@ use net_core::mux::{MuxConfig, ProtocolConfig};
 use net_core::protocols::keepalive;
 use net_core::protocols::keepalive::KeepAlive;
 use net_core::protocols::txsubmission;
-use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId, TxSubmission};
+use net_core::protocols::txsubmission::{PendingTx, TxSubmission};
 use net_core::protocols::Role;
 use net_core::protocols::Runner;
+
+use shared_consensus::mempool::{TxBody, TxId};
 
 use crate::connect;
 

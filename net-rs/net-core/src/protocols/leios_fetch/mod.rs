@@ -9,7 +9,7 @@ pub mod codec;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
-use crate::protocols::txsubmission::TxBody;
+use shared_consensus::mempool::TxBody;
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 use crate::types::Point;
 

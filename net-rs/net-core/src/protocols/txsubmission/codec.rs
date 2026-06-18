@@ -16,7 +16,35 @@ use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
-use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, TX_ID_SIZE};
+use super::{Message, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, TX_ID_SIZE};
+
+/// Opaque transaction ID (fixed 32-byte hash) for CBOR encoding/decoding.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CodecTxId(shared_consensus::mempool::TxId);
+
+impl CodecTxId {
+    pub fn new(tx_id: shared_consensus::mempool::TxId) -> Self {
+        CodecTxId(tx_id)
+    }
+    
+    pub fn get_tx_id(&self) -> &shared_consensus::mempool::TxId {
+        &self.0
+    }
+}
+
+/// Opaque transaction body for CBOR encoding/decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodecTxBody(shared_consensus::mempool::TxBody);
+
+impl CodecTxBody {
+    pub fn new(tx_body: shared_consensus::mempool::TxBody) -> Self {
+        CodecTxBody(tx_body)
+    }
+    
+    pub fn get_tx_body(&self) -> &shared_consensus::mempool::TxBody {
+        &self.0
+    }
+}
 
 // --- TxId encode/decode ---
 //
@@ -29,7 +57,7 @@ use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, TX_ID_
 // `TxBody(_)` carries the raw transaction bytes; same wrapping pattern as
 // `TxId`.
 
-impl minicbor::Encode<()> for TxId {
+impl minicbor::Encode<()> for CodecTxId {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut Encoder<W>,
@@ -40,7 +68,7 @@ impl minicbor::Encode<()> for TxId {
     }
 }
 
-impl<'a> minicbor::Decode<'a, ()> for TxId {
+impl<'a> minicbor::Decode<'a, ()> for CodecTxId {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let raw = d.bytes()?;
         if raw.len() != TX_ID_SIZE {
@@ -52,12 +80,12 @@ impl<'a> minicbor::Decode<'a, ()> for TxId {
 
         let mut array = [0u8; TX_ID_SIZE];
         array.copy_from_slice(&raw[..TX_ID_SIZE]);
-        Ok(TxId::new_with_array(array))
+        Ok(CodecTxId(shared_consensus::mempool::TxId::new_with_array(array)))
     }
 }
 
 
-impl minicbor::Encode<()> for TxBody {
+impl minicbor::Encode<()> for CodecTxBody {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut Encoder<W>,
@@ -68,7 +96,7 @@ impl minicbor::Encode<()> for TxBody {
     }
 }
 
-impl<'a> minicbor::Decode<'a, ()> for TxBody {
+impl<'a> minicbor::Decode<'a, ()> for CodecTxBody {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let raw = d.bytes()?;
         if raw.len() > MAX_TX_SIZE {
@@ -77,7 +105,7 @@ impl<'a> minicbor::Decode<'a, ()> for TxBody {
                 raw.len()
             )));
         }
-        Ok(TxBody::new_with_vec(raw.to_vec()))
+        Ok(CodecTxBody(shared_consensus::mempool::TxBody::new_with_vec(raw.to_vec())))
     }
 }
 
@@ -90,7 +118,7 @@ impl minicbor::Encode<()> for TxIdAndSize {
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
         e.array(2)?;
-        self.tx_id.encode(e, &mut ())?;
+        CodecTxId::new(self.tx_id.clone()).encode(e, &mut ())?;
         e.u32(self.size)?;
         Ok(())
     }
@@ -99,9 +127,9 @@ impl minicbor::Encode<()> for TxIdAndSize {
 impl<'a> minicbor::Decode<'a, ()> for TxIdAndSize {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let _len = d.array()?;
-        let tx_id = TxId::decode(d, &mut ())?;
+        let tx_id = CodecTxId::decode(d, &mut ())?;
         let size = d.u32()?;
-        Ok(TxIdAndSize { tx_id, size })
+        Ok(TxIdAndSize { tx_id: tx_id.get_tx_id().clone(), size })
     }
 }
 
@@ -194,7 +222,7 @@ impl minicbor::Encode<()> for Message {
                 // Inner list: indefinite-length.
                 e.begin_array()?;
                 for id in tx_ids {
-                    id.encode(e, &mut ())?;
+                    CodecTxId::new(id.clone()).encode(e, &mut ())?;
                 }
                 e.end()?;
             }
@@ -203,8 +231,8 @@ impl minicbor::Encode<()> for Message {
                 e.u32(3)?;
                 // Inner list: indefinite-length.
                 e.begin_array()?;
-                for tx in txs {
-                    tx.encode(e, &mut ())?;
+                for tx_body in txs {
+                    CodecTxBody::new(tx_body.clone()).encode(e, &mut ())?;
                 }
                 e.end()?;
             }
@@ -242,12 +270,12 @@ impl<'a> minicbor::Decode<'a, ()> for Message {
             }
             2 => {
                 let tx_ids =
-                    decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| TxId::decode(d, &mut ()))?;
+                    decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| CodecTxId::decode(d, &mut ()).map(|id| id.get_tx_id().clone()))?;
                 Ok(Message::MsgRequestTxs { tx_ids })
             }
             3 => {
                 let txs =
-                    decode_bounded_list(d, MAX_UNACKED, "txList", |d| TxBody::decode(d, &mut ()))?;
+                    decode_bounded_list(d, MAX_UNACKED, "txList", |d| CodecTxBody::decode(d, &mut ()).map(|b| b.get_tx_body().clone()))?;
                 Ok(Message::MsgReplyTxs { txs })
             }
             4 => Ok(Message::MsgDone),
@@ -260,6 +288,7 @@ impl<'a> minicbor::Decode<'a, ()> for Message {
 
 #[cfg(test)]
 mod tests {
+    use shared_consensus::mempool::{TxBody, TxId};
     use super::*;
 
     fn round_trip(msg: &Message) -> Message {
@@ -404,7 +433,7 @@ mod tests {
         let raw_hash: Vec<u8> = (0..32).collect();
         let msg = Message::MsgReplyTxIds {
             tx_ids: vec![TxIdAndSize {
-                tx_id: TxId::new_with_array_ref(raw_hash.as_array().unwrap()),
+                tx_id: TxId::new_with_slice(raw_hash.as_array().unwrap()),
                 size: 1234,
             }],
         };
@@ -412,7 +441,7 @@ mod tests {
         match decoded {
             Message::MsgReplyTxIds { tx_ids } => {
                 assert_eq!(tx_ids.len(), 1);
-                assert_eq!(tx_ids[0].tx_id.0.get_bytes(), &raw_hash);
+                assert_eq!(tx_ids[0].tx_id.get_bytes(), &raw_hash);
                 assert_eq!(tx_ids[0].size, 1234);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
@@ -450,7 +479,7 @@ mod tests {
     #[test]
     fn decode_definite_inner_list() {
         // MsgReplyTxIds with definite-length inner list (should also work).
-        let tx_id = make_tx_id();
+        let tx_id = CodecTxId::new(make_tx_id());
         let mut buf = Vec::new();
         let mut e = minicbor::Encoder::new(&mut buf);
         e.array(2).unwrap();

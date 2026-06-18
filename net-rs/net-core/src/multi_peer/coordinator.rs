@@ -106,9 +106,9 @@ use crate::peer::peer_task::{
 };
 use crate::peer::types::{PeerCommand, PeerEvent};
 use crate::peer::{ConnectionMode, PeerId};
-use crate::protocols::txsubmission::{TxBody, TxId};
 use crate::store::chain_store::ChainStore;
 use crate::store::leios_store::LeiosStore;
+use shared_consensus::mempool::{TxBody, TxId};
 
 /// Capacity of the per-peer command channel (coordinator → peer task).
 /// Large enough that a brief peer-task stall doesn't immediately force
@@ -1451,7 +1451,7 @@ pub fn spawn_coordinator(config: CoordinatorConfig) -> CoordinatorHandle {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocols::txsubmission::{TxBody, TxId};
+    use shared_consensus::mempool::{TxBody, TxId};
     use super::*;
     use crate::types::WrappedHeader;
 
@@ -2683,9 +2683,9 @@ mod tests {
         let body0 = TxBody::new_with_vec(b"alpha".to_vec());
         let body1 = TxBody::new_with_vec(b"bravo".to_vec());
         let body2 = TxBody::new_with_vec(b"charlie".to_vec());
-        let h0 = TxId::new_with_array_ref(&body0.get_blake2b_256());
-        let h1 = TxId::new_with_array_ref(&body1.get_blake2b_256());
-        let h2 = TxId::new_with_array_ref(&body2.get_blake2b_256());
+        let h0 = body0.get_blake2b_txid();
+        let h1 = body1.get_blake2b_txid();
+        let h2 = body2.get_blake2b_txid();
         let eb_hash = [0xEEu8; 32];
         let point = Point::Specific {
             slot: 12,

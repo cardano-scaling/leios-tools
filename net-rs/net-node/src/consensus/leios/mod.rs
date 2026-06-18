@@ -24,8 +24,7 @@ use shared_consensus::leios::{
 pub use shared_consensus::pipeline::PipelineConfig;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
-use net_core::protocols::txsubmission::TxId;
-use shared_consensus::mempool::TxBody;
+use shared_consensus::mempool::{TxBody, TxId};
 use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
 use crate::production::decode_overflow_eb;
 use crate::telemetry::NodeEvent;
@@ -210,7 +209,7 @@ impl LeiosConsensus {
         // a receiver has merged via `LeiosFetch BlockTxs`.  Snapshot
         // upfront so we don't hold the mempool lock across the call.
         let known = self.mempool.lock().unwrap().all_known_tx_ids();
-        let tx_known = |id: &shared_consensus::mempool::TxId| known.contains(&TxId::new_with_tx(id.clone()));
+        let tx_known = |id: &TxId| known.contains(&id);
         let mut fx = self.state.on_slot(slot, &tx_known);
         fx.push(LeiosEffect::EmitTelemetry(
             LeiosTelemetryEvent::LeiosElectionInfo {
@@ -238,9 +237,7 @@ impl LeiosConsensus {
             }
             NetworkEvent::LeiosBlockReceived { point, block } => {
                 let manifest = decode_overflow_eb(block);
-                (true, self.state.on_eb_received(point.clone(),
-                    manifest.map(TxId::vec_to_consensus_txid)
-                ))
+                (true, self.state.on_eb_received(point.clone(), manifest))
             }
             NetworkEvent::LeiosVotesReceived { votes, .. } => {
                 // Inline votes: feed straight into aggregation (the mocked
@@ -271,9 +268,7 @@ impl LeiosConsensus {
     /// peer offers fire), and marks the EB validated immediately —
     /// the producer trusts its own work.
     pub async fn register_self_produced_eb(&mut self, point: Point, eb_data: &[u8]) {
-        let manifest = decode_overflow_eb(eb_data).map(
-            |x| x.iter().map(|tx| tx.get_con_tx_id().clone()).collect()
-        );
+        let manifest = decode_overflow_eb(eb_data);
         let fx = self.state.on_eb_received(point.clone(), manifest);
         self.dispatch(fx).await;
         self.state.on_validated_eb(point);
@@ -350,7 +345,7 @@ impl LeiosConsensus {
                         .commands
                         .send(NetworkCommand::RecordLeiosEbManifest {
                             point,
-                            tx_hashes: TxId::vec_from_consensus_txid(tx_hashes)
+                            tx_hashes
                         })
                         .await;
                 }
@@ -882,7 +877,8 @@ mod tests {
     // -- Bitmap construction tests ------------------------------------------
 
     use net_core::protocols::leios_fetch::bitmap as bitmap_helpers;
-    use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId};
+    use net_core::protocols::txsubmission::{PendingTx};
+    use shared_consensus::mempool::{TxBody, TxId};
 
     /// Build the manifest bytes that the producer would emit for a given
     /// list of 32-byte tx hashes at `slot`. Returns the same CBOR shape as
@@ -959,9 +955,9 @@ mod tests {
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
         // Three txs in the EB; we already have #0 and #2 in the mempool.
-        let h0 = TxId::new_with_array_ref(&[0xA0u8; 32]);
-        let h1 = TxId::new_with_array_ref(&[0xA1u8; 32]);
-        let h2 = TxId::new_with_array_ref(&[0xA2u8; 32]);
+        let h0 = TxId::new_with_array([0xA0u8; 32]);
+        let h1 = TxId::new_with_array([0xA1u8; 32]);
+        let h2 = TxId::new_with_array([0xA2u8; 32]);
         push_tx_with_id(&mempool, h0.clone());
         push_tx_with_id(&mempool, h2.clone());
 
@@ -1032,8 +1028,8 @@ mod tests {
         let mempool = crate::mempool::new_mempool(1000);
         let mut leios = test_leios_with_mempool(tx, validator, mempool.clone());
 
-        let h0 = TxId::new_with_array_ref(&[0xB0u8; 32]);
-        let h1 = TxId::new_with_array_ref(&[0xB1u8; 32]);
+        let h0 = TxId::new_with_array([0xB0u8; 32]);
+        let h1 = TxId::new_with_array([0xB1u8; 32]);
         push_tx_with_id(&mempool, h0.clone());
         push_tx_with_id(&mempool, h1.clone());
 

@@ -8,9 +8,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tokio::sync::watch;
 
-use net_core::protocols::txsubmission::{PendingTx, TxId};
+use net_core::protocols::txsubmission::{PendingTx};
 use net_core::types::{BlockBody, Point, WrappedHeader};
-use shared_consensus::mempool::EbKey;
+use shared_consensus::mempool::{EbKey, TxId};
 
 use crate::config::{DynamicConfig, ProductionConfig};
 
@@ -365,7 +365,7 @@ pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
         let mut h = [0u8; 32];
         h.copy_from_slice(bytes);
         let _size = dec.u32().ok()?; // tx size — unused
-        Some(TxId::new_with_array_ref(&h))
+        Some(TxId::new_with_array(h))
     }
     let mut dec = minicbor::Decoder::new(blob);
     let entries = dec.map().ok()?;
@@ -399,7 +399,7 @@ pub fn encode_overflow_eb(manifest: &[TxId]) -> Vec<u8> {
     let mut enc = minicbor::Encoder::new(&mut data);
     let _ = enc.map(manifest.len() as u64);
     for h in manifest {
-        let _ = enc.bytes(h.get_con_tx_id().get_bytes()).and_then(|e| e.u32(0));
+        let _ = enc.bytes(h.get_bytes()).and_then(|e| e.u32(0));
     }
     data
 }
@@ -416,7 +416,8 @@ pub fn blake2b_256(bytes: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId};
+    use net_core::protocols::txsubmission::PendingTx;
+    use shared_consensus::mempool::{TxBody, TxId};
 
     fn base_config() -> ProductionConfig {
         ProductionConfig {
@@ -681,7 +682,7 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_is_deterministic() {
-        let manifest = vec![TxId::new_with_array_ref(&[0x10u8; 32]), TxId::new_with_array_ref(&[0x20u8; 32])];
+        let manifest = vec![TxId::new_with_array([0x10u8; 32]), TxId::new_with_array([0x20u8; 32])];
         let a = encode_overflow_eb(&manifest);
         let b = encode_overflow_eb(&manifest);
         assert_eq!(a, b);
@@ -690,7 +691,7 @@ mod tests {
 
     #[test]
     fn decode_overflow_eb_round_trip() {
-        let manifest = vec![TxId::new_with_array_ref(&[0x10u8; 32]), TxId::new_with_array_ref(&[0x20u8; 32])];
+        let manifest = vec![TxId::new_with_array([0x10u8; 32]), TxId::new_with_array([0x20u8; 32])];
         let data = encode_overflow_eb(&manifest);
         let hashes = decode_overflow_eb(&data).expect("decode");
         assert_eq!(hashes, manifest);
@@ -704,7 +705,7 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_layout() {
-        let manifest = vec![TxId::new_with_array_ref(&[0xAAu8; 32]), TxId::new_with_array_ref(&[0xBBu8; 32])];
+        let manifest = vec![TxId::new_with_array([0xAAu8; 32]), TxId::new_with_array([0xBBu8; 32])];
         let data = encode_overflow_eb(&manifest);
         // Decode the manifest map: { hash => size }, hashes in order.
         let mut dec = minicbor::Decoder::new(&data);

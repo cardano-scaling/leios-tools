@@ -813,9 +813,11 @@ mod tests {
     use crate::protocols::keepalive::{KeepAlive, Message as KaMsg};
     use crate::protocols::leios_fetch::{self, LeiosFetch, Message as LfMsg};
     use crate::protocols::leios_notify::{self, LeiosNotify, Message as LnMsg};
-    use crate::protocols::txsubmission::{self as ts, PendingTx, TxBody, TxId};
+    use crate::protocols::txsubmission::{self as ts, PendingTx};
     use crate::protocols::Runner as ProtocolRunner;
     use crate::types::{Point, Tip, WrappedHeader};
+
+    use shared_consensus::mempool::{TxBody, TxId};
 
     /// Minimal fake server: serves ChainSync and KeepAlive over MemBearer.
     /// Generates `block_count` blocks then holds at tip.

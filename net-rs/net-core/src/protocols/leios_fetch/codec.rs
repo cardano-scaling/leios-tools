@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
-use crate::protocols::txsubmission::TxBody;
+use shared_consensus::mempool::TxBody;
 use super::{Message, MAX_BITMAP_ENTRIES, MAX_BLOCK_SIZE, MAX_TRANSACTIONS, MAX_TRANSACTION_SIZE};
 use crate::types::Point;
 

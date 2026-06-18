@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use crate::mux::MuxStats;
 use crate::protocols::peersharing::PeerAddress;
-use crate::protocols::txsubmission::{PendingTx, TxBody};
+use crate::protocols::txsubmission::PendingTx;
+use shared_consensus::mempool::TxBody;
 use crate::types::{BlockBody, Point, Tip, Vote, WrappedHeader};
 
 // ---------------------------------------------------------------------------

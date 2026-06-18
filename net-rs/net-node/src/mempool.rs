@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 use net_core::peer::PeerId;
-use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId};
-use shared_consensus::mempool::{EbKey, MempoolState};
+use net_core::protocols::txsubmission::PendingTx;
+use shared_consensus::mempool::{EbKey, MempoolState, TxBody, TxId};
 
 use crate::config::{DynamicConfig, TxConfig};
 
@@ -35,8 +35,8 @@ fn to_con_pid(id: PeerId) -> shared_consensus::peer::PeerId {
 
 fn from_con_tx(tx: shared_consensus::mempool::MempoolTx) -> PendingTx {
     PendingTx {
-        tx_id: TxId::new_with_tx(tx.tx_id),
-        body: TxBody::new_with_txbody(tx.body),
+        tx_id: tx.tx_id,
+        body: tx.body,
         size: tx.size,
     }
 }
@@ -142,7 +142,7 @@ impl Mempool {
         use shared_consensus::mempool::{MempoolEffect, TxRejectReason};
         let effects = self
             .state
-            .admit_validated(tx.tx_id.get_con_tx_id().clone(), tx.body.get_con_tx_body().clone(), tx.size);
+            .admit_validated(tx.tx_id.clone(), tx.body.clone(), tx.size);
         let admitted = !effects.iter().any(|e| {
             matches!(
                 e,
@@ -184,7 +184,7 @@ impl Mempool {
     }
 
     pub fn get_body_by_id(&self, id: &TxId) -> Option<TxBody> {
-        self.state.get_body_by_id(id.get_con_tx_id()).map(TxBody::new_with_txbody)
+        self.state.get_body_by_id(id)
     }
 
     /// Run the CIP-0164 overflow rule.  Returns the body path the next
@@ -214,7 +214,7 @@ impl Mempool {
         );
         BodyPath {
             inline: con.inline.into_iter().map(from_con_tx).collect(),
-            manifest_hashes: con.manifest.iter().map(|h| TxId::new_with_tx(h.clone())).collect(),
+            manifest_hashes: con.manifest,
         }
     }
 
@@ -244,7 +244,7 @@ impl Mempool {
     /// BlockTxs, not TxSubmission.
     pub fn merge_eb_body(&mut self, body: TxBody) {
         let tx = tx_from_received_bytes(body);
-        self.state.merge_eb_body(tx.tx_id.get_con_tx_id(), tx.body.get_con_tx_body(), tx.size);
+        self.state.merge_eb_body(&tx.tx_id, tx.body, tx.size);
     }
 
     /// Mark a tx as advertised to the given peer; returns `true` iff
@@ -253,7 +253,7 @@ impl Mempool {
     /// O(log N) per peer instead of rescanning the mempool.
     pub fn mark_announced_to_peer(&mut self, peer_id: PeerId, tx_id: &TxId) -> bool {
         self.state
-            .mark_announced_to_peer(to_con_pid(peer_id), tx_id.get_con_tx_id())
+            .mark_announced_to_peer(to_con_pid(peer_id), tx_id)
     }
 
     /// Snapshot of every locally available tx id — free pool plus
@@ -263,7 +263,7 @@ impl Mempool {
         let txs_list = self.state.txs.iter().map(|t| &t.tx_id);
         let pinned_list = self.state.eb_pinned.keys();
 
-        HashSet::from_iter(txs_list.chain(pinned_list).map(|x| TxId::new_with_tx(x.clone())))
+        HashSet::from_iter(txs_list.chain(pinned_list).cloned())
     }
 }
 
@@ -435,7 +435,7 @@ mod tests {
         let tx = make_fake_tx(&mut rng, 500);
         assert_eq!(tx.body.len(), 500);
         assert_eq!(tx.size, 500);
-        assert_eq!(tx.tx_id.get_con_tx_id().get_bytes().len(), 32);
+        assert_eq!(tx.tx_id.get_bytes().len(), 32);
     }
 
     #[test]
@@ -490,8 +490,8 @@ mod tests {
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0xCC; 32])), Some(TxBody::new_with_vec(vec![0xDE, 0xAD])));
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array_ref(&[0x99; 32])), None);
+        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0xCC; 32])), Some(TxBody::new_with_vec(vec![0xDE, 0xAD])));
+        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0x99; 32])), None);
     }
 
     #[tokio::test]

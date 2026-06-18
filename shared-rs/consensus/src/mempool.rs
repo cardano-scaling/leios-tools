@@ -66,7 +66,7 @@ impl TxId {
     pub fn new_with_array(bytes: [u8; 32]) -> Self {
         Self(Arc::new(bytes))
     }
-
+    
     /// Return a short hex representation of the first 4 bytes.
     pub fn hex_short(&self) -> String {
         self.0
@@ -104,6 +104,10 @@ impl TxBody {
         let mut out = [0u8; 32];
         out.copy_from_slice(result.as_bytes());
         out
+    }
+
+    pub fn get_blake2b_txid(&self) -> TxId {
+        TxId::new_with_array(self.get_blake2b_256())
     }
 }
 

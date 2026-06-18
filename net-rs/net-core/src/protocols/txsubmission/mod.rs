@@ -9,6 +9,7 @@ pub mod codec;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use shared_consensus::mempool::{TxBody, TxId};
 
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 
@@ -41,10 +42,7 @@ pub const MAX_TX_ID_SIZE: usize = 128;
 
 pub const TX_ID_SIZE: usize = 32;
 
-/// Opaque transaction ID (fixed 32-byte hash).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TxId(shared_consensus::mempool::TxId);
-
+/*
 impl TxId {
     pub fn vec_from_consensus_txid(tx_vec: Vec<shared_consensus::mempool::TxId>) -> Vec<Self> {
         tx_vec.into_iter().map(|tx| Self(tx)).collect()
@@ -75,11 +73,8 @@ impl TxId {
         &self.0
     }
 }
-
-/// Opaque transaction body stored as raw CBOR bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxBody(shared_consensus::mempool::TxBody);
-
+ */
+/*
 impl TxBody {
     pub fn len(&self) -> usize {
         self.0.len()
@@ -105,6 +100,8 @@ impl TxBody {
         self.0.get_blake2b_256()
     }
 }
+
+ */
 
 /// A transaction ID paired with its serialized size (for flow control).
 #[derive(Debug, Clone)]
@@ -634,7 +631,7 @@ mod tests {
             tx_sender
                 .send(PendingTx {
                     tx_id: tx1_id,
-                    body: TxBody(tx1.body.0.clone()),
+                    body: tx1.body.clone(),
                     size: 1500,
                 })
                 .await
@@ -642,7 +639,7 @@ mod tests {
             tx_sender
                 .send(PendingTx {
                     tx_id: tx2_id,
-                    body: TxBody(tx2.body.0.clone()),
+                    body: tx2.body.clone(),
                     size: 2000,
                 })
                 .await

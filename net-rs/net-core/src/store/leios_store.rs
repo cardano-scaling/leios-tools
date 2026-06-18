@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 use crate::protocols::leios_fetch::bitmap;
-use crate::protocols::txsubmission::{TxBody, TxId};
+use shared_consensus::mempool::{TxBody, TxId};
 use crate::types::{Point, Vote};
 
 /// Resolves a transaction body by its 32-byte hash. The Leios store calls
