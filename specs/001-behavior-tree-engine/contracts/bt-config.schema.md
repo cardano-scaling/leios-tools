@@ -30,20 +30,25 @@ The id is the table key; there is no `id =` field, and duplicate ids are impossi
 
 | `type`               | Fields | Returns |
 |----------------------|--------|---------|
-| `Selector`           | `children = [id, …]` | first child Success → Success |
-| `Sequence`           | `children = [id, …]` | all Success → Success; first Failure → Failure |
-| `Parallel`           | `children = [id, …]`, `success_policy = "All" \| "Any"` | per policy |
-| `Condition`          | `expression = "<expr>"` | Success/Failure |
+| `Selector`           | `children = [id, …]` | ordered OR: first child Success → Success; all fail → Failure |
+| `Sequence`           | `children = [id, …]` | ordered AND: all Success → Success; first Failure → Failure |
+| `Join`               | `children = [id, …]` | concurrent AND, fail-fast: succeed iff all succeed; first failure halts the rest and fails (no `success_policy` field) |
+| `Condition`          | `expression = "<expr>"` | immediate Success/Failure (never Running) |
 | `Action` leaves      | `action`-specific fields (see below) | Success/Failure/Running |
+
+Evaluation is **reactive** (each tick re-evaluates a composite from its first child, so a
+`Condition` precondition can abort a running subtree). The full grammar and operational
+semantics are in
+[`../design/bt-grammar-and-semantics.md`](../design/bt-grammar-and-semantics.md).
 
 ### MVP action leaves
 
-Leaf actions are **directive contributors** (Model B): when active they write fields of
-the slot's `Directives`; they make no consensus calls. See
+Leaf actions are **control-signal contributors**: when active they write fields of
+the slot's `ControlSignal`; they make no consensus calls. See
 [`leaf-action.contract.md`](./leaf-action.contract.md). Per the gating house rule, a leaf
 returns `Running` while active; flow gating lives in `Condition` behaviours.
 
-| Action `type`        | Fields | Contributes to `Directives` |
+| Action `type`        | Fields | Contributes to `ControlSignal` |
 |----------------------|--------|-----------------------------|
 | `HonestAction`   | `strategy` (informational) | nothing (leaves default = honest); returns `Success` |
 | `Action`    | `spec = { kind = "...", … }` (an `ActionSpec`) | the re-homed leaf's domain fields (e.g. `praos.production`, `praos.outbound`, `leios.vote`, `mempool.tx_filter`) |
@@ -51,7 +56,7 @@ returns `Running` while active; flow gating lives in `Condition` behaviours.
 `Action.spec` is a verbatim `ActionSpec` table used as the action-kind
 discriminant + params — `kind = "rb-header-equivocator"`, `"lazy-voter"`, `"t22"`,
 `"deep-reorg"`, or `"drop-inbound-peers"`. (Composition is expressed by the BT structure
-itself — `Parallel`/`Sequence` — not a `composite` leaf.) Future action types
+itself — `Join`/`Sequence` — not a `composite` leaf.) Future action types
 (`NetworkShapeAction`, `TxGeneratorAction`) are reserved; the MVP maps the example's
 partition/flood leaves onto existing behaviours or stubs them with a logged no-op until
 the real catalogue lands.
@@ -85,29 +90,19 @@ is a keyed table (no arrays to special-case except `children`/`includes`, which 
 defined in one place and replace-on-conflict). There are **no per-section resolution
 rules**.
 
-The only genuinely singular thing is the **run**: a strategy has exactly one `seed` and
-one `root` entry behaviour. Those live in `[run]`, which deep-merges like everything else; we
-simply **validate** that the resolved config has exactly one `[run]` carrying a `seed` and
-a `root`, and flag a fragment that sets `[run]` (a lint — the root owns the run). That's a
-validation invariant ("a run has one seed and one entry"), not a special merge rule. A
-root-owned `seed` also guarantees every included module shares one deterministic seed.
+The one singleton is `[run]` (`name`/`seed`/`root`): it deep-merges like everything, and
+validation requires exactly one resolved `[run]` (a fragment setting `[run]` is a lint —
+the root owns it). One root-owned `seed` → every module shares one deterministic seed.
 
 ### Env ownership tiers
 
-To keep "where a parameter is defined" meaningful rather than arbitrary:
+- **Top-level `[env]`** (or an explicitly-included `shared-env.toml`) — cross-cutting
+  params, referenced `env.<name>`.
+- **`[env.<owner>]`** — module-owned params, referenced `env.<owner>.<name>` (owner word
+  matches `[metadata.<owner>]` / `[behaviours.<owner>...]`). Promote to shared when a second
+  consumer appears.
 
-- **Top-level `[env]`** (or a dedicated `shared-env.toml` the root explicitly includes) —
-  genuinely cross-cutting params, referenced as `env.<name>`.
-- **`[env.<owner>]`** — params a single module owns, referenced as `env.<owner>.<name>`.
-  Namespaced, so they neither clutter nor collide; the owner word matches the module's
-  `[metadata.<owner>]` / `[behaviours.<owner>...]`.
-- **Promotion is the explicit refactor**: when a second consumer appears, move the
-  declaration from `[env.<owner>]` up to shared and update the (greppable) references.
-- Keep shared env an **explicit** include (no implicit always-loaded file) so resolution
-  stays transparent and reproducible for the fuzzer.
-
-A referenced-but-undefined `env.X` is a **hard load-time error** — the backstop that makes
-any organization choice safe.
+A referenced-but-undefined `env.X` is a **hard load-time error**. (Rationale: research D13.)
 
 ### Parameter overlay & precedence
 
@@ -178,10 +173,9 @@ children = ["cond_slot_reached", "exploit"]
 type = "Condition"
 expression = "cardano.current_slot >= env.trigger_slot"
 
-# Run partition + equivocation concurrently while active.
+# Run partition + equivocation concurrently while active (Join = all-succeed, fail-fast).
 [behaviours.exploit]
-type = "Parallel"
-success_policy = "All"
+type = "Join"
 children = ["network_shape", "equivocate"]   # `network_shape` comes from the module
 
 [behaviours.equivocate]

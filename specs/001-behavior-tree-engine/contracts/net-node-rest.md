@@ -13,7 +13,7 @@ its `env`, reachable by the `net-cluster` coordinator. Modeled on
 existing project conventions (the net-cluster server is unauthenticated on loopback).
 
 The MVP control plane is **static config only** (`--config` / `--behaviour-tree`); the
-legacy stdin hot-swap path is retired (Model B). The endpoints below land in the
+legacy stdin hot-swap path is retired. The endpoints below land in the
 Docker/coordination story.
 
 ## Endpoints

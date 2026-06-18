@@ -6,49 +6,25 @@
 
 ## Summary
 
-Add a Behavior Tree (BT) engine that is the **single abstraction** for adversarial
-node behaviour. Trees are described in TOML, ticked once per slot advance from the
-node's existing `SlotClock`, and return `Success`/`Failure`/`Running`. Composite behaviours
-(`Selector`, `Sequence`, `Parallel`) and `Condition` behaviours gate leaf `Action` behaviours.
+A Behavior Tree (BT) engine is the single abstraction for adversarial node behaviour.
+Trees are TOML, ticked once per slot from the node's `SlotClock`, returning
+`Success`/`Failure`/`Running`. Composite behaviours (`Sequence`, `Selector`, `Join`) and
+`Condition`s gate leaf `Action`s.
 
-**Architecture decision (Model B — see
-[`design/unified-tick-model.md`](./design/unified-tick-model.md))**: we replace the
-existing `Behaviour` hook trait with a BT that produces a typed `Directives` value once
-per slot. The decisive analysis is the separation of **decision** from **actuation**:
+The BT tick is the only place decisions are made and emits a typed `ControlSignal`;
+consensus actuators read it (the protocol is reactive, so some actuation is event-time, but
+decision-free). This deletes the old `Behaviour` hook trait, its outcome types,
+`CompositeBehaviour`, and `invoke_hook`. The `ActionSpec` **action registry** is kept as the
+leaf lookup; the shipped attack mechanics are re-homed as control-signal contributors.
+Determinism preserved (sans-IO core, seeded). Architecture:
+[`design/unified-tick-model.md`](./design/unified-tick-model.md); rationale: research D2.
 
-- **Decision / control flow happens only in the slot tick (the BT).** There is exactly
-  one place anything is decided.
-- **Actuation is mechanical.** Cardano consensus is reactive — EBs, votes, txs, and
-  blocks arrive asynchronously *within* a slot — so some effects must be applied at
-  event-time interception points (e.g. per-peer block send, per-EB vote). Those points
-  remain, but they contain **no decisions**: each does a pure read of the `Directives`
-  the last tick produced and applies it.
-
-This deletes the hook-return flow control (`BehaviourOutcome`/`DecisionOutcome`),
-`CompositeBehaviour` short-circuiting, the 15-hook `Behaviour` trait, and the
-`invoke_hook` plumbing — the parts that made the old model hard to reason about. The BT
-structure becomes the sole locus of control; `Directives` is the typed seam between
-"decided" and "applied."
-
-**What we keep**: the **registry** (`ActionSpec`-style tagged enum + `build(kind,
-params, seed)`) is retained as the **leaf-action lookup**, so a BT config names a leaf
-by `kind` and we know how to construct its directive contributor. The shipped attack
-mechanics (equivocation variant routing, reorg, inbound reset, vote abstention, T22
-filtering) are re-homed as directive contributors, not redesigned. Determinism is
-preserved (seed threaded as today; sans-IO core).
-
-Scope is set by the decisions confirmed with the user: engine core lives in the shared
-`consensus` crate (sim-rs-ready, not sim-rs-integrated); the MVP ships an honest leaf
-plus 1–2 real demo actions re-expressed as directive contributors; condition
-expressions are limited to comparisons, boolean combinators, and simple membership.
-The MVP control plane is **static config only** — no REST (we are not in Docker yet),
-and the legacy **stdin hot-swap** behaviour-control path is retired.
-
-This feature also performs the **config split** the user requested: the per-node
-`[behaviour]` / `[behaviour_selection]` blocks are extracted out of the
-`net-cluster/configs/*.toml` topology files into standalone BT configs under
-`net-cluster/behaviours/`, referenced by name. Topology files keep only topology +
-initial network-shaping characteristics.
+Scope (confirmed): engine core in `shared-rs/consensus` (sim-rs-ready, not integrated);
+MVP = honest leaf + 1–2 real demo actions; conditions limited to comparisons/boolean/
+membership; **static config only** for the MVP (no REST yet; stdin hot-swap retired). The
+feature also splits net-cluster topology configs from BT configs under
+`net-cluster/behaviours/`. Grammar & semantics: `design/bt-grammar-and-semantics.md`;
+config format & composition: `contracts/bt-config.schema.md` + research D11–D13.
 
 ## Technical Context
 
@@ -56,7 +32,7 @@ initial network-shaping characteristics.
 
 **Primary Dependencies**: `serde` + `toml` (config), `figment` (layered load, already
 used by net-cluster/net-node), `blake2b_simd` (deterministic seeding, already a crate
-convention), and a cheap shared snapshot for the published `Directives` (e.g.
+convention), and a cheap shared snapshot for the published `ControlSignal` (e.g.
 `arc-swap`, or reuse the existing `tokio::sync::watch` pattern). No `axum`/REST in the
 MVP. No new heavyweight or C-binding dependencies. A general expression-DSL crate is
 explicitly **not** adopted (minimal condition grammar — see research).
@@ -106,12 +82,12 @@ Constitution v1.0.0 principles applied to this plan:
   refs, cyclic includes, mistyped env refs), slot-skip and RUNNING-across-ticks edge
   cases, and reproduced honest→adversarial transitions.
 - **IV. Idiomatic Rust**: PASS. Retains the `ActionSpec` registry idiom for leaf
-  lookup; replaces dynamic-dispatch hooks with a plain `Directives` value (simpler to
+  lookup; replaces dynamic-dispatch hooks with a plain `ControlSignal` value (simpler to
   reason about); type-driven behaviour model; `Result` for validation; documented `unsafe` =
   none expected. Follows net-rs `CLAUDE.md` "no panics / simplicity over concision". The
-  Model B refactor **removes** code (the hook trait, outcome types, `CompositeBehaviour`,
+  refactor **removes** code (the hook trait, outcome types, `CompositeBehaviour`,
   `invoke_hook`); each removal is guarded by first porting its behaviour's existing tests
-  to the new directive contributor (TDD), so no coverage is lost.
+  to the new control-signal contributor (TDD), so no coverage is lost.
 - **V. Automated Quality Gates**: PASS. `cargo fmt --check` + `cargo clippy` (no
   warnings) + `cargo test` gate every commit, per affected workspace (`shared-rs`,
   `net-rs`). Note: `shared-rs` writes from a net-rs worktree need
@@ -132,10 +108,11 @@ specs/001-behavior-tree-engine/
 ├── quickstart.md        # Phase 1 output
 ├── contracts/           # Phase 1 output
 │   ├── bt-config.schema.md      # BT TOML config contract
-│   ├── leaf-action.contract.md  # Leaf-action (directive contributor) contract
+│   ├── leaf-action.contract.md  # Leaf-action (control-signal contributor) contract
 │   └── net-node-rest.md         # net-node env-control REST contract (deferred / post-MVP)
 ├── design/
-│   └── unified-tick-model.md    # Model B decision record (hook catalogue + tables)
+│   ├── unified-tick-model.md    # BT architecture (control loop, ControlSignal seam, actuators)
+│   └── bt-grammar-and-semantics.md  # BT grammar (EBNF) + operational semantics (tick/halt)
 └── checklists/
     └── requirements.md  # Spec quality checklist (already created)
 ```
@@ -147,28 +124,28 @@ shared-rs/consensus/src/behaviour/
 ├── mod.rs                 # REMOVE old Behaviour hook trait + BehaviourOutcome/DecisionOutcome + CompositeBehaviour
 ├── registry.rs            # KEEP as the ACTION REGISTRY (BehaviourSpec -> ActionSpec): kind -> build(kind, params, seed) -> LeafAction
 ├── tree/                  # NEW: behaviour-tree engine (sans-IO, deterministic)
-│   ├── mod.rs             # BehaviourTree, tick() -> (Status, Directives), Status
-│   ├── behaviour.rs       # Behaviour { id, kind }; BehaviourKind: Selector | Sequence | Parallel | Condition | Action
+│   ├── mod.rs             # BehaviourTree, tick() -> (Status, ControlSignal), Status
+│   ├── behaviour.rs       # Behaviour { id, kind }; BehaviourKind: Selector | Sequence | Join | Condition | Action
 │   ├── config.rs          # BtConfig: [run] (name/seed/root), [env]/[env.<owner>], [behaviours.<id>], includes; uniform deep-merge
 │   ├── env.rs             # DynamicEnv + EnvHandle (Arc<RwLock<DynamicEnv>>); NativeChainState; TickCtx
 │   ├── condition.rs       # minimal expression: comparisons, and/or/not, membership
-│   ├── directives.rs      # Directives { praos, leios, mempool } (the seam)
-│   └── actions.rs         # leaf actions as directive contributors (honest + re-homed catalogue)
-└── actions/               # the action catalogue (formerly behaviours/): re-homed as directive contributors
+│   ├── control.rs      # ControlSignal { praos, leios, mempool } (the seam)
+│   └── actions.rs         # leaf actions as control-signal contributors (honest + re-homed catalogue)
+└── actions/               # the action catalogue (formerly behaviours/): re-homed as control-signal contributors
 
 shared-rs/consensus/src/
-├── leios.rs               # vote/EB paths read Directives policy fields (no decide_vote/on_* hooks)
-├── praos.rs               # block/tip paths read Directives (no on_block_received/on_tip_advanced hooks)
-└── mempool.rs             # tx paths read Directives tx_filter (no on_tx_* hooks)
+├── leios.rs               # vote/EB paths read ControlSignal policy fields (no decide_vote/on_* hooks)
+├── praos.rs               # block/tip paths read ControlSignal (no on_block_received/on_tip_advanced hooks)
+└── mempool.rs             # tx paths read ControlSignal tx_filter (no on_tx_* hooks)
 
 net-rs/net-node/src/
-├── main.rs                # slot arm: build NativeChainState, tick BT, apply Directives + publish
+├── main.rs                # slot arm: build NativeChainState, tick BT, apply ControlSignal + publish
 ├── config.rs              # add behaviour_tree config path; REMOVE stdin behaviour/behaviour_reset
-├── bt_runtime.rs          # NEW: holds EnvHandle + BehaviourTree + published Directives snapshot
-└── production.rs          # producer reads Directives.production/body_path (no rb_production_strategy hook)
+├── bt_runtime.rs          # NEW: holds EnvHandle + BehaviourTree + published ControlSignal snapshot
+└── production.rs          # producer reads ControlSignal.production/body_path (no rb_production_strategy hook)
 
 net-rs/net-core/src/peer/
-└── server_handlers.rs     # per-peer send reads published Directives.outbound (no transform_outbound hook)
+└── server_handlers.rs     # per-peer send reads published ControlSignal.outbound (no transform_outbound hook)
 
 net-rs/net-cluster/
 ├── behaviours/            # NEW: extracted BT configs (peer dir to configs/)
@@ -183,24 +160,27 @@ net-rs/net-cluster/
 `behaviour/` subsystem (it reuses the `ActionSpec` registry for leaf lookup and the
 crate's determinism rules), and **delete** the `Behaviour` hook trait, its outcome
 types, and `CompositeBehaviour`. The consensus state machines (`leios`/`praos`/`mempool`)
-and the I/O actuators (`production.rs`, `server_handlers.rs`) read `Directives` instead
+and the I/O actuators (`production.rs`, `server_handlers.rs`) read `ControlSignal` instead
 of calling hooks. Engine core stays in `shared-rs/consensus` (sim-rs-ready, not coupled);
 consumers stay in `net-rs`. This honors the confirmed "shared crate, net-rs wired,
-sim-rs-ready" decision and Model B's "single decision path" goal.
+sim-rs-ready" decision and the single-decision-path goal.
 
 ## Design Approach (high level)
 
 1. **Engine core (`tree/`)** — pure data + `tick(&mut self, ctx: &TickCtx) ->
-   (Status, Directives)`. The tick is the *only* place decisions happen: it
+   (Status, ControlSignal)`. The tick is the *only* place decisions happen: it
    evaluates `Condition`s over env/state, resolves the active leaf set per composite
-   semantics, and accumulates each active leaf's contribution into one `Directives`
-   value. Composites carry `Running` memory across ticks. Validation
+   semantics, and accumulates each active leaf's contribution into one `ControlSignal`
+   value. Composites are **reactive** (re-evaluate from the first child each tick) with a
+   `halt`/abort relation; behaviour kinds are `Sequence` (ordered AND), `Selector` (ordered
+   OR), `Join` (concurrent AND, fail-fast), `Condition`, `Action` — full grammar + operational
+   semantics in `design/bt-grammar-and-semantics.md`. Validation
    (`BtConfig::validate`) rejects unknown behaviour types, dangling child/include refs,
    cycles, and mistyped env/state refs *before* activation. Seeded RNG from `[metadata]
    seed`.
-2. **Directives seam (`directives.rs`)** — a plain value the tick emits and the actuators
-   consume, **indexed by actuator and domain-grouped** (`Directives { praos, leios,
-   mempool }`): production strategy, outbound directive, reorg/drop, body-path (praos);
+2. **ControlSignal seam (`control.rs`)** — a plain value the tick emits and the actuators
+   consume, **indexed by actuator and domain-grouped** (`ControlSignal { praos, leios,
+   mempool }`): production strategy, outbound control signal, reorg/drop, body-path (praos);
    vote policy (leios); tx filter (mempool). This is the typed contract that replaces the
    deleted hook trait. Each sub-struct is owned by its actuator domain; a behaviour that
    reuses an existing capability never edits it. Conflicts between two active leaves on
@@ -218,25 +198,25 @@ sim-rs-ready" decision and Model B's "single decision path" goal.
    (std, not tokio — sans-IO). The tick reads it; a later REST surface writes it. For the
    MVP env is set at startup. `NativeChainState` is rebuilt each tick and passed by `&`
    (read-only, unguarded), per the user's note.
-5. **Leaf actions = directive contributors (one file each)** — each leaf, when active,
-   contributes to `Directives` (e.g. an equivocator leaf sets `praos.production =
+5. **Leaf actions = control-signal contributors (one file each)** — each leaf, when active,
+   contributes to `ControlSignal` (e.g. an equivocator leaf sets `praos.production =
    Equivocate{ways}` and `praos.outbound = EquivocateRouting{..}`). A behaviour owns its
    config struct (+ its own `Deserialize`), its `contribute()`, and its tests **in one
    file**; adding a behaviour touches no other behaviour. Leaves are looked up by `kind`
    via the retained registry (`build`). MVP leaves: an honest contributor (empty
-   directives) plus 1–2 re-homed real ones (e.g. `rb-header-equivocator`, `lazy-voter`).
+   control signal) plus 1–2 re-homed real ones (e.g. `rb-header-equivocator`, `lazy-voter`).
    **Gating house rule**: all flow gating lives in explicit `Condition` behaviours; a leaf
    returns `Running` while active and never branches its status on `env`/`state` (the
    honest fallback returns `Success`).
-6. **Actuators read Directives (no hooks)** — the net-node wrapper applies `Directives`
-   to the state machines once per slot (e.g. `leios.apply_directives(&d)` sets the vote
+6. **Actuators read ControlSignal (no hooks)** — the net-node wrapper applies `ControlSignal`
+   to the state machines once per slot (e.g. `leios.apply_control(&d)` sets the vote
    policy / tx filter fields) and **publishes** the snapshot (arc-swap / watch) for the
    per-peer send actuator in `server_handlers.rs`. Former hook sites in `leios`/`praos`/
    `mempool`/`production`/`server_handlers` become pure reads. `Behaviour`/`*Outcome`/
    `CompositeBehaviour`/`invoke_hook` are deleted.
 7. **Tick integration** — in `net-node/src/main.rs`, the existing
    `slot = slot_clock.tick()` arm builds `NativeChainState { current_slot: slot,
-   current_epoch, mempool_tx_count }`, ticks the BT, applies + publishes `Directives`.
+   current_epoch, mempool_tx_count }`, ticks the BT, applies + publishes `ControlSignal`.
    Slot skips produce exactly one tick for the advance (consistent with the existing
    loop).
 8. **Config split** — move each `[behaviour]`/`[behaviour_selection]` block out of the
@@ -248,9 +228,9 @@ sim-rs-ready" decision and Model B's "single decision path" goal.
    (mirroring `net-cluster/server.rs`) to read/replace the BT config and mutate env.
    Not in the MVP (no Docker yet).
 
-See `design/unified-tick-model.md` for the full decision record (hook catalogue,
-decision-vs-actuation split, per-behaviour mapping, Model A vs B), `research.md` for
-the surrounding decisions, and `data-model.md` / `contracts/` for the concrete types.
+See `design/unified-tick-model.md` for the architecture and
+`design/bt-grammar-and-semantics.md` for the grammar/semantics; `research.md` for the
+decisions and rationale; `data-model.md` / `contracts/` for the concrete types.
 
 ## Complexity Tracking
 

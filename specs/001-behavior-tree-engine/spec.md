@@ -170,10 +170,12 @@ single-file config.
 - **FR-002**: A tick MUST be driven by the node's own slot progression: when the node
   detects the chain has advanced to a new slot, exactly one tick MUST be delivered to
   the root for that advance.
-- **FR-003**: The system MUST support composite behaviour types: a Selector (succeeds when
-  any child succeeds, tries children in order), a Sequence (succeeds only when all
-  children succeed in order), and a Parallel (ticks multiple children with a
-  configurable success policy, e.g., "All").
+- **FR-003**: The system MUST support composite behaviour types: a Selector (ordered OR —
+  succeeds when any child succeeds, tries children in order), a Sequence (ordered AND —
+  succeeds only when all children succeed in order, fails on the first failure), and a Join
+  (concurrent AND — ticks all children each tick, succeeds iff all succeed, and fails fast:
+  the first child failure halts the rest). Evaluation is reactive (each tick re-evaluates a
+  composite from its first child). See `design/bt-grammar-and-semantics.md`.
 - **FR-004**: The system MUST support Condition behaviours that evaluate a boolean expression
   over available `env` parameters and node `state` and return SUCCESS or FAILURE.
 - **FR-005**: The system MUST support leaf Action behaviours ("behaviors") that are
@@ -249,7 +251,7 @@ single-file config.
 - **Behavior Tree**: The effective tree assembled from a root configuration plus any
   included sub-behaviors; rooted at a single behaviour; ticked as a unit.
 - **Behaviour**: A tree element with a type and an id. Composite behaviours (Selector, Sequence,
-  Parallel) reference children by id; Condition behaviours hold an expression; Action behaviours
+  Join) reference children by id; Condition behaviours hold an expression; Action behaviours
   reference a registered action type (from the action registry) and its parameters.
 - **Status**: The result of ticking a behaviour — SUCCESS, FAILURE, or RUNNING.
 - **Env (Dynamic Parameters)**: Named, externally mutable values (via config or REST)
@@ -287,36 +289,19 @@ single-file config.
 
 ## Assumptions
 
-- **Placement (confirmed)**: The engine core lives in a shared crate (under `shared-rs`)
-  and is wired into `net-rs` (`net-node` and `net-cluster`) in this feature. The API is
-  designed to be reusable by `sim-rs` later, but no `sim-rs` integration is delivered
-  here.
-- **MVP behavior catalog (confirmed)**: The MVP (US1) delivers the engine, the TOML
-  format, slot-driven ticking, the composite and condition behaviour types, and a small set of
-  functional leaf behaviors — an `HonestAction` plus one or two simple, real
-  adversarial actions (e.g., a basic transaction generator and/or a logging network-shape
-  action) — sufficient to demonstrate an honest-vs-adversarial switch end-to-end. The full
-  catalog of production-grade adversarial behaviors (real packet shaping, invalid-Plutus
-  flooding, etc.) is delivered incrementally in later work.
-- **Condition expression language (confirmed)**: Conditions support comparisons (`>=`,
-  `==`, etc.), boolean combinations (and/or/not) over `env`/`state` fields, and simple
-  membership checks (as in the example `peers.contains(...)`). A fuller general-purpose
-  expression DSL is explicitly out of scope for this feature.
-- **Architecture (confirmed — Model B)**: the behavior tree is the *single* abstraction
-  for adversarial behaviour. The existing `Behaviour` hook trait (and its
-  `BehaviourOutcome`/`DecisionOutcome`/`CompositeBehaviour` flow control) is **replaced**
-  by a BT whose slot tick produces a typed `Directives` value; mechanical actuators read
-  it. The `ActionSpec` registry is **retained** as the leaf-action lookup. See
-  `design/unified-tick-model.md` for the full decision record.
-- **Control plane (confirmed)**: the MVP control plane is **static config only**
-  (`--config` / `--behaviour-tree`). The REST control surface (US2/US3) and runtime env
-  mutation are **deferred** to the Docker/coordination story — we are not running in
-  containers yet, so the legacy stdin hot-swap path is retired rather than ported.
-- Authorization for the eventual REST interface follows existing project conventions
-  (loopback, unauthenticated like the net-cluster server); this tooling is for
-  authorized adversarial testing only.
-- The slot/tick source is the node's existing slot clock; the engine consumes slot
-  advances rather than maintaining its own timer.
+- Engine core lives in a shared crate (`shared-rs`), wired into `net-rs`; designed for later
+  `sim-rs` reuse, but `sim-rs` integration is out of scope here.
+- MVP delivers the engine, the TOML format, slot-driven ticking, the composite/condition
+  behaviour types, and a small set of functional leaf actions (honest + 1–2 real); the full
+  adversarial catalogue follows incrementally.
+- Conditions support comparisons, boolean combinations, and simple membership over
+  `env`/`state`; no general expression DSL.
+- MVP control plane is **static config only** (`--config` / `--behaviour-tree`); the REST
+  surface (US2/US3) and runtime env mutation are deferred to the Docker/coordination story.
+- The slot/tick source is the node's existing slot clock.
+
+(Design decisions behind these — the `ControlSignal` seam, retiring stdin control —
+are recorded in `plan.md`, `design/`, and `research.md`, not here.)
 
 ## Dependencies
 

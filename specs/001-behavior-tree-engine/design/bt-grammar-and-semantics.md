@@ -1,0 +1,249 @@
+# Behaviour Tree — Grammar & Semantics
+
+**Status**: Draft for review (2026-06-17). Authoritative definition of how our behaviour
+trees evaluate. Encoding-independent (the concrete on-disk form is TOML — see
+[`../contracts/bt-config.schema.md`](../contracts/bt-config.schema.md)); this document
+describes the *abstract* grammar and the *operational semantics*.
+
+**Audience**: engineers and reviewers who want the evaluation model stated precisely.
+
+> **Model** (rationale + rejected alternatives: research D4, D16): `Sequence` = ordered
+> AND, `Selector` = ordered OR, `Join` = concurrent AND (fail-fast). Evaluation is
+> **reactive** — every tick re-evaluates a composite from its first child, so a `Condition`
+> precondition is re-checked each tick and can `halt` a running subtree.
+
+## 1. Status
+
+Every behaviour, when *ticked*, returns exactly one `Status`:
+
+| Status    | Meaning |
+|-----------|---------|
+| `Success` | the behaviour achieved its goal this tick (or its condition held). |
+| `Failure` | the behaviour could not achieve its goal (or its condition did not hold). |
+| `Running` | the behaviour has not finished; it should be ticked again next tick. |
+
+A tick is delivered to the **root** once per slot advance (the slot-driven tick). The
+context for a tick is a read-only snapshot of the world — the node's chain state and the
+(guarded) env — written `Γ` below.
+
+## 2. Behaviour kinds (informal)
+
+Two families: **composites** (inner behaviours, ≥1 child) and **leaves** (no children).
+
+| Kind | Family | One-line semantics |
+|------|--------|--------------------|
+| `Sequence` | composite | ordered **AND** — succeed iff *all* children succeed; fail on the first failure. |
+| `Selector` | composite | ordered **OR** / fallback — succeed on the first child that succeeds; fail iff *all* fail. |
+| `Join` | composite | concurrent **AND** — tick *all* children each tick; succeed iff all succeed; **fail-fast**: the first child failure halts the rest and fails. Policy is fixed (no `success_policy` field). |
+| `Condition` | leaf | evaluate a predicate over `Γ`; return `Success` or `Failure` **immediately** (never `Running`). Used as a precondition inside a `Sequence`. |
+| `Action` | leaf | act on the world (contribute to `ControlSignal`); may return `Success`, `Failure`, or `Running`. |
+
+> A `Condition` placed first in a `Sequence` is a **precondition**: its `Failure`
+> short-circuits the `Sequence` before the later children run.
+
+## 3. Abstract grammar (EBNF)
+
+```ebnf
+behaviour  ::= sequence | selector | join | condition | action
+
+sequence   ::= "Sequence" "[" behaviour { "," behaviour } "]"
+selector   ::= "Selector" "[" behaviour { "," behaviour } "]"
+join       ::= "Join" "[" behaviour { "," behaviour } "]"
+
+condition  ::= "Condition" "(" predicate ")"
+action     ::= "Action"    "(" action_id { "," param } ")"
+```
+
+- Composites (`Sequence`, `Selector`, `Join`) take **one or more** child behaviours in
+  declaration order; leaves (`Condition`, `Action`) take none.
+- `predicate` is the minimal boolean expression language (comparisons, `and`/`or`/`not`,
+  membership) over `env.*` and `cardano.*` — see the config schema.
+- `action_id` names a registered action (the action registry); `param`s configure it.
+- A tree is a single root `behaviour`. The concrete TOML encodes this as keyed
+  `[behaviours.<id>]` tables with `children` referencing ids; the abstract grammar above is
+  what those resolve to.
+
+## 4. Evaluation model
+
+### Notation
+
+We write the per-tick evaluation as a **big-step (natural) semantics** judgment:
+
+```text
+Γ ⊢ b ⇓ s
+```
+
+| Symbol | Reads as | Here |
+|--------|----------|------|
+| `Γ` (gamma) | the **context** | the read-only snapshot a tick evaluates against — the node's chain state + the (guarded) env. |
+| `⊢` (turnstile) | "under … " / "entails" | "under context `Γ`, the judgment holds." |
+| `b` | the **term** | the behaviour being ticked. |
+| `⇓` (big-step arrow) | "evaluates to" | the whole tick collapses to a final result (vs. small-step `→`, one reduction at a time). |
+| `s` | the **result** | the `Status` returned. |
+
+So `Γ ⊢ b ⇓ s` reads *"in context Γ, ticking behaviour `b` evaluates to status `s`."* This
+form composes into inference rules (premises above a line, conclusion below). **Caveat:** a
+tick is mildly *effectful* — it can mutate a little carried state and emit `ControlSignal`. The
+fully faithful judgment would thread those, `Γ ⊢ ⟨b, σ⟩ ⇓ ⟨s, σ′, δ⟩` (state `σ`→`σ′`,
+control-signal contribution `δ`); §5 keeps that implicit and gives the rules as pseudocode for
+readability.
+
+### Relations
+
+Two relations are defined over behaviours:
+
+- **tick**: `Γ ⊢ b ⇓ s` — ticking behaviour `b` in context `Γ` yields status `s` (and may
+  carry a tiny amount of state into the next tick, and — for `Action`s — contribute to the
+  slot's `ControlSignal`).
+- **halt**: `halt(b)` — abort `b`: recursively stop and reset it. For an `Action` this means
+  it ceases contributing its control signal and resets its progress; for a `Condition` it is a
+  no-op; for a composite it halts all children (and clears any carried state).
+
+**Reactive evaluation.** A composite re-evaluates from its first child on *every* tick. It
+carries **no** "resume cursor" between ticks; the only state that persists between ticks is
+(a) a `Join`'s set of already-succeeded children and (b) an `Action`'s own internal
+progress. Consequence: a `Condition` precondition is re-checked every tick, and if it flips
+to `Failure` the parent `Sequence` halts the (previously running) later children — the
+reactive abort. This is what lets "act adversarially **while** the precondition holds" work.
+
+**Determinism.** Children are ticked in declaration order; `Join` aggregates in
+declaration order. No clock reads, no `thread_rng` (randomised actions derive from the
+run seed). Same `Γ` + same carried state ⇒ same result.
+
+## 5. Operational semantics (per tick)
+
+Pseudocode; `tick` returns a `Status` and may mutate the small carried state noted above.
+
+### Sequence (ordered AND, reactive)
+
+```text
+tick(Sequence[c1..cn], Γ):
+    for i in 1..n:                      # always from the start (reactive)
+        s = tick(ci, Γ)
+        if s == Failure:
+            for j in i+1..n: halt(cj)   # abort anything after the failure
+            return Failure
+        if s == Running:
+            for j in i+1..n: halt(cj)   # children after the running one are inactive
+            return Running
+        # s == Success: fall through to the next child
+    return Success                      # all children succeeded
+```
+
+### Selector (ordered OR / fallback, reactive)
+
+```text
+tick(Selector[c1..cn], Γ):
+    for i in 1..n:                      # always from the start (reactive)
+        s = tick(ci, Γ)
+        if s == Success:
+            for j in i+1..n: halt(cj)
+            return Success
+        if s == Running:
+            for j in i+1..n: halt(cj)
+            return Running
+        # s == Failure: try the next child
+    return Failure                      # all children failed
+```
+
+### Join (concurrent AND, fail-fast)
+
+"Concurrent" in this discrete-tick model means *every still-pending child is ticked once
+per parent tick* (not OS threads). A child that has succeeded is held done until the
+`Join` resets.
+
+```text
+state: succeeded ⊆ children            # persists across ticks until reset/halt
+
+tick(Join[c1..cn], Γ):
+    for ci in (c1..cn where ci ∉ succeeded):   # declaration order
+        s = tick(ci, Γ)
+        if s == Failure:
+            for c in c1..cn: halt(c)    # FAIL-FAST: kill all remaining children
+            succeeded = ∅
+            return Failure
+        if s == Success:
+            succeeded += ci
+    if succeeded == {c1..cn}:
+        succeeded = ∅                   # reset so the node can run again if re-entered
+        return Success
+    return Running                      # some children still Running, none failed
+```
+
+### Condition (leaf, immediate)
+
+```text
+tick(Condition(p), Γ):
+    return Success if eval(p, Γ) else Failure     # never Running
+halt(Condition) = no-op
+```
+
+### Action (leaf, may run multiple ticks)
+
+```text
+tick(Action(a), Γ):
+    s = a.step(Γ)                       # advances the action; contributes to ControlSignal
+    return s                            # Success | Failure | Running
+halt(Action(a)) = a.stop()             # stop contributing its control signal; reset progress
+```
+
+An `Action` contributes its slice of the slot's `ControlSignal` on the ticks where it is
+reached and returns `Running` (or `Success` while active). A halted `Action` contributes
+nothing on the next tick, so the world reverts toward honest — this is how a reactive abort
+removes an adversarial effect. (See the control-signal seam in
+[`unified-tick-model.md`](./unified-tick-model.md) and `../data-model.md`.)
+
+### halt (abort) — summary
+
+```text
+halt(Sequence|Selector S) = for c in S.children: halt(c)
+halt(Join P)          = (for c in P.children: halt(c)); P.succeeded = ∅
+halt(Condition)           = no-op
+halt(Action a)            = a.stop()
+```
+
+## 6. Worked trace
+
+Tree (abstract form):
+
+```text
+Selector[
+  Sequence[ Condition(cardano.current_slot >= env.trigger_slot),
+            Action(rb-header-equivocator, ways = 2) ],
+  Action(honest)
+]
+```
+
+Let `T = env.trigger_slot`. The root is ticked once per slot.
+
+| Slot | Selector → Sequence | Condition | equivocator Action | honest Action | Root status | ControlSignal |
+|------|---------------------|-----------|--------------------|---------------|-------------|------------|
+| `< T` | Seq ticks Condition first | `Failure` (slot < T) | halted (not reached) | ticked → `Success` | `Success` | honest (default) |
+| `= T` (first) | Condition passes, Seq ticks Action | `Success` | `Running` (contributes equivocation) | halted by Selector | `Running` | equivocation |
+| `> T` | same as above | `Success` | `Running` (re-contributes) | halted | `Running` | equivocation |
+| flip: `trigger_slot` raised over current slot (e.g. via REST) | Condition re-checked, now fails | `Failure` | **halted** (`stop()`) → stops contributing | ticked → `Success` | `Success` | honest again |
+
+The last row is the reactive abort: re-checking the precondition each tick halts the
+running adversarial Action and the tree falls back to honest — no special "stop" wiring,
+just AND-Sequence + reactive evaluation.
+
+## 7. Properties
+
+- **Exactly one status.** Every `tick` returns exactly one of `Success`/`Failure`/`Running`.
+- **Termination of a tick.** A tick visits a finite prefix of each composite's children
+  (Sequence/Selector stop at the first non-`Success`/non-`Failure` respectively; Join
+  visits each pending child once), and leaves return without recursion, so a tick over a
+  finite tree terminates.
+- **Reactivity.** Preconditions are re-evaluated every tick; a precondition flip halts the
+  affected subtree on the next tick (slot-boundary granularity).
+- **Determinism.** See §4.
+- **Honest by default.** If no Action is reached-and-running, the slot's `ControlSignal` are
+  default (honest). Halting an Action restores honesty for that slice.
+
+## 8. Relation to `ControlSignal` and the single-decision-path model
+
+A whole-tree tick yields `(Status, ControlSignal)`: the `Status` of the root plus the
+`ControlSignal` accumulated from the Actions reached and left active this tick. This is the
+"decide in the tick" half of the design; the consensus *actuators* then consume `ControlSignal`.
+Halted Actions drop out of the accumulation, so the control-signal set always reflects exactly
+the currently-active leaves. (See [`unified-tick-model.md`](./unified-tick-model.md).)

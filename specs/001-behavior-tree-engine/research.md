@@ -5,7 +5,7 @@ Assumptions Q1–Q3). This document records the design decisions, their rational
 the alternatives considered, grounded in the existing codebase.
 
 The central architecture decision (**Model B** — replace the `Behaviour` hook trait
-with a slot-tick BT that emits a typed `Directives` value) has its own full decision
+with a slot-tick BT that emits a typed `ControlSignal` value) has its own full decision
 record, including the hook catalogue, the decision-vs-actuation analysis, the
 per-behaviour mapping, and the Model A vs B comparison:
 [`design/unified-tick-model.md`](./design/unified-tick-model.md). D2 and D10 below
@@ -28,13 +28,13 @@ summarise it; that document is canonical.
   - *Put it directly in `net-node`* — rejected: violates the confirmed shared-crate
     decision and blocks sim-rs reuse.
 
-## D2. Replace the `Behaviour` hook trait with a slot-tick BT emitting `Directives` (Model B)
+## D2. Replace the `Behaviour` hook trait with a slot-tick BT emitting `ControlSignal` (Model B)
 
 - **Decision**: The BT is the **single abstraction** for adversarial behaviour. We
   *delete* the `Behaviour` hook trait, `BehaviourOutcome`/`DecisionOutcome`,
   `CompositeBehaviour`, and the `invoke_hook` plumbing. The BT `tick(&TickCtx) ->
-  (Status, Directives)` is the **only** place decisions are made. It emits a typed
-  `Directives` value that mechanical actuators read at their interception points.
+  (Status, ControlSignal)` is the **only** place decisions are made. It emits a typed
+  `ControlSignal` value that mechanical actuators read at their interception points.
 - **The key analysis — decision vs. actuation**: the existing hooks fire at two
   cadences (slot-tick: `rb_production_strategy`, `praos_reorg`, `drop_inbound_peers`,
   `on_slot_leios`; **sub-tick/event**: `transform_outbound` per peer-send, `decide_vote`
@@ -42,7 +42,7 @@ summarise it; that document is canonical.
   so a response to an inbound event must run when the event arrives — **some actuation is
   inherently event-time and cannot be moved to the tick**. The resolution: move all
   *decisions* into the tick; leave the event-time interception points as **mechanical
-  reads** of the `Directives` the last tick produced. One decision path; dumb effectors.
+  reads** of the `ControlSignal` the last tick produced. One decision path; dumb effectors.
 - **Why Model B over "BT gates, hooks act" (Model A)**: keeping the 15-hook trait as
   effector glue (Model A) preserves the same runtime with less churn, but the team's
   priorities are readability and a single decision path. Model B removes the
@@ -51,10 +51,10 @@ summarise it; that document is canonical.
 - **What we keep**: the **registry** (`ActionSpec`-style tagged enum + `build(kind,
   params, seed)`) as the leaf-action lookup, and the shipped attack **mechanics**
   (equivocation variant routing, reorg, inbound reset, vote abstention, T22 filtering),
-  re-homed as directive contributors — not redesigned. Determinism is preserved.
+  re-homed as control-signal contributors — not redesigned. Determinism is preserved.
 - **Cost (accepted)**: ~15 hook call sites in `leios`/`praos`/`mempool`/`production`/
-  `server_handlers` change from "call a hook" to "read a `Directives` field"; the five
-  shipped behaviours are re-expressed as directive contributors; the trait/outcome types
+  `server_handlers` change from "call a hook" to "read a `ControlSignal` field"; the five
+  shipped behaviours are re-expressed as control-signal contributors; the trait/outcome types
   and `CompositeBehaviour` are removed. Each removal is guarded by first porting the
   behaviour's existing tests to the new contributor (TDD), so no coverage is lost.
 - **Alternatives considered**:
@@ -64,7 +64,7 @@ summarise it; that document is canonical.
     sans-IO crate; breaks determinism and testability.
   - *Rewrite consensus state machines to call the BT directly at every event point* —
     rejected: a large, risky consensus-core rewrite that the reactive limit makes
-    unnecessary (the `Directives` read at each interception point achieves the same end).
+    unnecessary (the `ControlSignal` read at each interception point achieves the same end).
 
 ## D3. Tick source and cadence
 
@@ -74,24 +74,34 @@ summarise it; that document is canonical.
 - **Rationale**: The spec mandates slot-driven ticking, and the node already recomputes
   the slot from wall-clock each tick (`SlotClock::current_slot`), so there is exactly one
   natural tick edge per slot. Reusing it avoids a second timer and keeps the BT in
-  lockstep with consensus `on_slot`. The wrapper applies the resulting `Directives` to
+  lockstep with consensus `on_slot`. The wrapper applies the resulting `ControlSignal` to
   the state machines and publishes the snapshot for the per-peer send actuator.
 - **Alternatives considered**: a dedicated BT timer (rejected — drift vs. the slot clock,
   double cadence); ticking per network event (rejected — non-deterministic, not
   slot-aligned, and would re-introduce sub-tick decisions).
 
-## D4. RUNNING semantics across ticks, and the gating house rule
+## D4. Reactive RUNNING semantics, and the gating house rule
 
-- **Decision**: Composite behaviours remember the index of a child that returned `Running` and
-  resume there on the next tick; a behaviour that returned `Success`/`Failure` is re-evaluated
-  from the top of its parent's policy next tick (spec FR-006). **Gating house rule**: all
-  flow gating lives in explicit `Condition` behaviours; a leaf action returns `Running` the
-  whole time it is meant to be active and does **not** branch its status on `env`/`state`
-  (the honest fallback leaf returns `Success`).
-- **Rationale**: The standard BT memory model is least surprising for multi-slot actions.
-  Confining gating to named `Condition` behaviours keeps every flow decision in one readable
-  place — "why is this branch active?" is answered by reading conditions, never leaf
-  internals. Fully deterministic given the seed and slot sequence.
+- **Decision**: Composites are **reactive** — every tick re-evaluates from the first child;
+  they carry **no** resume cursor. The only state persisted between ticks is a `Join`'s set
+  of already-succeeded children and an `Action`'s own progress. When a composite stops
+  selecting a child it was running, that child (subtree) is **halted** (an explicit
+  abort/reset that, for an `Action`, stops its `ControlSignal` contribution). A `Running`
+  result still re-enters the same subtree next tick *as long as the path to it still
+  evaluates the same way*. **Gating house rule**: all flow gating lives in explicit
+  `Condition` behaviours; a leaf action returns `Running` the whole time it is meant to be
+  active and does **not** branch its status on `env`/`state` (the honest fallback returns
+  `Success`). Full operational semantics + the `halt` relation:
+  [`design/bt-grammar-and-semantics.md`](./design/bt-grammar-and-semantics.md).
+- **Rationale**: Reactive (not "memory") is what makes a precondition able to *abort* a
+  running action: re-checking the `Condition` each tick lets a `Sequence` fail and halt its
+  later, currently-running children when the precondition flips. The memory model (resume at
+  the running child, skipping earlier conditions) could not express "act adversarially
+  **while** the precondition holds." Confining gating to named `Condition` behaviours keeps
+  every flow decision in one readable place. Fully deterministic given the seed and slot
+  sequence.
+- **Supersedes**: the earlier draft of this decision said "memory" (remember the running
+  child's index and resume there); the reactive model above replaces it.
 - **Feedback note**: the BT still reacts to the *consequences* of actions, but only by
   sampling `NativeChainState` at the next tick boundary (via Conditions) — never via a
   sub-tick signal.
@@ -181,32 +191,32 @@ summarise it; that document is canonical.
   action choices derive from it via the crate's `blake2b_simd` helpers
   (`child_seed`/`seed_from_node_id`). No clock reads or `thread_rng` in the engine.
 - **Rationale**: Required by spec FR-009/FR-023 (reproducibility, fuzzer prerequisite)
-  and by the non-negotiable determinism rule of `shared-consensus`. Because `Directives`
+  and by the non-negotiable determinism rule of `shared-consensus`. Because `ControlSignal`
   is plain data, a node can also emit it to telemetry each slot, giving the future fuzzer
   an exact record of what each node was told to do.
 
-## D10. The `Directives` seam: actuator-indexed and domain-grouped
+## D10. The `ControlSignal` seam: actuator-indexed and domain-grouped
 
-- **Decision**: `Directives` is a plain value type (not a trait), **indexed by actuation
+- **Decision**: `ControlSignal` is a plain value type (not a trait), **indexed by actuation
   point** (the one vote decision, the one production strategy, the one per-peer outbound
   transform, the mempool filter) and **grouped into per-domain sub-structs** owned by
-  their actuator: `Directives { praos: PraosDirectives, leios: LeiosDirectives, mempool:
-  MempoolDirectives }`.
+  their actuator: `ControlSignal { praos: PraosControl, leios: LeiosControl, mempool:
+  MempoolControl }`.
 - **Rationale**: Consensus actuation points are *shared, singular resources* — two active
   leaves can target the same one, so the conflict must be reconciled, and that
   reconciliation must happen in the **tick** (the Model B invariant), handing the actuator
   one resolved value. Keying the seam by *behaviour* would push combination logic back
   into the actuator and re-couple consensus to the behaviour catalogue. Because the seam
   is keyed by *capability*, a new behaviour that reuses an existing actuator changes
-  `Directives` **not at all**; only a genuinely new kind of effect (a new actuator)
+  `ControlSignal` **not at all**; only a genuinely new kind of effect (a new actuator)
   extends it — and that already requires touching consensus. Domain sub-structs keep the
   type modular and avoid a single struct everyone edits.
 - **Ownership rule**: a *behaviour* owns its config struct (+ its own `Deserialize`), its
-  `contribute()`, and its tests, in **one file**; an *actuator* owns its directive
-  sub-struct. Behaviour ⇄ config+logic (encapsulated); actuator ⇄ directive (shared,
+  `contribute()`, and its tests, in **one file**; an *actuator* owns its control signal
+  sub-struct. Behaviour ⇄ config+logic (encapsulated); actuator ⇄ control signal (shared,
   reconciled in the tick).
-- **Alternatives considered**: one flat monolithic `Directives` struct (rejected — merge
-  magnet, couples unrelated domains); independent per-behaviour directive structs keyed by
+- **Alternatives considered**: one flat monolithic `ControlSignal` struct (rejected — merge
+  magnet, couples unrelated domains); independent per-behaviour control-signal structs keyed by
   behaviour-prefixed names (rejected — fails when behaviours contend for one resource, and
   moves combination logic into actuators).
 
@@ -280,8 +290,8 @@ summarise it; that document is canonical.
   **`Status`** (Success/Failure/Running). The leaf-action catalogue (formerly
   `BehaviourSpec`) is the **action registry** (`ActionSpec`); its entries are **actions**.
   So: a *behaviour tree* is a tree of *behaviours*; an *Action* behaviour is materialised
-  from the *action registry* and, when active, contributes to `Directives`; the consensus
-  *actuators* consume `Directives`.
+  from the *action registry* and, when active, contributes to `ControlSignal`; the consensus
+  *actuators* consume `ControlSignal`.
 - **Rationale**: "node" was overloaded — net-nodes, topology nodes (the cluster graph uses
   node/edge), and tree elements. "Behaviour" is freed up precisely because Model B deletes
   the old `Behaviour` *hook trait* (D2), and a "behaviour tree of behaviours" is the
@@ -290,7 +300,48 @@ summarise it; that document is canonical.
   "step"/"stage" (sequential bias), "phase" (collides with Leios pipeline phases), "task"
   (collides with tokio tasks). The registry is "**action** registry," not "actuator
   registry," because "actuator" already names the consensus-side *consumers* of
-  `Directives` — actions *produce*, actuators *consume*.
+  `ControlSignal` — actions *produce*, actuators *consume*.
+
+## D15. Naming: the tick's output is the `ControlSignal` (control-loop framing)
+
+- **Decision**: The value the BT tick produces each slot — formerly "Directives" — is named
+  **`ControlSignal`** (domain-grouped: `ControlSignal { praos: PraosControl, leios:
+  LeiosControl, mempool: MempoolControl }`). The whole design is a **control loop**, and we
+  adopt its standard vocabulary:
+
+  | Control-systems concept | Our system |
+  |---|---|
+  | Controller | the BT tick |
+  | **Control signal** (`u`) — the controller's output | **`ControlSignal`** (the tick's per-slot output) |
+  | Actuator | the consensus/networking interception points (already named "actuators") |
+  | Plant | Cardano consensus + network (the world being perturbed) |
+  | Process variable / feedback (`y`) | `NativeChainState`, sampled each tick |
+  | Controller parameters / gains | `env` — and the **fuzzer tunes these**, nothing else |
+
+- **Rationale**: "Directives" never said what it *was*; engineers kept asking what produced
+  and consumed it. "Control signal" is the industry-standard term for a controller's output
+  to its actuators, and it pairs exactly with the "actuator" name we already use — so the
+  whole loop reads coherently: *controller (BT) → control signal → actuators → plant;
+  feedback via chain state; `env` = the gains the fuzzer tunes*. It also correctly frames the
+  fuzzer (it perturbs the controller's parameters, i.e. `env`, never the output).
+- **Rejected**: *control action* (collides with the `Action` behaviour kind), *setpoint* (that
+  is the reference/target `r`, not the controller's output — a common mix-up), *manipulated
+  variable* (precise process-control term but clunky as a type name), *command* (viable, less
+  standard than "control signal").
+
+## D16. BT semantics & node naming
+
+- **Decision**: `Sequence` = ordered AND (stop on first failure); `Selector` = ordered OR
+  (stop on first success); the concurrent-AND, fail-fast node is named **`Join`**.
+- **Rationale**: AND-`Sequence` is what makes a `Condition` precondition work (a failed
+  precondition aborts the rest); an early draft phrased `Sequence` as "run until one
+  succeeds," which is `Selector` semantics and incompatible with preconditions — corrected
+  to standard AND. `Join` (fork-join: spawn all, wait for all) reads precisely and stays
+  distinct from the old parametrised `Parallel`.
+- **Rejected names for the concurrent-AND node**: `Parallel` (other BT libraries ship it
+  *parametrised* with success/failure thresholds; ours is fixed — mismatched expectations),
+  `All` (too terse), `Team`/`Gang` (casual, imprecise). Full semantics live in
+  [`design/bt-grammar-and-semantics.md`](./design/bt-grammar-and-semantics.md).
 
 ## Open items deferred (not blocking the plan)
 
@@ -299,7 +350,7 @@ summarise it; that document is canonical.
 - Whether to keep an inline-`[behaviour]` deprecation shim or hard-cut — finalized in
   tasks; default is a shim to keep the net-cluster suite green during the transition.
 - Reconciliation precedence for the rare cases where two active leaves write the same
-  `Directives` field (e.g. `Suppress` vs. `Equivocate` on `praos.production`) — default
+  `ControlSignal` field (e.g. `Suppress` vs. `Equivocate` on `praos.production`) — default
   is "last active contributor in deterministic traversal order wins," refined per field in
   tasks/data-model as real conflicts appear.
 - net-node REST surface details (auth, endpoints) — deferred to the Docker/coordination

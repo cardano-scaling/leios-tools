@@ -1,64 +1,49 @@
 # Phase 1 Data Model: Behavior Tree Engine
 
-Types are placed in `shared-rs/consensus/src/behaviour/tree/`. They obey the
-sans-IO/determinism rules of `shared-consensus` (no `tokio`, no clock reads,
-`BTreeMap`/`BTreeSet` for ordered state, seeded RNG only). Field shapes follow the
-structs the user supplied; names are aligned to the existing crate conventions.
-
-> **Architecture**: this data model implements **Model B** — see
-> [`design/unified-tick-model.md`](./design/unified-tick-model.md). The BT tick is the
-> only place decisions are made; it emits a typed `Directives` value that mechanical
-> actuators read at their (sometimes sub-tick) interception points. The old `Behaviour`
-> hook trait, `BehaviourOutcome`/`DecisionOutcome`, and `CompositeBehaviour` are removed.
+Types live in `shared-rs/consensus/src/behaviour/tree/` and obey the crate's
+sans-IO/determinism rules (no `tokio`, no clock reads, `BTreeMap`/`BTreeSet` for ordered
+state, seeded RNG only). Architecture and rationale: [`design/unified-tick-model.md`](./design/unified-tick-model.md)
+and research D2/D10/D13.
 
 ## Core status & seam types
 
 ### `Status`
-The standard BT return value (spec FR-001).
+The BT return value (spec FR-001).
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status { Success, Failure, Running }
 ```
 
-### `Directives` — the decision→actuation seam
-Produced once per slot by `BehaviourTree::tick`; consumed by the consensus/I-O actuators
-as a pure read. This is the typed contract that replaces the deleted hook trait.
-
-**Indexed by actuator, not by behaviour, and domain-grouped.** The seam is keyed by the
-shared consensus interception points (one vote decision, one production strategy, one
-per-peer outbound transform, …), so multiple active leaves targeting the same resource
-are reconciled in the tick (Model B invariant) and the actuator receives one resolved
-value. It is grouped into per-domain sub-structs, each owned by its actuator domain, so
-adding a behaviour that reuses an existing capability changes `Directives` **not at all**;
-only a genuinely new *kind of effect* (a new actuator) extends it. See
-[`design/unified-tick-model.md`](./design/unified-tick-model.md) §"The seam is owned by
-actuators".
+### `ControlSignal` — the decision→actuation seam
+Produced once per slot by `BehaviourTree::tick`, read by the actuators. Domain-grouped by
+actuator (`praos`/`leios`/`mempool`); each active leaf writes its slice; same-field
+conflicts are reconciled in the tick.
 
 ```rust
 #[derive(Debug, Clone, Default)]
-pub struct Directives {
-    pub praos:   PraosDirectives,
-    pub leios:   LeiosDirectives,
-    pub mempool: MempoolDirectives,
+pub struct ControlSignal {
+    pub praos:   PraosControl,
+    pub leios:   LeiosControl,
+    pub mempool: MempoolControl,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct PraosDirectives {
+pub struct PraosControl {
     pub production: RbProductionStrategy, // Normal | Suppress | Equivocate { ways }   (reused enum)
-    pub outbound: OutboundDirective,      // None | EquivocateRouting { slot, ways, seed } | DropTo(BTreeSet<PeerId>)
+    pub outbound: OutboundControl,      // None | EquivocateRouting { slot, ways, seed } | DropTo(BTreeSet<PeerId>)
     pub reorg_depth: Option<u64>,         // force self-reorg this slot if Some
     pub drop_inbound: bool,               // reset inbound peers this slot
     pub body_path: Option<BodyPath>,      // override producer body-path choice (reused enum)
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct LeiosDirectives {
+pub struct LeiosControl {
     pub vote: VotePolicy,                 // Honest | Abstain(NoVoteReason)
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct MempoolDirectives {
+pub struct MempoolControl {
     pub tx_filter: TxFilterPolicy,        // None | ChecksumThreshold { vote, non_voting, hide_eb_tx }
 }
 
@@ -66,39 +51,31 @@ pub struct MempoolDirectives {
 pub enum VotePolicy { #[default] Honest, Abstain(NoVoteReason) }
 
 #[derive(Debug, Clone, Default)]
-pub enum OutboundDirective {
+pub enum OutboundControl {
     #[default] None,
     EquivocateRouting { slot: u64, ways: u8, seed: u64 }, // per-peer variant routing (lookup, not decision)
     DropTo(std::collections::BTreeSet<PeerId>),           // partition / mute
 }
 ```
 
-`Directives::default()` (every domain at its default) is the honest node (no
-perturbation). `RbProductionStrategy`, `BodyPath`, and `NoVoteReason` are the **existing**
-enums, reused unchanged.
+`ControlSignal::default()` is the honest node (no perturbation). `RbProductionStrategy`,
+`BodyPath`, and `NoVoteReason` are existing enums, reused unchanged.
 
-**Reconciliation**: when two active leaves write the same field, the conflict is resolved
-deterministically in the tick (e.g. last active contributor in deterministic traversal
-order wins, or an explicit combine where it makes sense — mutually-exclusive cases like
-`Suppress` vs. `Equivocate` are documented as a precedence). The actuator never combines.
-
-**Publication**: shared-consensus only *computes* `Directives` (sans-IO). The net-node
-wrapper applies it to the state machines once per slot (e.g.
-`leios.apply_directives(&d)` sets the vote-policy/tx-filter fields) and publishes the
-snapshot via a cheap shared cell (arc-swap / `tokio::sync::watch`) so the per-peer send
-actuator in `net-core/server_handlers.rs` can read the latest without locking the loop.
+- **Conflicts**: same-field writes from two active leaves are reconciled in the tick
+  (last active contributor in traversal order wins); the actuator never combines.
+- **Publication**: shared-consensus only *computes* `ControlSignal` (sans-IO); the net-node
+  wrapper applies it to the state machines each slot (`leios.apply_control(&d)`, …) and
+  publishes the snapshot (arc-swap / `tokio::watch`) for the per-peer send actuator.
 
 ## Environment & chain state
 
 ### `DynamicEnv` + `EnvHandle`
 Externally mutable parameters (config + REST), read by conditions/actions (FR-010).
 
-`DynamicEnv` is the **resolved env**: a name-keyed map of typed values, not a fixed
-struct. A map (rather than named fields) is what lets arbitrary params (`trigger_slot`,
-`packet_delay`, …) be declared in TOML, overlaid across includes, addressed generically
-by REST `:key`, and type-checked by name at load. Keys may be dotted to namespace
-behaviour-owned params (`network_shape.packet_delay`) vs. shared ones (`trigger_slot`)
-— see `contracts/bt-config.schema.md` §"Env ownership tiers".
+`DynamicEnv` is the **resolved env**: a name-keyed map of typed values (not a fixed struct,
+so arbitrary params can be declared in TOML, overlaid across includes, and addressed by REST
+`:key`). Keys may be dotted for owner-namespaced params (`network_shape.packet_delay`) vs.
+shared (`trigger_slot`) — see `contracts/bt-config.schema.md`.
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -110,9 +87,8 @@ pub enum EnvValue { U64(u64), F64(f64), Str(String), Bool(bool) }
 pub type EnvHandle = std::sync::Arc<std::sync::RwLock<DynamicEnv>>;
 ```
 
-`EnvHandle` mirrors the existing `BehaviourHandle = Arc<Mutex<…>>` pattern. A (deferred)
-REST handler takes the write lock briefly (never across an `.await`) to overwrite one
-key's resolved value; a type-mismatched write is rejected, leaving the env unchanged.
+A (deferred) REST handler takes the `EnvHandle` write lock briefly to overwrite one key;
+a type-mismatched write is rejected, leaving the env unchanged.
 
 ### `NativeChainState`
 Read-only-to-the-tree node metrics, rebuilt each tick and passed by `&` (FR-011, D5).
@@ -151,8 +127,8 @@ pub struct TickCtx<'a> {
 
 impl BehaviourTree {
     /// The ONLY place decisions happen. Evaluates conditions, resolves the active
-    /// leaf set, accumulates each active leaf's contribution into one Directives.
-    pub fn tick(&mut self, ctx: &TickCtx) -> (Status, Directives);
+    /// leaf set, accumulates each active leaf's contribution into one ControlSignal.
+    pub fn tick(&mut self, ctx: &TickCtx) -> (Status, ControlSignal);
 }
 ```
 
@@ -164,55 +140,56 @@ impl BehaviourTree {
 pub struct Behaviour { pub id: BehaviourId, pub kind: BehaviourKind }
 
 pub enum BehaviourKind {
-    Selector { children: Vec<BehaviourId> },                 // first child to succeed
-    Sequence { children: Vec<BehaviourId> },                 // all children in order
-    Parallel { success_policy: SuccessPolicy, children: Vec<BehaviourId> },
-    Condition { expr: ConditionExpr },                  // -> Success/Failure
-    Action(ActionKind),                                 // leaf; contributes to Directives when active
+    Selector { children: Vec<BehaviourId> },   // ordered OR  (first to succeed)
+    Sequence { children: Vec<BehaviourId> },   // ordered AND (stop on first failure)
+    Join     { children: Vec<BehaviourId> },   // concurrent AND, fail-fast (no policy field)
+    Condition { expr: ConditionExpr },         // -> Success/Failure (immediate)
+    Action(ActionKind),                        // leaf; contributes to ControlSignal when active
 }
-
-pub enum SuccessPolicy { All, Any /* , N(usize) future */ }
 ```
 
-**Composite semantics** (spec FR-003):
-- `Selector`: tick children in order; first `Success` → `Success`; first `Running` →
-  `Running` (remember index); all `Failure` → `Failure`.
-- `Sequence`: tick children in order; first `Failure` → `Failure`; first `Running` →
-  `Running` (remember index); all `Success` → `Success`.
-- `Parallel`: tick all children; aggregate by `success_policy` (`All` = success iff all
-  succeed; `Any` = success iff any succeeds); `Running` while undecided.
+**Composite semantics** — **reactive** (re-evaluate from the first child every tick); full
+operational semantics + the `halt`/abort relation are in
+[`design/bt-grammar-and-semantics.md`](./design/bt-grammar-and-semantics.md):
+- `Sequence` (ordered AND): tick from the start; first `Failure` → `Failure`; first
+  `Running` → `Running`; all `Success` → `Success`. Children after the deciding one are
+  **halted**. A `Condition` precondition that flips to `Failure` thus aborts a running
+  later child.
+- `Selector` (ordered OR): tick from the start; first `Success` → `Success`; first
+  `Running` → `Running`; all `Failure` → `Failure`. Children after the deciding one are
+  halted.
+- `Join` (concurrent AND, fail-fast): tick every not-yet-succeeded child each tick;
+  **any** `Failure` halts all children and → `Failure`; **all** `Success` → `Success`;
+  otherwise `Running`. Policy is fixed (all-succeed); there is no `success_policy` field.
 
-### `ActionKind` (leaf actions = directive contributors)
-A leaf, when its branch is active this tick, contributes to the `Directives` accumulator
+### `ActionKind` (leaf actions = control-signal contributors)
+A leaf, when its branch is active this tick, contributes to the `ControlSignal` accumulator
 (it does **not** call into consensus). MVP set (confirmed scope Q1): honest + 1–2 real
 demo actions. Leaf `kind`s are looked up via the retained registry (`build`).
 
 ```rust
 pub enum ActionKind {
-    /// Contributes nothing — leaves Directives at default (honest). Fallback branch.
+    /// Contributes nothing — leaves ControlSignal at default (honest). Fallback branch.
     Honest,
     /// A re-homed catalogue action, identified by its action-registry `kind` + params.
-    /// `contribute()` writes the leaf's slice of Directives (e.g. the equivocator sets
+    /// `contribute()` writes the leaf's slice of ControlSignal (e.g. the equivocator sets
     /// `out.praos.production = Equivocate{ways}` and `out.praos.outbound =
     /// EquivocateRouting{..}`).
     Registered(ActionSpec),
     // Future: NetworkShape { target, delay_ms, drop_rate }, TxGenerator { … }, …
 }
 
-// Each leaf contributes to the running Directives; no return-value flow control.
+// Each leaf contributes to the running ControlSignal; no return-value flow control.
 trait LeafAction {
-    fn contribute(&mut self, ctx: &TickCtx, out: &mut Directives) -> Status;
+    fn contribute(&mut self, ctx: &TickCtx, out: &mut ControlSignal) -> Status;
 }
 ```
 
-`Registered(ActionSpec)` reuses the renamed registry (formerly `BehaviourSpec`, now
-`shared_consensus::behaviour::registry::ActionSpec` — the **action registry**) as the
-**action-kind discriminant + parameter carrier**. Each shipped adversary
-(`rb-header-equivocator`, `lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`) is
-re-expressed as a `LeafAction` whose `contribute` sets the matching `Directives` fields.
-This is the "keep registration, re-home mechanics" decision (D2 / Model B). Composition
-that used to be `ActionSpec::Composite` is now expressed by the BT structure itself
-(`Parallel`/`Sequence`).
+`Registered(ActionSpec)` uses the action registry (`ActionSpec`, formerly `BehaviourSpec`)
+as the action-kind discriminant + params. Each shipped adversary (`rb-header-equivocator`,
+`lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`) becomes a `LeafAction` whose
+`contribute` writes the matching `ControlSignal` fields. Composition is expressed by the BT
+structure (`Join`/`Sequence`), not a `composite` leaf.
 
 ### `ConditionExpr`
 Minimal grammar (D6); parsed and validated at load time.
@@ -267,13 +244,13 @@ pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
    behaviour (that behaviour is the root). `[run]` set in an included fragment is flagged (lint).
 2. Every `children` / include reference resolves to a defined behaviour / readable file.
 3. No cycles in the behaviour graph or the include graph.
-4. Every behaviour `type` is known; `Parallel` requires a valid `success_policy`.
+4. Every behaviour `type` is known; composites have ≥1 child; leaves have none.
 5. Every `Condition` references only env keys present in the merged `[env]` and known
    chain-state fields, with matching types. A **referenced-but-undefined `env.X` is an
    error** (D13).
 6. Every `Action` resolves to a known action via the registry (e.g. an `Action`
    behaviour's `spec` deserialises into a known `ActionSpec` `kind`) and its `contribute`
-   maps to representable `Directives` fields.
+   maps to representable `ControlSignal` fields.
 7. `run.seed` is present (reproducibility, FR-009) and root-owned.
 
 Note: a same-id behaviour or env key across files is **not** an error — it deep-merges
@@ -290,9 +267,9 @@ stays active (US2 scenario 3/4).
 BtConfig --load/validate--> BehaviourTree
 BehaviourTree.behaviours[id] = Behaviour{ kind }
 BehaviourKind::Action(Registered(spec)) --action registry build(kind)--> LeafAction
-tick(ctx) --accumulates contribute()--> Directives
-net-node main loop --apply_directives--> leios/praos/mempool state (vote policy, tx filter, …)
-net-node main loop --publish--> Directives snapshot (arc-swap/watch)
+tick(ctx) --accumulates contribute()--> ControlSignal
+net-node main loop --apply_control--> leios/praos/mempool state (vote policy, tx filter, …)
+net-node main loop --publish--> ControlSignal snapshot (arc-swap/watch)
    --read by--> production.rs (production/body_path) + server_handlers.rs (outbound) + main.rs (reorg/drop)
 EnvHandle <--writes-- net-node REST handler (DEFERRED / post-MVP, Docker)
 NativeChainState <--built each tick from-- slot_clock + mempool (net-node main loop)
@@ -300,11 +277,14 @@ NativeChainState <--built each tick from-- slot_clock + mempool (net-node main l
 
 ## State transitions (per behaviour, across ticks)
 
-- A composite holds at most one "running child index"; cleared when the behaviour next
-  resolves to `Success`/`Failure`.
-- The whole-tree effect is the `Directives` produced this tick. Because the actuators
-  are pure reads of the latest `Directives`, a leaf that stops being active simply stops
-  contributing, and the next tick's `Directives` reverts those fields to default — there
-  is no separate "deactivate" call to make. Honest = `Directives::default()`.
-- Directives are recomputed every tick, so there is no stale activation to diff; the
+- **Reactive**: `Sequence`/`Selector` carry **no** resume cursor — each tick re-evaluates
+  from the first child (so preconditions are re-checked and can `halt` a running subtree).
+  The only state persisted between ticks is a `Join`'s set of already-succeeded children
+  and an `Action`'s own internal progress. See
+  [`design/bt-grammar-and-semantics.md`](./design/bt-grammar-and-semantics.md) §"State".
+- The whole-tree effect is the `ControlSignal` produced this tick. Because the actuators
+  are pure reads of the latest `ControlSignal`, a leaf that stops being active simply stops
+  contributing, and the next tick's `ControlSignal` reverts those fields to default — there
+  is no separate "deactivate" call to make. Honest = `ControlSignal::default()`.
+- ControlSignal are recomputed every tick, so there is no stale activation to diff; the
   published snapshot is replaced wholesale each slot.
