@@ -563,10 +563,10 @@ pub async fn serve_txsubmission(
                         TsMsg::MsgDone => break,
                         TsMsg::MsgReplyTxIds { tx_ids } if !tx_ids.is_empty() => {
                             let ids: Vec<_> = tx_ids
-                                .iter()
+                                .into_iter()
                                 .map(|t| txsubmission::EraTxId {
                                     era: t.era,
-                                    tx_id: t.tx_id.clone(),
+                                    tx_id: t.tx_id,
                                 })
                                 .collect();
                             let count = ids.len();
@@ -609,10 +609,10 @@ pub async fn serve_txsubmission(
                 }
 
                 let ids: Vec<_> = tx_ids
-                    .iter()
+                    .into_iter()
                     .map(|t| txsubmission::EraTxId {
                         era: t.era,
-                        tx_id: t.tx_id.clone(),
+                        tx_id: t.tx_id,
                     })
                     .collect();
                 let count = ids.len();

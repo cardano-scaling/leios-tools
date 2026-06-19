@@ -138,11 +138,11 @@ impl minicbor::Encode<()> for TxIdAndSize {
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
         e.array(2)?;
-        EraTxId {
-            era: self.era,
-            tx_id: self.tx_id.clone(),
-        }
-        .encode(e, &mut ())?;
+        // Inline the `EraTxId` encoding (`[era, tx_id]`) to avoid cloning
+        // `self.tx_id` into a temporary just to encode it.
+        e.array(2)?;
+        e.u16(self.era)?;
+        self.tx_id.encode(e, &mut ())?;
         e.u32(self.size)?;
         Ok(())
     }
