@@ -1,0 +1,20 @@
+# T27 diagnostic override — switch to the INLINE-tx Leios variant.
+#
+# Layer LAST (after mainnet.yaml and t27-steady.yaml) for the recovery
+# mechanism test. The default mainnet config uses `linear-with-tx-references`,
+# where EBs reference txs by hash and voters must fetch every referenced tx
+# before they can vote. Our 120 kB/s partition run showed that path collapses
+# after heal: nodes end up missing thousands of referenced txs
+# (`leios.missing_txs` 0 -> 8400), so EBs never reach quorum and the chain
+# does not recover.
+#
+# `linear` carries transactions INLINE in the EB body — no separate reference
+# resolution, so there is nothing to "miss" post-heal. Hypothesis: with this
+# variant the partition stalls during the window but RECOVERS after heal.
+#   - recovers  -> confirms reference-resolution is the cause of non-recovery
+#   - still stuck -> the cause is deeper than tx-references
+#
+# Everything else (load, window, topology) is held identical to the
+# `linear-with-tx-references` A/B so the only changed variable is the variant.
+
+leios-variant: linear
