@@ -88,6 +88,10 @@ impl TxBody {
     pub fn new_with_vec(body: Vec<u8>) -> TxBody {
         TxBody(body.into())
     }
+    
+    pub fn new_with_slice(body: &[u8]) -> TxBody {
+        TxBody(body.to_vec().into())
+    }
 
     pub fn get_slice(&self) -> &[u8] {
         &self.0

@@ -37,73 +37,43 @@ pub const MAX_UNACKED: usize = 10;
 /// Maximum size of a single encoded tx body.
 pub const MAX_TX_SIZE: usize = 2_500_000;
 
-/// Maximum size of a single encoded tx id.
-pub const MAX_TX_ID_SIZE: usize = 128;
+/// HFC era index stamped on tx-ids / bodies we *originate* on the wire.
+/// cardano-node wraps every `GenTxId` and tx body as `[era, ..]`;
+/// ids/bodies we receive carry the peer's era and are echoed back
+/// verbatim (see [`EraTxId`]), so this constant only applies to
+/// transactions we produce locally.
+///
+/// Set to Dijkstra (8) deliberately: Leios — the only reason we'd
+/// generate txs here — lands in Dijkstra. The live dev net's tx
+/// generator still emits era 7 (not yet bumped), which we observe on the
+/// wire and echo on the pull path; that doesn't change what *we* stamp.
+pub const ORIGIN_ERA: u16 = 8;
 
+// --- Types ---
 pub const TX_ID_SIZE: usize = 32;
 
-/*
-impl TxId {
-    pub fn vec_from_consensus_txid(tx_vec: Vec<shared_consensus::mempool::TxId>) -> Vec<Self> {
-        tx_vec.into_iter().map(|tx| Self(tx)).collect()
-    }
-
-    pub fn vec_to_consensus_txid(tx_vec: Vec<Self>) -> Vec<shared_consensus::mempool::TxId> {
-        tx_vec.into_iter().map(|tx| tx.get_con_tx_id().clone()).collect()
-    }
-
-
-    pub fn new_with_tx(tx: shared_consensus::mempool::TxId) -> Self {
-        Self(tx)
-    }
-
-    pub fn new_with_array_ref(p0: &[u8; 32]) -> Self {
-        Self(shared_consensus::mempool::TxId::new_with_slice(p0))
-    }
-
-    pub fn new_with_array(p0: [u8; 32]) -> Self {
-        Self(shared_consensus::mempool::TxId::new_with_array(p0))
-    }
-
-    pub fn get_con_tx_id(&self) -> &shared_consensus::mempool::TxId {
-        &self.0
-    }
+/// A transaction ID as it travels on the NtN wire: the raw [`TxId`] plus
+/// the HFC `era` index cardano-node prefixes it with (`[era, bytes]`).
+///
+/// The era is wire framing, not part of the id's identity, so it lives
+/// here rather than on [`TxId`] (which stays a plain byte wrapper). It
+/// must round-trip: a `MsgRequestTxs` we send back has to echo the exact
+/// era the peer advertised in `MsgReplyTxIds`, or the peer won't match
+/// the id against its mempool.
+#[derive(Debug, Clone)]
+pub struct EraTxId {
+    pub era: u16,
+    pub tx_id: TxId,
 }
- */
-/*
-impl TxBody {
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn new_with_txbody(tx_body: shared_consensus::mempool::TxBody) -> TxBody {
-        Self(tx_body)
-    }
-
-    pub fn get_con_tx_body(&self) -> shared_consensus::mempool::TxBody {
-        self.0.clone()
-    }
-
-    pub fn new_with_vec(vec: Vec<u8>) -> Self {
-        Self(shared_consensus::mempool::TxBody::new_with_vec(vec))
-    }
-
-    pub fn get_slice(&self) -> &[u8] {
-        self.0.get_slice()
-    }
-
-    pub fn get_blake2b_256(&self) -> [u8; 32] {
-        self.0.get_blake2b_256()
-    }
-}
-
- */
 
 /// A transaction ID paired with its serialized size (for flow control).
+/// `era` is retained from the wire so the follow-up `MsgRequestTxs` can
+/// echo it; see [`EraTxId`].
 #[derive(Debug, Clone)]
 pub struct TxIdAndSize {
     pub tx_id: TxId,
     pub size: u32,
+    pub era: u16,
 }
 
 /// A pending transaction waiting to be announced and sent.
@@ -145,7 +115,9 @@ pub enum Message {
     /// Client replies with tx ids and their sizes. [1, [...]]
     MsgReplyTxIds { tx_ids: Vec<TxIdAndSize> },
     /// Server requests full transactions by id. [2, [...]]
-    MsgRequestTxs { tx_ids: Vec<TxId> },
+    /// Ids are era-tagged ([`EraTxId`]) so they match the form the peer
+    /// announced them in.
+    MsgRequestTxs { tx_ids: Vec<EraTxId> },
     /// Client replies with full transactions. [3, [...]]
     MsgReplyTxs { txs: Vec<TxBody> },
     /// Client terminates (only valid in StTxIdsBlocking). [4]
@@ -289,6 +261,7 @@ pub async fn run_client(
                     .map(|tx| TxIdAndSize {
                         tx_id: tx.tx_id.clone(),
                         size: tx.size,
+                        era: ORIGIN_ERA,
                     })
                     .collect();
 
@@ -326,6 +299,7 @@ pub async fn run_client(
                     .map(|tx| TxIdAndSize {
                         tx_id: tx.tx_id.clone(),
                         size: tx.size,
+                        era: ORIGIN_ERA,
                     })
                     .collect();
 
@@ -345,7 +319,8 @@ pub async fn run_client(
                 // Look up requested tx bodies from the pending set.
                 let mut txs = Vec::new();
                 for requested_id in &tx_ids {
-                    if let Some(pos) = pending_bodies.iter().position(|p| p.tx_id == *requested_id)
+                    if let Some(pos) =
+                        pending_bodies.iter().position(|p| p.tx_id == requested_id.tx_id)
                     {
                         let pending = pending_bodies.remove(pos).expect("position valid");
                         txs.push(pending.body);
@@ -424,7 +399,10 @@ mod tests {
             TxSubmission::transition(
                 &State::StIdle,
                 &Message::MsgRequestTxs {
-                    tx_ids: vec![TxId::new_with_array([0x42; 32])]
+                    tx_ids: vec![EraTxId {
+                        era: ORIGIN_ERA,
+                        tx_id: TxId::new_with_array([0x42; 32])
+                    }]
                 }
             )
             .unwrap(),
@@ -478,7 +456,10 @@ mod tests {
         assert!(TxSubmission::transition(
             &State::StTxIdsBlocking,
             &Message::MsgRequestTxs {
-                tx_ids: vec![TxId::new_with_array([1; 32])]
+                tx_ids: vec![EraTxId {
+                    era: ORIGIN_ERA,
+                    tx_id: TxId::new_with_array([0u8; 32])
+                }]
             }
         )
         .is_err());
@@ -587,7 +568,13 @@ mod tests {
                     assert_eq!(tx_ids.len(), 2);
                     assert_eq!(tx_ids[0].size, 1500);
                     assert_eq!(tx_ids[1].size, 2000);
-                    tx_ids.into_iter().map(|t| t.tx_id).collect::<Vec<_>>()
+                    tx_ids
+                        .into_iter()
+                        .map(|t| EraTxId {
+                            era: t.era,
+                            tx_id: t.tx_id,
+                        })
+                        .collect::<Vec<_>>()
                 }
                 other => panic!("expected MsgReplyTxIds, got {other:?}"),
             };

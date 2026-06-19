@@ -16,100 +16,114 @@ use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
-use super::{Message, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, TX_ID_SIZE};
+use super::{
+    EraTxId, Message, TxBody, TxId, TxIdAndSize, TX_ID_SIZE, MAX_TX_SIZE, MAX_UNACKED,
+    ORIGIN_ERA,
+};
 
-/// Opaque transaction ID (fixed 32-byte hash) for CBOR encoding/decoding.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CodecTxId(shared_consensus::mempool::TxId);
-
-impl CodecTxId {
-    pub fn new(tx_id: shared_consensus::mempool::TxId) -> Self {
-        CodecTxId(tx_id)
-    }
-    
-    pub fn get_tx_id(&self) -> &shared_consensus::mempool::TxId {
-        &self.0
-    }
-}
-
-/// Opaque transaction body for CBOR encoding/decoding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodecTxBody(shared_consensus::mempool::TxBody);
-
-impl CodecTxBody {
-    pub fn new(tx_body: shared_consensus::mempool::TxBody) -> Self {
-        CodecTxBody(tx_body)
-    }
-    
-    pub fn get_tx_body(&self) -> &shared_consensus::mempool::TxBody {
-        &self.0
-    }
-}
+/// CBOR tag 24 ("encoded CBOR data item"), wrapping the era-tagged tx
+/// body cardano-node sends in `MsgReplyTxs`.
+const CBOR_TAG: u64 = 24;
 
 // --- TxId encode/decode ---
 //
 // `TxId(_)` carries the raw transaction-id bytes (e.g. the blake2b-256 hash).
-// The codec wraps them as CBOR `bytes(N)` on the wire so the receiver can
-// recover the same bytes on decode.
+// On the wire it is a bare CBOR `bytes(N)`; the era prefix lives one level
+// up in `EraTxId` (cardano-node's `GenTxId` is `[era, bytes]`).
+
+fn encode_tx_id<W: minicbor::encode::Write>(
+    tx_id: &TxId,
+    e: &mut Encoder<W>,
+    _ctx: &mut (),
+) -> Result<(), EncodeError<W::Error>> {
+    e.bytes(&tx_id.get_bytes())?;
+    Ok(())
+}
+
+fn decode_tx_id<'a>(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<TxId, DecodeError> {
+    let raw = d.bytes()?;
+    if raw.len() != TX_ID_SIZE {
+        return Err(DecodeError::message(format!(
+            "tx id incorrect length: {} bytes differ from required {TX_ID_SIZE}",
+            raw.len()
+        )));
+    }
+    let mut slice: [u8; 32] = [0u8; 32];
+    slice.copy_from_slice(raw);
+    Ok(TxId::new_with_slice(&slice))
+}
+
+// --- EraTxId encode/decode ---
+//
+// cardano-node's TxSubmission2 carries each `GenTxId` for the multi-era
+// stack as `[era, txid_bytes]` (era = u16 HFC index), NOT bare bytes.
+// This is the unit that appears in `MsgRequestTxs` and inside
+// `TxIdAndSize`. Composes the bare `TxId` codec for the bytes half.
+
+impl minicbor::Encode<()> for EraTxId {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut Encoder<W>,
+        _ctx: &mut (),
+    ) -> Result<(), EncodeError<W::Error>> {
+        e.array(2)?;
+        e.u16(self.era)?;
+        encode_tx_id(&self.tx_id, e, &mut ())?;
+        Ok(())
+    }
+}
+
+impl<'a> minicbor::Decode<'a, ()> for EraTxId {
+    fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
+        let _len = d.array()?;
+        let era = d.u16()?;
+        let tx_id = decode_tx_id(d, &mut ())?;
+        Ok(EraTxId { era, tx_id })
+    }
+}
 
 // --- TxBody encode/decode ---
 //
-// `TxBody(_)` carries the raw transaction bytes; same wrapping pattern as
-// `TxId`.
+// cardano-node sends each tx body in `MsgReplyTxs` as
+// `[era, #6.24(bytes)]` — era-tagged with the body wrapped in CBOR
+// tag 24 ("encoded CBOR data item"). We keep only the raw body bytes;
+// the era we originate is `ORIGIN_ERA` (received bodies aren't re-sent).
 
-impl minicbor::Encode<()> for CodecTxId {
-    fn encode<W: minicbor::encode::Write>(
-        &self,
-        e: &mut Encoder<W>,
-        _ctx: &mut (),
-    ) -> Result<(), EncodeError<W::Error>> {
-        e.bytes(&self.0.get_bytes())?;
-        Ok(())
-    }
+fn encode_tx_body<W: minicbor::encode::Write>(
+    tx: &TxBody,
+    e: &mut Encoder<W>,
+    _ctx: &mut (),
+) -> Result<(), EncodeError<W::Error>> {
+    e.array(2)?;
+    e.u16(ORIGIN_ERA)?;
+    e.tag(minicbor::data::Tag::new(CBOR_TAG))?;
+    e.bytes(tx.get_slice())?;
+    Ok(())
 }
 
-impl<'a> minicbor::Decode<'a, ()> for CodecTxId {
-    fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
-        let raw = d.bytes()?;
-        if raw.len() != TX_ID_SIZE {
-            return Err(DecodeError::message(format!(
-                "tx id has incorrect size: {} instead of {TX_ID_SIZE}",
-                raw.len()
-            )));
-        };
-
-        let mut array = [0u8; TX_ID_SIZE];
-        array.copy_from_slice(&raw[..TX_ID_SIZE]);
-        Ok(CodecTxId(shared_consensus::mempool::TxId::new_with_array(array)))
+fn decode_tx_body<'a>(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<TxBody, DecodeError> {
+    let _len = d.array()?;
+    let _era = d.u16()?;
+    let tag = d.tag()?;
+    if tag.as_u64() != CBOR_TAG {
+        return Err(DecodeError::message(format!(
+            "expected CBOR tag {CBOR_TAG} on tx body, got {}",
+            tag.as_u64()
+        )));
     }
-}
-
-
-impl minicbor::Encode<()> for CodecTxBody {
-    fn encode<W: minicbor::encode::Write>(
-        &self,
-        e: &mut Encoder<W>,
-        _ctx: &mut (),
-    ) -> Result<(), EncodeError<W::Error>> {
-        e.bytes(self.0.get_slice())?;
-        Ok(())
+    let raw = d.bytes()?;
+    if raw.len() > MAX_TX_SIZE {
+        return Err(DecodeError::message(format!(
+           "tx body too large: {} bytes exceeds limit {MAX_TX_SIZE}",
+           raw.len()
+       )));
     }
-}
-
-impl<'a> minicbor::Decode<'a, ()> for CodecTxBody {
-    fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
-        let raw = d.bytes()?;
-        if raw.len() > MAX_TX_SIZE {
-            return Err(DecodeError::message(format!(
-                "tx body too large: {} bytes exceeds limit {MAX_TX_SIZE}",
-                raw.len()
-            )));
-        }
-        Ok(CodecTxBody(shared_consensus::mempool::TxBody::new_with_vec(raw.to_vec())))
-    }
+    Ok(TxBody::new_with_slice(raw))
 }
 
 // --- TxIdAndSize encode/decode ---
+//
+// Wire: `[era_tx_id, size]` where `era_tx_id` is itself `[era, bytes]`.
 
 impl minicbor::Encode<()> for TxIdAndSize {
     fn encode<W: minicbor::encode::Write>(
@@ -118,7 +132,11 @@ impl minicbor::Encode<()> for TxIdAndSize {
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
         e.array(2)?;
-        CodecTxId::new(self.tx_id.clone()).encode(e, &mut ())?;
+        // Inline the `EraTxId` encoding (`[era, tx_id]`) to avoid cloning
+        // `self.tx_id` into a temporary just to encode it.
+        e.array(2)?;
+        e.u16(self.era)?;
+        encode_tx_id(&self.tx_id, e, &mut ())?;
         e.u32(self.size)?;
         Ok(())
     }
@@ -127,9 +145,13 @@ impl minicbor::Encode<()> for TxIdAndSize {
 impl<'a> minicbor::Decode<'a, ()> for TxIdAndSize {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let _len = d.array()?;
-        let tx_id = CodecTxId::decode(d, &mut ())?;
+        let era_tx_id = EraTxId::decode(d, &mut ())?;
         let size = d.u32()?;
-        Ok(TxIdAndSize { tx_id: tx_id.get_tx_id().clone(), size })
+        Ok(TxIdAndSize {
+            tx_id: era_tx_id.tx_id,
+            size,
+            era: era_tx_id.era,
+        })
     }
 }
 
@@ -222,7 +244,7 @@ impl minicbor::Encode<()> for Message {
                 // Inner list: indefinite-length.
                 e.begin_array()?;
                 for id in tx_ids {
-                    CodecTxId::new(id.clone()).encode(e, &mut ())?;
+                    id.encode(e, &mut ())?;
                 }
                 e.end()?;
             }
@@ -231,8 +253,8 @@ impl minicbor::Encode<()> for Message {
                 e.u32(3)?;
                 // Inner list: indefinite-length.
                 e.begin_array()?;
-                for tx_body in txs {
-                    CodecTxBody::new(tx_body.clone()).encode(e, &mut ())?;
+                for tx in txs {
+                    encode_tx_body(tx, e, &mut ())?;
                 }
                 e.end()?;
             }
@@ -269,13 +291,14 @@ impl<'a> minicbor::Decode<'a, ()> for Message {
                 Ok(Message::MsgReplyTxIds { tx_ids })
             }
             2 => {
-                let tx_ids =
-                    decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| CodecTxId::decode(d, &mut ()).map(|id| id.get_tx_id().clone()))?;
+                let tx_ids = decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| {
+                    EraTxId::decode(d, &mut ())
+                })?;
                 Ok(Message::MsgRequestTxs { tx_ids })
             }
             3 => {
                 let txs =
-                    decode_bounded_list(d, MAX_UNACKED, "txList", |d| CodecTxBody::decode(d, &mut ()).map(|b| b.get_tx_body().clone()))?;
+                    decode_bounded_list(d, MAX_UNACKED, "txList", |d| decode_tx_body(d, &mut ()))?;
                 Ok(Message::MsgReplyTxs { txs })
             }
             4 => Ok(Message::MsgDone),
@@ -288,7 +311,6 @@ impl<'a> minicbor::Decode<'a, ()> for Message {
 
 #[cfg(test)]
 mod tests {
-    use shared_consensus::mempool::{TxBody, TxId};
     use super::*;
 
     fn round_trip(msg: &Message) -> Message {
@@ -297,12 +319,18 @@ mod tests {
     }
 
     fn make_tx_id() -> TxId {
-        let arr: [u8; 32] = std::array::from_fn(|i| i as u8 + 40);
-        TxId::new_with_array(arr)
+        TxId::new_with_array([0xaa; 32])
+    }
+
+    fn make_era_tx_id(era: u16) -> EraTxId {
+        EraTxId {
+            era,
+            tx_id: make_tx_id(),
+        }
     }
 
     fn make_tx_body(payload: &[u8]) -> TxBody {
-        TxBody::new_with_vec(payload.to_vec())
+        TxBody::new_with_slice(payload)
     }
 
     #[test]
@@ -339,19 +367,19 @@ mod tests {
 
     #[test]
     fn reply_tx_ids_round_trip() {
-        let tx_ids = vec![TxIdAndSize {
-            tx_id: make_tx_id(),
-            size: 1500,
-        }];
         let msg = Message::MsgReplyTxIds {
-            tx_ids: tx_ids.clone(),
+            tx_ids: vec![TxIdAndSize {
+                tx_id: make_tx_id(),
+                size: 1500,
+                era: 6,
+            }],
         };
         let decoded = round_trip(&msg);
         match decoded {
-            Message::MsgReplyTxIds { tx_ids: decoded_tx_ids } => {
-                assert_eq!(decoded_tx_ids.len(), 1);
-                assert_eq!(decoded_tx_ids[0].size, 1500);
-                assert_eq!(decoded_tx_ids[0].tx_id, tx_ids[0].tx_id);
+            Message::MsgReplyTxIds { tx_ids } => {
+                assert_eq!(tx_ids.len(), 1);
+                assert_eq!(tx_ids[0].size, 1500);
+                assert_eq!(tx_ids[0].era, 6);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
         }
@@ -370,11 +398,14 @@ mod tests {
     #[test]
     fn request_txs_round_trip() {
         let msg = Message::MsgRequestTxs {
-            tx_ids: vec![make_tx_id(), make_tx_id()],
+            tx_ids: vec![make_era_tx_id(7), make_era_tx_id(7)],
         };
         let decoded = round_trip(&msg);
         match decoded {
-            Message::MsgRequestTxs { tx_ids } => assert_eq!(tx_ids.len(), 2),
+            Message::MsgRequestTxs { tx_ids } => {
+                assert_eq!(tx_ids.len(), 2);
+                assert_eq!(tx_ids[0].era, 7);
+            }
             other => panic!("expected MsgRequestTxs, got {other:?}"),
         }
     }
@@ -430,19 +461,22 @@ mod tests {
         // Production constructs `TxId(blake2b256(body))` with the raw 32-byte
         // hash, not pre-encoded CBOR. The codec must wrap on send and unwrap
         // on receive so the same bytes survive a round trip.
-        let raw_hash: Vec<u8> = (0..32).collect();
+        let mut raw_hash: [u8; 32] = [0u8; 32];
+        raw_hash.copy_from_slice (&(0..32).collect::<Vec<u8>>());
         let msg = Message::MsgReplyTxIds {
             tx_ids: vec![TxIdAndSize {
-                tx_id: TxId::new_with_slice(raw_hash.as_array().unwrap()),
+                tx_id: TxId::new_with_slice(&raw_hash),
                 size: 1234,
+                era: 6,
             }],
         };
         let decoded = round_trip(&msg);
         match decoded {
             Message::MsgReplyTxIds { tx_ids } => {
                 assert_eq!(tx_ids.len(), 1);
-                assert_eq!(tx_ids[0].tx_id.get_bytes(), &raw_hash);
+                assert_eq!(tx_ids[0].tx_id.get_bytes(), raw_hash);
                 assert_eq!(tx_ids[0].size, 1234);
+                assert_eq!(tx_ids[0].era, 6);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
         }
@@ -461,8 +495,8 @@ mod tests {
         match decoded {
             Message::MsgReplyTxs { txs } => {
                 assert_eq!(txs.len(), 2);
-                assert_eq!(txs[0], TxBody::new_with_vec(body_a));
-                assert_eq!(txs[1], TxBody::new_with_vec(body_b));
+                assert_eq!(txs[0].get_slice(), &body_a);
+                assert_eq!(txs[1].get_slice(), &body_b);
             }
             other => panic!("expected MsgReplyTxs, got {other:?}"),
         }
@@ -479,15 +513,17 @@ mod tests {
     #[test]
     fn decode_definite_inner_list() {
         // MsgReplyTxIds with definite-length inner list (should also work).
-        let tx_id = CodecTxId::new(make_tx_id());
+        let tx_id = make_tx_id();
         let mut buf = Vec::new();
         let mut e = minicbor::Encoder::new(&mut buf);
         e.array(2).unwrap();
         e.u32(1).unwrap();
         // Definite-length inner list with 1 element.
         e.array(1).unwrap();
-        e.array(2).unwrap();
-        minicbor::Encode::encode(&tx_id, &mut e, &mut ()).unwrap();
+        e.array(2).unwrap(); // TxIdAndSize = [eraTxId, size]
+        e.array(2).unwrap(); // eraTxId = [era, bytes]
+        e.u16(6).unwrap();
+        encode_tx_id(&tx_id, &mut e, &mut ()).unwrap();
         e.u32(500).unwrap();
 
         let decoded: Message = minicbor::decode(&buf).unwrap();
@@ -497,6 +533,67 @@ mod tests {
                 assert_eq!(tx_ids[0].size, 500);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
+        }
+    }
+
+    // --- Wire-fidelity regression tests for cardano-node (issue #17) ---
+
+    #[test]
+    fn decodes_cardano_node_era_wrapped_reply_tx_ids() {
+        // Reproduces the exact shape cardano-node sends and that the old
+        // bare-bytes codec choked on ("unexpected type array at position
+        // 4: expected bytes"). MsgReplyTxIds = [1, [ [[era, txid], size] ]]
+        // with an indefinite inner list, era as a u16, txid as bytes.
+        let txid: Vec<u8> = (0..32).collect();
+        let mut buf = Vec::new();
+        let mut e = minicbor::Encoder::new(&mut buf);
+        e.array(2).unwrap();
+        e.u32(1).unwrap(); // tag: MsgReplyTxIds
+        e.begin_array().unwrap(); // indefinite txIdsAndSizes list
+        e.array(2).unwrap(); // TxIdAndSize = [eraTxId, size]
+        e.array(2).unwrap(); // eraTxId = [era, bytes]  <- byte where it used to fail
+        e.u16(7).unwrap(); // era as observed live from the dev relay 2026-06-18
+        e.bytes(&txid).unwrap();
+        e.u32(1500).unwrap();
+        e.end().unwrap();
+
+        let decoded: Message = minicbor::decode(&buf).unwrap();
+        match decoded {
+            Message::MsgReplyTxIds { tx_ids } => {
+                assert_eq!(tx_ids.len(), 1);
+                assert_eq!(&tx_ids[0].tx_id.get_bytes(), &txid);
+                assert_eq!(tx_ids[0].size, 1500);
+                assert_eq!(tx_ids[0].era, 7, "era must be retained for the round-trip");
+            }
+            other => panic!("expected MsgReplyTxIds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_cardano_node_era_wrapped_reply_txs() {
+        // MsgReplyTxs body is era-tagged AND tag-24 wrapped:
+        // [3, [ [era, #6.24(body_bytes)] ]] — a different shape from the
+        // txid (which has no tag-24). This is the message the bug would
+        // have hit next had it gotten past MsgReplyTxIds.
+        let body: Vec<u8> = (0..64).map(|i| (i * 3) as u8).collect();
+        let mut buf = Vec::new();
+        let mut e = minicbor::Encoder::new(&mut buf);
+        e.array(2).unwrap();
+        e.u32(3).unwrap(); // tag: MsgReplyTxs
+        e.begin_array().unwrap();
+        e.array(2).unwrap(); // [era, #6.24(bytes)]
+        e.u16(7).unwrap(); // era as observed live from the dev relay 2026-06-18
+        e.tag(minicbor::data::Tag::new(24)).unwrap();
+        e.bytes(&body).unwrap();
+        e.end().unwrap();
+
+        let decoded: Message = minicbor::decode(&buf).unwrap();
+        match decoded {
+            Message::MsgReplyTxs { txs } => {
+                assert_eq!(txs.len(), 1);
+                assert_eq!(txs[0].get_slice(), &body);
+            }
+            other => panic!("expected MsgReplyTxs, got {other:?}"),
         }
     }
 }
