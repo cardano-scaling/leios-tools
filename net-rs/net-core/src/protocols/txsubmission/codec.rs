@@ -16,13 +16,20 @@ use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
-use super::{Message, TxBody, TxId, TxIdAndSize, MAX_TX_ID_SIZE, MAX_TX_SIZE, MAX_UNACKED};
+use super::{
+    EraTxId, Message, TxBody, TxId, TxIdAndSize, MAX_TX_ID_SIZE, MAX_TX_SIZE, MAX_UNACKED,
+    ORIGIN_ERA,
+};
+
+/// CBOR tag 24 ("encoded CBOR data item"), wrapping the era-tagged tx
+/// body cardano-node sends in `MsgReplyTxs`.
+const CBOR_TAG: u64 = 24;
 
 // --- TxId encode/decode ---
 //
 // `TxId(_)` carries the raw transaction-id bytes (e.g. the blake2b-256 hash).
-// The codec wraps them as CBOR `bytes(N)` on the wire so the receiver can
-// recover the same bytes on decode.
+// On the wire it is a bare CBOR `bytes(N)`; the era prefix lives one level
+// up in `EraTxId` (cardano-node's `GenTxId` is `[era, bytes]`).
 
 impl minicbor::Encode<()> for TxId {
     fn encode<W: minicbor::encode::Write>(
@@ -48,10 +55,41 @@ impl<'a> minicbor::Decode<'a, ()> for TxId {
     }
 }
 
+// --- EraTxId encode/decode ---
+//
+// cardano-node's TxSubmission2 carries each `GenTxId` for the multi-era
+// stack as `[era, txid_bytes]` (era = u16 HFC index), NOT bare bytes.
+// This is the unit that appears in `MsgRequestTxs` and inside
+// `TxIdAndSize`. Composes the bare `TxId` codec for the bytes half.
+
+impl minicbor::Encode<()> for EraTxId {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut Encoder<W>,
+        _ctx: &mut (),
+    ) -> Result<(), EncodeError<W::Error>> {
+        e.array(2)?;
+        e.u16(self.era)?;
+        self.tx_id.encode(e, &mut ())?;
+        Ok(())
+    }
+}
+
+impl<'a> minicbor::Decode<'a, ()> for EraTxId {
+    fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
+        let _len = d.array()?;
+        let era = d.u16()?;
+        let tx_id = TxId::decode(d, &mut ())?;
+        Ok(EraTxId { era, tx_id })
+    }
+}
+
 // --- TxBody encode/decode ---
 //
-// `TxBody(_)` carries the raw transaction bytes; same wrapping pattern as
-// `TxId`.
+// cardano-node sends each tx body in `MsgReplyTxs` as
+// `[era, #6.24(bytes)]` — era-tagged with the body wrapped in CBOR
+// tag 24 ("encoded CBOR data item"). We keep only the raw body bytes;
+// the era we originate is `ORIGIN_ERA` (received bodies aren't re-sent).
 
 impl minicbor::Encode<()> for TxBody {
     fn encode<W: minicbor::encode::Write>(
@@ -59,6 +97,9 @@ impl minicbor::Encode<()> for TxBody {
         e: &mut Encoder<W>,
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
+        e.array(2)?;
+        e.u16(ORIGIN_ERA)?;
+        e.tag(minicbor::data::Tag::new(CBOR_TAG))?;
         e.bytes(&self.0)?;
         Ok(())
     }
@@ -66,6 +107,15 @@ impl minicbor::Encode<()> for TxBody {
 
 impl<'a> minicbor::Decode<'a, ()> for TxBody {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
+        let _len = d.array()?;
+        let _era = d.u16()?;
+        let tag = d.tag()?;
+        if tag.as_u64() != CBOR_TAG {
+            return Err(DecodeError::message(format!(
+                "expected CBOR tag {CBOR_TAG} on tx body, got {}",
+                tag.as_u64()
+            )));
+        }
         let raw = d.bytes()?;
         if raw.len() > MAX_TX_SIZE {
             return Err(DecodeError::message(format!(
@@ -78,6 +128,8 @@ impl<'a> minicbor::Decode<'a, ()> for TxBody {
 }
 
 // --- TxIdAndSize encode/decode ---
+//
+// Wire: `[era_tx_id, size]` where `era_tx_id` is itself `[era, bytes]`.
 
 impl minicbor::Encode<()> for TxIdAndSize {
     fn encode<W: minicbor::encode::Write>(
@@ -86,6 +138,10 @@ impl minicbor::Encode<()> for TxIdAndSize {
         _ctx: &mut (),
     ) -> Result<(), EncodeError<W::Error>> {
         e.array(2)?;
+        // Inline the `EraTxId` encoding (`[era, tx_id]`) to avoid cloning
+        // `self.tx_id` into a temporary just to encode it.
+        e.array(2)?;
+        e.u16(self.era)?;
         self.tx_id.encode(e, &mut ())?;
         e.u32(self.size)?;
         Ok(())
@@ -95,9 +151,13 @@ impl minicbor::Encode<()> for TxIdAndSize {
 impl<'a> minicbor::Decode<'a, ()> for TxIdAndSize {
     fn decode(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<Self, DecodeError> {
         let _len = d.array()?;
-        let tx_id = TxId::decode(d, &mut ())?;
+        let era_tx_id = EraTxId::decode(d, &mut ())?;
         let size = d.u32()?;
-        Ok(TxIdAndSize { tx_id, size })
+        Ok(TxIdAndSize {
+            tx_id: era_tx_id.tx_id,
+            size,
+            era: era_tx_id.era,
+        })
     }
 }
 
@@ -237,8 +297,9 @@ impl<'a> minicbor::Decode<'a, ()> for Message {
                 Ok(Message::MsgReplyTxIds { tx_ids })
             }
             2 => {
-                let tx_ids =
-                    decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| TxId::decode(d, &mut ()))?;
+                let tx_ids = decode_bounded_list(d, MAX_UNACKED, "txIdList", |d| {
+                    EraTxId::decode(d, &mut ())
+                })?;
                 Ok(Message::MsgRequestTxs { tx_ids })
             }
             3 => {
@@ -265,6 +326,13 @@ mod tests {
 
     fn make_tx_id() -> TxId {
         TxId(vec![0xaa; 32])
+    }
+
+    fn make_era_tx_id(era: u16) -> EraTxId {
+        EraTxId {
+            era,
+            tx_id: make_tx_id(),
+        }
     }
 
     fn make_tx_body(payload: &[u8]) -> TxBody {
@@ -309,6 +377,7 @@ mod tests {
             tx_ids: vec![TxIdAndSize {
                 tx_id: make_tx_id(),
                 size: 1500,
+                era: 6,
             }],
         };
         let decoded = round_trip(&msg);
@@ -316,6 +385,7 @@ mod tests {
             Message::MsgReplyTxIds { tx_ids } => {
                 assert_eq!(tx_ids.len(), 1);
                 assert_eq!(tx_ids[0].size, 1500);
+                assert_eq!(tx_ids[0].era, 6);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
         }
@@ -334,11 +404,14 @@ mod tests {
     #[test]
     fn request_txs_round_trip() {
         let msg = Message::MsgRequestTxs {
-            tx_ids: vec![make_tx_id(), make_tx_id()],
+            tx_ids: vec![make_era_tx_id(7), make_era_tx_id(7)],
         };
         let decoded = round_trip(&msg);
         match decoded {
-            Message::MsgRequestTxs { tx_ids } => assert_eq!(tx_ids.len(), 2),
+            Message::MsgRequestTxs { tx_ids } => {
+                assert_eq!(tx_ids.len(), 2);
+                assert_eq!(tx_ids[0].era, 7);
+            }
             other => panic!("expected MsgRequestTxs, got {other:?}"),
         }
     }
@@ -399,6 +472,7 @@ mod tests {
             tx_ids: vec![TxIdAndSize {
                 tx_id: TxId(raw_hash.clone()),
                 size: 1234,
+                era: 6,
             }],
         };
         let decoded = round_trip(&msg);
@@ -407,6 +481,7 @@ mod tests {
                 assert_eq!(tx_ids.len(), 1);
                 assert_eq!(tx_ids[0].tx_id.0, raw_hash);
                 assert_eq!(tx_ids[0].size, 1234);
+                assert_eq!(tx_ids[0].era, 6);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
         }
@@ -450,7 +525,9 @@ mod tests {
         e.u32(1).unwrap();
         // Definite-length inner list with 1 element.
         e.array(1).unwrap();
-        e.array(2).unwrap();
+        e.array(2).unwrap(); // TxIdAndSize = [eraTxId, size]
+        e.array(2).unwrap(); // eraTxId = [era, bytes]
+        e.u16(6).unwrap();
         minicbor::Encode::encode(&tx_id, &mut e, &mut ()).unwrap();
         e.u32(500).unwrap();
 
@@ -461,6 +538,67 @@ mod tests {
                 assert_eq!(tx_ids[0].size, 500);
             }
             other => panic!("expected MsgReplyTxIds, got {other:?}"),
+        }
+    }
+
+    // --- Wire-fidelity regression tests for cardano-node (issue #17) ---
+
+    #[test]
+    fn decodes_cardano_node_era_wrapped_reply_tx_ids() {
+        // Reproduces the exact shape cardano-node sends and that the old
+        // bare-bytes codec choked on ("unexpected type array at position
+        // 4: expected bytes"). MsgReplyTxIds = [1, [ [[era, txid], size] ]]
+        // with an indefinite inner list, era as a u16, txid as bytes.
+        let txid: Vec<u8> = (0..32).collect();
+        let mut buf = Vec::new();
+        let mut e = minicbor::Encoder::new(&mut buf);
+        e.array(2).unwrap();
+        e.u32(1).unwrap(); // tag: MsgReplyTxIds
+        e.begin_array().unwrap(); // indefinite txIdsAndSizes list
+        e.array(2).unwrap(); // TxIdAndSize = [eraTxId, size]
+        e.array(2).unwrap(); // eraTxId = [era, bytes]  <- byte where it used to fail
+        e.u16(7).unwrap(); // era as observed live from the dev relay 2026-06-18
+        e.bytes(&txid).unwrap();
+        e.u32(1500).unwrap();
+        e.end().unwrap();
+
+        let decoded: Message = minicbor::decode(&buf).unwrap();
+        match decoded {
+            Message::MsgReplyTxIds { tx_ids } => {
+                assert_eq!(tx_ids.len(), 1);
+                assert_eq!(tx_ids[0].tx_id.0, txid);
+                assert_eq!(tx_ids[0].size, 1500);
+                assert_eq!(tx_ids[0].era, 7, "era must be retained for the round-trip");
+            }
+            other => panic!("expected MsgReplyTxIds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_cardano_node_era_wrapped_reply_txs() {
+        // MsgReplyTxs body is era-tagged AND tag-24 wrapped:
+        // [3, [ [era, #6.24(body_bytes)] ]] — a different shape from the
+        // txid (which has no tag-24). This is the message the bug would
+        // have hit next had it gotten past MsgReplyTxIds.
+        let body: Vec<u8> = (0..64).map(|i| (i * 3) as u8).collect();
+        let mut buf = Vec::new();
+        let mut e = minicbor::Encoder::new(&mut buf);
+        e.array(2).unwrap();
+        e.u32(3).unwrap(); // tag: MsgReplyTxs
+        e.begin_array().unwrap();
+        e.array(2).unwrap(); // [era, #6.24(bytes)]
+        e.u16(7).unwrap(); // era as observed live from the dev relay 2026-06-18
+        e.tag(minicbor::data::Tag::new(24)).unwrap();
+        e.bytes(&body).unwrap();
+        e.end().unwrap();
+
+        let decoded: Message = minicbor::decode(&buf).unwrap();
+        match decoded {
+            Message::MsgReplyTxs { txs } => {
+                assert_eq!(txs.len(), 1);
+                assert_eq!(txs[0].0, body);
+            }
+            other => panic!("expected MsgReplyTxs, got {other:?}"),
         }
     }
 }
