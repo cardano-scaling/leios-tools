@@ -50,7 +50,7 @@ rewiring. Blocks all user stories. Also satisfies US4 (composition/includes).
 system is deleted in Phase 3 (T025).
 
 - [ ] T003 [P] Define `Status { Success, Failure, Running }` in `shared-rs/consensus/src/behaviour/tree/mod.rs` with a unit test (FR-001).
-- [ ] T004 [P] Define the control-signal seam in `shared-rs/consensus/src/behaviour/tree/control.rs`: `ControlSignal { praos, leios, mempool }`, `PraosControl`/`LeiosControl`/`MempoolControl`, `VotePolicy`, `OutboundControl`, `TxFilterPolicy`, reusing existing `RbProductionStrategy`/`BodyPath`/`NoVoteReason`; test that `Default` is honest (no perturbation).
+- [ ] T004 [P] Define the control-signal seam in `shared-rs/consensus/src/behaviour/tree/control.rs`: `ControlSignal { praos, leios, mempool }`, `PraosControl`/`LeiosControl`/`MempoolControl`, `VotePolicy`, `OutboundControl`, `TxFilterPolicy`, and `EbSizePolicy` (for the merged `lie-about-eb-size`). `LeiosControl` carries `vote`, `offer_eb_size: EbSizePolicy`, and `echo_to_source: bool`. Reuse existing `RbProductionStrategy`/`BodyPath`/`NoVoteReason`; test that `Default` is honest.
 - [ ] T005 [P] Define `DynamicEnv(BTreeMap<String, EnvValue>)`, `EnvValue`, `EnvHandle`, `NativeChainState`, and `TickCtx` in `shared-rs/consensus/src/behaviour/tree/env.rs`; test typed get/insert and dotted (owner-namespaced) keys.
 - [ ] T006 Write failing tests for the minimal condition grammar in `shared-rs/consensus/src/behaviour/tree/condition.rs`: comparisons, `and`/`or`/`not`, `contains(...)`, `env.*`/`cardano.*` refs, and load-time errors for undefined refs and type mismatch (contracts/bt-config.schema.md).
 - [ ] T007 Implement `ConditionExpr` parse + evaluate in `shared-rs/consensus/src/behaviour/tree/condition.rs` to pass T006.
@@ -62,6 +62,8 @@ system is deleted in Phase 3 (T025).
 - [ ] T013 [P] [US4-support] Re-home `deep-reorg` (sets `praos.reorg_depth` on due slots; periodicity self-gated from `(seed, slot)`) in `shared-rs/consensus/src/behaviour/actions/deep_reorg.rs`; test-first.
 - [ ] T014 [P] [US4-support] Re-home `drop-inbound-peers` (sets `praos.drop_inbound` from the seeded per-slot draw) in `shared-rs/consensus/src/behaviour/actions/drop_inbound.rs`; test-first.
 - [ ] T015 [P] [US4-support] Re-home `t22` (sets `mempool.tx_filter = ChecksumThreshold{..}`) in `shared-rs/consensus/src/behaviour/actions/t22.rs`; test-first.
+- [ ] T015a [P] [US4-support] Re-home the merged `lie-about-eb-size` (sets `leios.offer_eb_size = Linear{scale_num, scale_den, offset}`; reuse the i128 `mutate_size` math) in `shared-rs/consensus/src/behaviour/actions/lie_about_eb_size.rs`; port the merged size-math unit tests.
+- [ ] T015b [P] [US4-support] Re-home the merged `echo-to-source` (sets `leios.echo_to_source = true`) in `shared-rs/consensus/src/behaviour/actions/echo_to_source.rs`; port the merged trait-wiring tests.
 - [ ] T016 Write failing tests for `BtConfig::load` in `shared-rs/consensus/src/behaviour/tree/config.rs`: parse `[run]`/`[env]`/`[behaviours.<id>]`/`includes`; uniform deep-merge (closer-to-root wins); name resolution with **expansion to independent instances**; and every validation rule (exactly one `[run]`; dangling child/include reference; reference + include cycles; undefined `env.X`; type mismatch; `seed`/`root` forbidden in a fragment).
 - [ ] T017 Implement `BtConfig` + `load`/`validate`/compile-to-`BehaviourTree` in `shared-rs/consensus/src/behaviour/tree/config.rs` to pass T016 (figment table merge, relative `includes`, reference expansion). Satisfies US4.
 - [ ] T018 Add a determinism test in `shared-rs/consensus/src/behaviour/tree/`: same config + seed ⇒ identical `(Status, ControlSignal)` sequence over a slot range (SC-003, FR-023).
@@ -90,14 +92,15 @@ at/after it, with no REST or coordinator (quickstart Scenario 2).
 - [ ] T022 [US1] Rewire `shared-rs/consensus/src/praos.rs` (block/tip paths) to drop `on_block_received`/`on_tip_advanced` hook calls; reorg/drop read from `ControlSignal`; test.
 - [ ] T023 [US1] Rewire the mempool path in `shared-rs/consensus/src/mempool.rs` to apply `TxFilterPolicy` (remove `on_tx_*` hook calls); test.
 - [ ] T024 [US1] Rewire production: `shared-rs/consensus/src/production.rs` body-path and `net-rs/net-node/src/production.rs` to read `praos.production`/`praos.body_path` from the published `ControlSignal` (remove `rb_production_strategy`/`decide_body_path` hooks); test.
-- [ ] T025 [US1] Delete the `Behaviour` hook trait, `BehaviourOutcome`/`DecisionOutcome`, `CompositeBehaviour`, `invoke_hook`, and the old per-behaviour `impl Behaviour` blocks from `shared-rs/consensus/src/behaviour/`; collapse `registry.rs` to `ActionSpec` + `build_action` only; ensure `shared-rs` + `net-rs` compile and all tests pass.
+- [ ] T025 [US1] Delete the `Behaviour` hook trait and all its hooks (incl. the merged `allow_echo_to_source`/`transform_outbound`), `BehaviourOutcome`/`DecisionOutcome`, `CompositeBehaviour`, `invoke_hook`, the `Outbound`/`OwnedOutbound` enums, and the old per-behaviour `impl Behaviour` blocks from `shared-rs/consensus/src/behaviour/`; collapse `registry.rs` to `ActionSpec` + `build_action` only; ensure `shared-rs` + `net-rs` compile and all tests pass.
 - [ ] T026 [US1] Create `net-rs/net-node/src/bt_runtime.rs`: holds the `EnvHandle` + `BehaviourTree` and publishes the per-slot `ControlSignal` via a cheap shared cell (`arc-swap`/`tokio::watch`); test-first.
 - [ ] T027 [US1] Wire the tick into `net-rs/net-node/src/main.rs` slot arm: build `NativeChainState` (current slot/epoch, mempool tx count), tick the BT, `apply_control` to the state machines, publish the snapshot; remove the stdin `behaviour`/`behaviour_reset` handling.
 - [ ] T028 [US1] Add `--behaviour-tree <path>` (and a `behaviour_tree` config key) to `net-rs/net-node/src/config.rs`; load + compile the `BtConfig`; default to an implicit honest one-leaf tree when absent; remove the `behaviour`/`behaviour_reset` config fields; test (incl. start-up refusal on an invalid config, US1 scenario 5).
-- [ ] T029 [US1] Rewire the per-peer outbound actuator in `net-rs/net-core/src/peer/server_handlers.rs` to read the published `praos.outbound` (equivocation routing / drop) instead of `transform_outbound`; test.
+- [ ] T029 [US1] Rewire the RB-header per-peer outbound actuator in `net-rs/net-core/src/peer/server_handlers.rs` to read the published `praos.outbound` (equivocation routing / drop) instead of `transform_outbound`; test.
+- [ ] T029a [US1] Rewire the LeiosNotify offer actuator `serve_leios_notify` in `net-rs/net-core/src/peer/server_handlers.rs` to read the published `leios.offer_eb_size` (rewrite `eb_size`) and `leios.echo_to_source` (no-echo gate) per offer entry, instead of `allow_echo_to_source`/`transform_outbound`; preserve the `NotificationEntry { source, eb_size }` substrate; port the merged 3 mux-pair integration tests.
 - [ ] T030 [US1] Emit telemetry of the active behaviour(s) and per-tick status in `net-rs/net-node/src/telemetry.rs` + `main.rs` (FR-015); test where automatable.
 - [ ] T031 [US1] [US4] Config split in `net-rs/net-cluster/`: extract each `[behaviour]`/`[behaviour_selection]` block from `configs/*.toml` into named BT configs under `net-cluster/behaviours/`; reference them by name from the (topology-only) configs; update `src/config.rs` + `src/process.rs` to distribute the referenced BT config to the selected nodes at spawn (keep a deprecation shim for inline `[behaviour]`); tests for load + round-trip.
-- [ ] T032 [P] [US1] Author sample BT configs under `net-rs/net-cluster/behaviours/` (honest + the re-homed catalogue) and a single-node `--behaviour-tree` example, matching `contracts/bt-config.schema.md`.
+- [ ] T032 [P] [US1] Author sample BT configs under `net-rs/net-cluster/behaviours/` (honest + the re-homed catalogue), including the duplex-follower-bug `Join["echo-to-source", lie-about-eb-size(0,1,0)]` example, and a single-node `--behaviour-tree` example, matching `contracts/bt-config.schema.md`.
 - [ ] T033 [US1] Run quickstart Scenario 2 (single-node honest→adversarial switch) and Scenario 3 (config-split round-trip); automate what's feasible and record the human-confirmed manual result (Principle II).
 
 **Checkpoint**: MVP complete — a single net-node runs an adversarial BT from a static config.
@@ -129,15 +132,15 @@ US2 REST surface, reporting per-node success/failure. Builds on US2.
 ## Dependencies & Execution Order
 
 - **Setup (P1)** → no deps.
-- **Foundational (P2)** → depends on Setup; **blocks** all stories. Within P2: T003/T004/T005 [P] first; T006→T007; T008→T009; T010 then T011–T015 [P]; T016→T017; T018 last.
-- **US1 (P3)** → depends on P2 complete. T019 (tests) first. T020 before T021–T024. T025 (delete old system) after T021–T024 and after the actions/ contributors (T011–T015) exist. T026 before T027. T027/T028 before T033. T031 independent of consensus rewiring (cluster-side).
+- **Foundational (P2)** → depends on Setup; **blocks** all stories. Within P2: T003/T004/T005 [P] first; T006→T007; T008→T009; T010 then T011–T015 + T015a/T015b [P]; T016→T017; T018 last. T015a/T015b depend on T004's `EbSizePolicy`/`LeiosControl` fields.
+- **US1 (P3)** → depends on P2 complete. T019 (tests) first. T020 before T021–T024. T025 (delete old system) after T021–T024 and after the actions/ contributors (T011–T015, T015a/b) exist. T026 before T027. T029/T029a (outbound actuators) after T026. T027/T028 before T033. T031 independent of consensus rewiring (cluster-side).
 - **US2 (P4)** → depends on US1. **US3 (P5)** → depends on US2.
 - **Polish (P6)** → after US1 (MVP) at minimum.
 
 ## Parallel Opportunities
 
 - Setup: T002 ∥ T001 follow-up.
-- P2: T003 ∥ T004 ∥ T005 (distinct files); the five re-homings T011 ∥ T012 ∥ T013 ∥ T014 ∥ T015 (distinct files).
+- P2: T003 ∥ T004 ∥ T005 (distinct files); the seven re-homings T011 ∥ T012 ∥ T013 ∥ T014 ∥ T015 ∥ T015a ∥ T015b (distinct files).
 - US1: T032 (sample configs) ∥ consensus rewiring; T031 (cluster split) largely ∥ the net-node wiring.
 - Polish: T034 ∥ T035.
 

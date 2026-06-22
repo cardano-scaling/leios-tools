@@ -145,7 +145,7 @@ net-rs/net-node/src/
 └── production.rs          # producer reads ControlSignal.production/body_path (no rb_production_strategy hook)
 
 net-rs/net-core/src/peer/
-└── server_handlers.rs     # per-peer send reads published ControlSignal.outbound (no transform_outbound hook)
+└── server_handlers.rs     # RB-header send reads praos.outbound; serve_leios_notify reads leios.offer_eb_size/echo_to_source (no hooks)
 
 net-rs/net-cluster/
 ├── behaviours/            # NEW: extracted BT configs (peer dir to configs/)
@@ -204,16 +204,21 @@ sim-rs-ready" decision and the single-decision-path goal.
    config struct (+ its own `Deserialize`), its `contribute()`, and its tests **in one
    file**; adding a behaviour touches no other behaviour. Leaves are looked up by `kind`
    via the retained registry (`build`). MVP leaves: an honest contributor (empty
-   control signal) plus 1–2 re-homed real ones (e.g. `rb-header-equivocator`, `lazy-voter`).
+   control signal) plus the re-homed catalogue — `rb-header-equivocator`, `lazy-voter`,
+   `t22`, `deep-reorg`, `drop-inbound-peers`, and the merged `lie-about-eb-size`
+   (`leios.offer_eb_size`) and `echo-to-source` (`leios.echo_to_source`).
    **Gating house rule**: all flow gating lives in explicit `Condition` behaviours; a leaf
    returns `Running` while active and never branches its status on `env`/`state` (the
    honest fallback returns `Success`).
 6. **Actuators read ControlSignal (no hooks)** — the net-node wrapper applies `ControlSignal`
    to the state machines once per slot (e.g. `leios.apply_control(&d)` sets the vote
    policy / tx filter fields) and **publishes** the snapshot (arc-swap / watch) for the
-   per-peer send actuator in `server_handlers.rs`. Former hook sites in `leios`/`praos`/
-   `mempool`/`production`/`server_handlers` become pure reads. `Behaviour`/`*Outcome`/
-   `CompositeBehaviour`/`invoke_hook` are deleted.
+   per-peer send actuators in `server_handlers.rs` — the RB-header send reads
+   `praos.outbound`, and `serve_leios_notify` reads `leios.offer_eb_size`/`leios.echo_to_source`
+   (preserving the merged `NotificationEntry { source, eb_size }` substrate). Former hook
+   sites in `leios`/`praos`/`mempool`/`production`/`server_handlers` become pure reads;
+   `Behaviour`/`*Outcome`/`CompositeBehaviour`/`invoke_hook` and the `allow_echo_to_source`/
+   `transform_outbound` hooks + the `Outbound`/`OwnedOutbound` enums are deleted.
 7. **Tick integration** — in `net-node/src/main.rs`, the existing
    `slot = slot_clock.tick()` arm builds `NativeChainState { current_slot: slot,
    current_epoch, mempool_tx_count }`, ticks the BT, applies + publishes `ControlSignal`.

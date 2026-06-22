@@ -42,12 +42,16 @@ Each site formerly called a hook; each now reads a `ControlSignal` field:
 |------|-------|---------|
 | net-node `main.rs` slot arm | `praos.reorg_depth`, `praos.drop_inbound` | slot |
 | `production.rs` | `praos.production`, `praos.body_path` | slot (at production) |
-| net-core `server_handlers.rs` (per-peer send) | `praos.outbound` | event |
+| net-core `server_handlers.rs` — RB-header send | `praos.outbound` | event |
+| net-core `server_handlers.rs` — `serve_leios_notify` offer send | `leios.offer_eb_size`, `leios.echo_to_source` | event |
 | `leios.rs` vote path | `leios.vote` | per EB |
 | `mempool.rs` | `mempool.tx_filter` | event |
 
 The tick is driven from the existing `slot_clock.tick()` arm in net-node `main.rs`: build
-`NativeChainState`, tick the BT, apply + publish the `ControlSignal`.
+`NativeChainState`, tick the BT, apply + publish the `ControlSignal`. The `serve_leios_notify`
+actuator needs the per-offer `source`/`eb_size` fields on `NotificationEntry` (merged with the
+`lie-about-eb-size`/`echo-to-source` work); the rewire reads `ControlSignal.leios` instead of
+calling the old `allow_echo_to_source`/`transform_outbound` hooks.
 
 ## Conventions
 

@@ -40,6 +40,8 @@ pub struct PraosControl {
 #[derive(Debug, Clone, Default)]
 pub struct LeiosControl {
     pub vote: VotePolicy,                 // Honest | Abstain(NoVoteReason)
+    pub offer_eb_size: EbSizePolicy,      // rewrite eb_size on outbound MsgLeiosBlockOffer
+    pub echo_to_source: bool,             // false = honest no-echo gate; true = reflect offers back to source
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,10 +58,17 @@ pub enum OutboundControl {
     EquivocateRouting { slot: u64, ways: u8, seed: u64 }, // per-peer variant routing (lookup, not decision)
     DropTo(std::collections::BTreeSet<PeerId>),           // partition / mute
 }
+
+#[derive(Debug, Clone, Default)]
+pub enum EbSizePolicy {                                   // outbound MsgLeiosBlockOffer eb_size
+    #[default] Honest,
+    Linear { scale_num: u32, scale_den: u32, offset: i32 }, // (eb_size*num/den)+offset, clamped to u32
+}
 ```
 
 `ControlSignal::default()` is the honest node (no perturbation). `RbProductionStrategy`,
-`BodyPath`, and `NoVoteReason` are existing enums, reused unchanged.
+`BodyPath`, and `NoVoteReason` are existing enums, reused unchanged. `EbSizePolicy::Linear`
+reuses the merged `LieAboutEbSize` i128 size math.
 
 - **Conflicts**: same-field writes from two active leaves are reconciled in the tick
   (last active contributor in traversal order wins); the actuator never combines.
@@ -192,9 +201,11 @@ trait LeafAction {
 
 `Registered(ActionSpec)` uses the action registry (`ActionSpec`, formerly `BehaviourSpec`)
 as the action-kind discriminant + params. Each shipped adversary (`rb-header-equivocator`,
-`lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`) becomes a `LeafAction` whose
-`contribute` writes the matching `ControlSignal` fields. Composition is expressed by the BT
-structure (`Join`/`Sequence`), not a `composite` leaf.
+`lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`, and the merged `lie-about-eb-size`,
+`echo-to-source`) becomes a `LeafAction` whose `contribute` writes the matching
+`ControlSignal` fields (`lie-about-eb-size` → `leios.offer_eb_size`; `echo-to-source` →
+`leios.echo_to_source`). Composition is expressed by the BT structure (`Join`/`Sequence`),
+not a `composite` leaf.
 
 ### `ConditionExpr`
 Minimal grammar (D6); parsed and validated at load time.

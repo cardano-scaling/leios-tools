@@ -4,12 +4,10 @@ All NEEDS CLARIFICATION items from the spec were resolved with the user (see spe
 Assumptions Q1–Q3). This document records the design decisions, their rationale, and
 the alternatives considered, grounded in the existing codebase.
 
-The central architecture decision (**Model B** — replace the `Behaviour` hook trait
-with a slot-tick BT that emits a typed `ControlSignal` value) has its own full decision
-record, including the hook catalogue, the decision-vs-actuation analysis, the
-per-behaviour mapping, and the Model A vs B comparison:
-[`design/unified-tick-model.md`](./design/unified-tick-model.md). D2 and D10 below
-summarise it; that document is canonical.
+The central architecture decision — the **BT evaluator**: replace the `Behaviour` hook
+trait with a slot-tick BT that emits a typed `ControlSignal` value — is described in
+[`design/unified-tick-model.md`](./design/unified-tick-model.md). D2 and D10 below record
+the decision and the rejected alternatives.
 
 ## D1. Engine placement: `shared_consensus::behaviour::tree`
 
@@ -20,15 +18,15 @@ summarise it; that document is canonical.
   lookup and the deterministic seeding helpers (`child_seed`, `seed_from_node_id`), and
   it inherits the crate's sans-IO/determinism rules, which the BT must obey anyway.
   sim-rs can later consume the same module unchanged. (Note: the `Behaviour` *trait* and
-  its `Arc<Mutex<Box<dyn Behaviour>>>` swap machinery are **removed** under Model B — see
-  D2; what we keep from the old subsystem is the registry and the seeding helpers.)
+  its `Arc<Mutex<Box<dyn Behaviour>>>` swap machinery are **removed** by the BT evaluator —
+  see D2; what we keep from the old subsystem is the registry and the seeding helpers.)
 - **Alternatives considered**:
   - *New `shared-rs/bt` crate* — rejected: would duplicate the determinism rules and
     create a dependency edge back to `consensus` for the registry with no benefit.
   - *Put it directly in `net-node`* — rejected: violates the confirmed shared-crate
     decision and blocks sim-rs reuse.
 
-## D2. Replace the `Behaviour` hook trait with a slot-tick BT emitting `ControlSignal` (Model B)
+## D2. Replace the `Behaviour` hook trait with a slot-tick BT emitting `ControlSignal`
 
 - **Decision**: The BT is the **single abstraction** for adversarial behaviour. We
   *delete* the `Behaviour` hook trait, `BehaviourOutcome`/`DecisionOutcome`,
@@ -43,11 +41,11 @@ summarise it; that document is canonical.
   inherently event-time and cannot be moved to the tick**. The resolution: move all
   *decisions* into the tick; leave the event-time interception points as **mechanical
   reads** of the `ControlSignal` the last tick produced. One decision path; dumb effectors.
-- **Why Model B over "BT gates, hooks act" (Model A)**: keeping the 15-hook trait as
-  effector glue (Model A) preserves the same runtime with less churn, but the team's
-  priorities are readability and a single decision path. Model B removes the
-  hook-return flow control and the `CompositeBehaviour` short-circuit — the two scattered
-  places flow was decided — leaving the BT structure as the sole locus of control.
+- **Why this over a "BT gates, hooks act" alternative**: keeping the 15-hook trait as
+  effector glue preserves the same runtime with less churn, but the team's priorities are
+  readability and a single decision path. The BT evaluator removes the hook-return flow
+  control and the `CompositeBehaviour` short-circuit — the two scattered places flow was
+  decided — leaving the BT structure as the sole locus of control.
 - **What we keep**: the **registry** (`ActionSpec`-style tagged enum + `build(kind,
   params, seed)`) as the leaf-action lookup, and the shipped attack **mechanics**
   (equivocation variant routing, reorg, inbound reset, vote abstention, T22 filtering),
@@ -58,8 +56,8 @@ summarise it; that document is canonical.
   and `CompositeBehaviour` are removed. Each removal is guarded by first porting the
   behaviour's existing tests to the new contributor (TDD), so no coverage is lost.
 - **Alternatives considered**:
-  - *Model A (trait survives as effector glue)* — rejected for house use: least churn but
-    keeps a competing concept and dynamic dispatch.
+  - *Hook-glue alternative (the `Behaviour` trait survives as effector glue)* — rejected:
+    least churn, but keeps a competing concept and dynamic dispatch.
   - *Leaves directly mutate consensus / call `tokio`* — rejected: pulls I/O into a
     sans-IO crate; breaks determinism and testability.
   - *Rewrite consensus state machines to call the BT directly at every event point* —
@@ -204,7 +202,7 @@ summarise it; that document is canonical.
   MempoolControl }`.
 - **Rationale**: Consensus actuation points are *shared, singular resources* — two active
   leaves can target the same one, so the conflict must be reconciled, and that
-  reconciliation must happen in the **tick** (the Model B invariant), handing the actuator
+  reconciliation must happen in the **tick** (the BT-evaluator invariant), handing the actuator
   one resolved value. Keying the seam by *behaviour* would push combination logic back
   into the actuator and re-couple consensus to the behaviour catalogue. Because the seam
   is keyed by *capability*, a new behaviour that reuses an existing actuator changes
@@ -293,7 +291,7 @@ summarise it; that document is canonical.
   from the *action registry* and, when active, contributes to `ControlSignal`; the consensus
   *actuators* consume `ControlSignal`.
 - **Rationale**: "node" was overloaded — net-nodes, topology nodes (the cluster graph uses
-  node/edge), and tree elements. "Behaviour" is freed up precisely because Model B deletes
+  node/edge), and tree elements. "Behaviour" is freed up precisely because the BT evaluator deletes
   the old `Behaviour` *hook trait* (D2), and a "behaviour tree of behaviours" is the
   literal, idiomatic reading (cf. py_trees). Rejected: "node" (the overload), "vertex"
   (graph-flavoured for a tree), "state" (FSM-wrong + collides with `LeiosState`/etc.),

@@ -56,11 +56,12 @@ returns `Running` while active; flow gating lives in `Condition` behaviours.
 
 `Action.spec` is a verbatim `ActionSpec` table used as the action-kind
 discriminant + params — `kind = "rb-header-equivocator"`, `"lazy-voter"`, `"t22"`,
-`"deep-reorg"`, or `"drop-inbound-peers"`. (Composition is expressed by the BT structure
-itself — `Join`/`Sequence` — not a `composite` leaf.) Future action types
-(`NetworkShapeAction`, `TxGeneratorAction`) are reserved; the MVP maps the example's
-partition/flood leaves onto existing behaviours or stubs them with a logged no-op until
-the real catalogue lands.
+`"deep-reorg"`, `"drop-inbound-peers"`, `"lie-about-eb-size"` (`scale_num`, `scale_den`,
+`offset` → `leios.offer_eb_size`), or `"echo-to-source"` (→ `leios.echo_to_source`).
+(Composition is expressed by the BT structure itself — `Join`/`Sequence` — not a
+`composite` leaf.) Future action types (`NetworkShapeAction`, `TxGeneratorAction`) are
+reserved; the MVP maps the example's partition/flood leaves onto existing behaviours or
+stubs them with a logged no-op until the real catalogue lands.
 
 ## Condition expression grammar (minimal)
 
