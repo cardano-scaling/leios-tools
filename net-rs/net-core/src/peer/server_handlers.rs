@@ -192,10 +192,9 @@ async fn send_roll_forward(
         Point::Specific { slot, .. } => *slot,
         Point::Origin => 0,
     };
-    // Observe each forward: header length + leading bytes. Byte 1 is the
-    // era tag — the #18 fidelity signal (we must serve the authentic
-    // ChainSync era, not the body-reconstructed one).
-    tracing::info!(
+    // Per-forward trace (header length + leading bytes, incl. the era tag).
+    // At debug! — this is a hot path under ChainSync pipelining.
+    tracing::debug!(
         peer = peer.0,
         slot,
         header_bytes = header.raw.len(),
