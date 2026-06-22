@@ -201,6 +201,11 @@ enum Command {
         #[arg(long)]
         leios: bool,
 
+        /// Dump raw CBOR hex of each received Leios mini-protocol message to
+        /// stderr (`WIRE_HEX recv …`), for capturing wire test vectors.
+        #[arg(long)]
+        wire_hex: bool,
+
         /// Maximum concurrent inbound handshakes
         #[arg(long, default_value_t = 64)]
         max_handshaking: usize,
@@ -309,10 +314,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             listen,
             duplex,
             leios,
+            wire_hex,
             max_handshaking,
             max_connections_per_ip,
             scheduler_args,
         } => {
+            net_core::mux::codec::set_wire_hex(wire_hex);
             multi_follow::run(
                 &hosts,
                 magic,
