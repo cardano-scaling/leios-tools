@@ -87,13 +87,17 @@ pub mod behaviours {
     //! own file so contributors can add one without touching the others.
     pub mod deep_reorg;
     pub mod drop_inbound;
+    pub mod echo_to_source;
     pub mod lazy_voter;
+    pub mod lie_about_eb_size;
     pub mod rb_equivocator;
     pub mod t22;
 
     pub use deep_reorg::DeepReorg;
     pub use drop_inbound::DropInboundPeers;
+    pub use echo_to_source::EchoToSource;
     pub use lazy_voter::LazyVoter;
+    pub use lie_about_eb_size::LieAboutEbSize;
     pub use rb_equivocator::RbHeaderEquivocator;
     pub use t22::T22ThreatBehaviour;
 }
@@ -392,6 +396,23 @@ pub trait Behaviour: Send + Sync {
     fn transform_outbound(&mut self, _peer: PeerId, _out: Outbound<'_>) -> OutboundDecision {
         OutboundDecision::Send
     }
+
+    /// Open the no-echo gate on `serve_leios_notify`'s server side.
+    ///
+    /// The honest policy is: if an outbound LeiosNotify offer would be sent to a peer
+    /// that is listed as a source for that offer (net-core maintains a `sources` set),
+    /// the I/O wrapper drops the send (re-offering data back to a supplying peer is a
+    /// CIP-0164 violation).  The default for this method (`false`) preserves that policy.  An adversarial
+    /// behaviour can return `true` to deliberately reflect — used to
+    /// reproduce the original duplex-follower bug for regression
+    /// testing against the relay.
+    ///
+    /// The hook fires *before* [`transform_outbound`](Self::transform_outbound);
+    /// returning `true` lets the entry through to the transform layer,
+    /// where it can still be dropped or replaced.
+    fn allow_echo_to_source(&mut self, _peer: PeerId, _out: &Outbound<'_>) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +670,16 @@ impl Behaviour for CompositeBehaviour {
             }
         }
         OutboundDecision::Send
+    }
+
+    /// OR across children — any child that opens the echo gate opens it
+    /// for the whole composite.  This matches the spec semantics: an
+    /// adversarial child saying "echo" wins over honest children that
+    /// would otherwise drop.
+    fn allow_echo_to_source(&mut self, peer: PeerId, out: &Outbound<'_>) -> bool {
+        self.children
+            .iter_mut()
+            .any(|c| c.allow_echo_to_source(peer, out))
     }
 
     /// Notification — fan out to every child.  No short-circuit: a

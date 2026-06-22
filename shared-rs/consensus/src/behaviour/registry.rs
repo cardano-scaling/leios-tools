@@ -18,7 +18,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::behaviours::{
-    DeepReorg, DropInboundPeers, LazyVoter, RbHeaderEquivocator, T22ThreatBehaviour,
+    DeepReorg, DropInboundPeers, EchoToSource, LazyVoter, LieAboutEbSize, RbHeaderEquivocator,
+    T22ThreatBehaviour,
 };
 use super::{Behaviour, CompositeBehaviour, HonestBehaviour};
 use crate::leios::NoVoteReason;
@@ -77,6 +78,28 @@ pub enum BehaviourSpec {
     /// [`super::behaviours::DropInboundPeers`].
     #[serde(rename = "drop-inbound-peers")]
     DropInboundPeers { probability: f64 },
+    /// Adversarial LeiosNotify: mutate the `eb_size` field on every
+    /// outbound `MsgLeiosBlockOffer` via the linear transform
+    /// `(eb_size * scale_num / scale_den) + offset`.  The original bug
+    /// shape (size-zero) is `scale_num = 0, scale_den = 1, offset = 0`.
+    /// Identity (no-op) is `scale_num = 1, scale_den = 1, offset = 0`.
+    /// See [`super::behaviours::LieAboutEbSize`].
+    #[serde(rename = "lie-about-eb-size")]
+    LieAboutEbSize {
+        #[serde(default = "default_lie_scale")]
+        scale_num: u32,
+        #[serde(default = "default_lie_scale")]
+        scale_den: u32,
+        #[serde(default)]
+        offset: i32,
+    },
+    /// Adversarial LeiosNotify: open the no-echo gate so EB / EB-tx
+    /// offers fetched from a peer are reflected back to that same peer.
+    /// Compose with [`Self::LieAboutEbSize`] to reproduce the original
+    /// duplex-follower bug for regression testing.  See
+    /// [`super::behaviours::EchoToSource`].
+    #[serde(rename = "echo-to-source")]
+    EchoToSource,
 }
 
 fn default_lazy_reason() -> NoVoteReason {
@@ -85,6 +108,10 @@ fn default_lazy_reason() -> NoVoteReason {
 
 fn default_equivocator_ways() -> u8 {
     2
+}
+
+fn default_lie_scale() -> u32 {
+    1
 }
 
 /// Materialise a [`BehaviourSpec`] into a shared
@@ -141,6 +168,12 @@ pub fn build(spec: &BehaviourSpec, seed: u64) -> Box<dyn Behaviour> {
         BehaviourSpec::DropInboundPeers { probability } => {
             Box::new(DropInboundPeers::new(seed, *probability))
         }
+        BehaviourSpec::LieAboutEbSize {
+            scale_num,
+            scale_den,
+            offset,
+        } => Box::new(LieAboutEbSize::new(*scale_num, *scale_den, *offset)),
+        BehaviourSpec::EchoToSource => Box::new(EchoToSource),
     }
 }
 
