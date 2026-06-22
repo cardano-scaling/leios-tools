@@ -21,13 +21,10 @@ stats_interval_secs = 10
 [[telemetry.stats_sinks]]
 type = "log"
 
-# Suppress EB-tx fetch — the relay RSTs on MsgLeiosBlockTxsRequest
-# (upstream CDDL/behaviour gap, cardano-scaling/cardano-blueprint#68).
-# Without this, every EB sighting triggers a doomed fetch and tears
-# down the bearer.  Mempool tx diffusion still works as the organic
-# fallback.
+# Fetch an EB's referenced txs that we don't already hold, from the
+# lowest-RTT peer.
 [fetch_policy.eb_txs]
-kind = "no_fetch"
+kind = "lowest_rtt"
 
 [[peers]]
 address = "leios-node.play.dev.cardano.org:3001"
