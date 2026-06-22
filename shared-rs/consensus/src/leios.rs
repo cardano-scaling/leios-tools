@@ -27,7 +27,7 @@ use serde::Serialize;
 use tracing::info;
 
 use crate::aggregation::QuorumFormed;
-use crate::behaviour::tree::control::{ControlSignal, VotePolicy};
+use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy, VotePolicy};
 use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
 use crate::committee;
 use crate::config::CommitteeSelection;
@@ -841,22 +841,65 @@ impl LeiosState {
     /// against the current candidate set and emits one
     /// `FetchLeiosBlock` carrying the chosen peers.  Idempotent: a
     /// repeat offer from the same peer is silently absorbed.
+    /// Deterministic per-(EB, node) checksum percentile in `0..100`, used by
+    /// the t22 EB-processing filter. Ported verbatim from the old t22 hook so
+    /// behaviour is identical.
+    fn eb_checksum_pct(&self, point: &Point) -> u8 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Point::Specific { hash, .. } = point {
+            hash.hash(&mut hasher);
+        }
+        self.node_id.hash(&mut hasher);
+        (hasher.finish() % 100) as u8
+    }
+
+    /// EB-processing actuator (t22): whether to process this EB offer/manifest
+    /// under the control signal's tx-filter policy. Honest (`None`) processes
+    /// everything; `ChecksumThreshold` processes when the checksum percentile
+    /// is below the seat-dependent threshold.
+    fn should_process_eb(&self, point: &Point) -> bool {
+        match &self.control.mempool.tx_filter {
+            TxFilterPolicy::None => true,
+            TxFilterPolicy::ChecksumThreshold {
+                vote, non_voting, ..
+            } => {
+                let threshold = if self.voting_config.persistent_seats > 0 {
+                    *vote
+                } else {
+                    *non_voting
+                };
+                self.eb_checksum_pct(point) < threshold
+            }
+        }
+    }
+
+    /// Whether a received EB's manifest processing is hidden (t22 with
+    /// `hide_eb_tx`): only when the policy sets the flag and the EB is filtered.
+    fn should_hide_eb_received(&self, point: &Point) -> bool {
+        match &self.control.mempool.tx_filter {
+            TxFilterPolicy::ChecksumThreshold {
+                hide_eb_tx: true, ..
+            } => !self.should_process_eb(point),
+            _ => false,
+        }
+    }
+
     pub fn on_eb_offered(&mut self, point: Point, peer: PeerId, now: Instant) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_offered(s, &point, peer)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22): the control signal's checksum-threshold
+        // policy may drop processing of this EB offer.
+        if !self.should_process_eb(&point) {
+            return Vec::new();
+        }
         self.evict_stale_in_flight(now);
         self.candidates.note_eb_offered(point.clone(), peer);
         if self.in_flight.contains_key(&point) {
-            return appended;
+            return Vec::new();
         }
         let candidates = self.candidates.eb_candidates(&point);
         let peers = self.eb_policy.pick(&point, &candidates, self.rtt.as_ref());
         if peers.is_empty() {
-            return appended;
+            return Vec::new();
         }
         self.in_flight.insert(point.clone(), now);
         info!(
@@ -865,9 +908,7 @@ impl LeiosState {
             peer_count = peers.len(),
             "fetching leios block"
         );
-        let mut fx = vec![LeiosEffect::FetchLeiosBlock { point, peers }];
-        fx.extend(appended);
-        fx
+        vec![LeiosEffect::FetchLeiosBlock { point, peers }]
     }
 
     /// A peer offered EB transactions.  Caller has already computed the
@@ -882,16 +923,14 @@ impl LeiosState {
         bitmap: BTreeMap<u16, u64>,
         now: Instant,
     ) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_txs_offered(s, &point, peer, &bitmap)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22): drop tx-offer processing for a filtered EB.
+        if !self.should_process_eb(&point) {
+            return Vec::new();
+        }
         self.evict_stale_in_flight(now);
         let slot = match &point {
             Point::Specific { slot, .. } => *slot,
-            _ => return appended,
+            _ => return Vec::new(),
         };
         self.candidates.note_eb_txs_offered(point.clone(), peer);
         // Empty bitmap means the consumer has nothing to fetch (either
@@ -900,7 +939,7 @@ impl LeiosState {
         // indices). Don't engage the per-slot gate or emit a fetch; wait
         // for the next offer once the manifest lands.
         if bitmap.is_empty() {
-            return appended;
+            return Vec::new();
         }
         // Per-slot gate keeps multiple offers from triggering parallel
         // fetches; the synthetic hash distinguishes the gate from an
@@ -910,14 +949,14 @@ impl LeiosState {
             hash: [0xFE; 32],
         };
         if self.in_flight.contains_key(&gate_key) {
-            return appended;
+            return Vec::new();
         }
         let candidates = self.candidates.eb_txs_candidates(&point);
         let peers = self
             .eb_txs_policy
             .pick(&point, &bitmap, &candidates, self.rtt.as_ref());
         if peers.is_empty() {
-            return appended;
+            return Vec::new();
         }
         self.in_flight.insert(gate_key, now);
         if let Point::Specific { slot, hash } = &point {
@@ -932,13 +971,11 @@ impl LeiosState {
             peer_count = peers.len(),
             "fetching leios block txs"
         );
-        let mut fx = vec![LeiosEffect::FetchLeiosBlockTxs {
+        vec![LeiosEffect::FetchLeiosBlockTxs {
             point,
             bitmap,
             peers,
-        }];
-        fx.extend(appended);
-        fx
+        }]
     }
 
     /// An EB body arrived.  `manifest_hashes` is the decoded tx-hash
@@ -951,13 +988,11 @@ impl LeiosState {
         point: Point,
         manifest_hashes: Option<Vec<TxId>>,
     ) -> Vec<LeiosEffect> {
-        let hashes_for_hook: &[TxId] = manifest_hashes.as_deref().unwrap_or(&[]);
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_received(s, &point, hashes_for_hook)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22 with `hide_eb_tx`): drop manifest + validate
+        // processing for a filtered EB.
+        if self.should_hide_eb_received(&point) {
+            return Vec::new();
+        }
         self.in_flight.remove(&point);
         let mut fx = Vec::new();
         if let (Some(hashes), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
@@ -969,7 +1004,6 @@ impl LeiosState {
             });
         }
         fx.push(LeiosEffect::ValidateEb { point });
-        fx.extend(appended);
         fx
     }
 
@@ -1641,6 +1675,69 @@ mod tests {
     #[test]
     fn on_eb_received_validate_only_when_no_manifest() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
+        let fx = state.on_eb_received(None, point(10, 1), None);
+        assert_eq!(fx.len(), 1);
+        assert!(matches!(fx[0], LeiosEffect::ValidateEb { .. }));
+    }
+
+    // -- t22 EB-processing filter actuator (control.mempool.tx_filter) --------
+
+    fn with_tx_filter(state: &mut LeiosState, vote: u8, non_voting: u8, hide_eb_tx: bool) {
+        use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy};
+        let mut cs = ControlSignal::default();
+        cs.mempool.tx_filter = TxFilterPolicy::ChecksumThreshold {
+            vote,
+            non_voting,
+            hide_eb_tx,
+        };
+        state.apply_control(&cs);
+    }
+
+    #[test]
+    fn tx_filter_threshold_100_processes_eb_offer() {
+        // checksum percentile is always < 100, so threshold 100 always processes.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 100, 100, false);
+        let fx = state.on_eb_offered(point(10, 1), PeerId(1), Instant::now());
+        assert_eq!(fx.len(), 1);
+        assert!(matches!(fx[0], LeiosEffect::FetchLeiosBlock { .. }));
+    }
+
+    #[test]
+    fn tx_filter_threshold_0_drops_eb_offer() {
+        // checksum percentile is always >= 0, so threshold 0 never processes —
+        // the offer is dropped despite the honest path having a candidate peer.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
+        let fx = state.on_eb_offered(point(10, 1), PeerId(1), Instant::now());
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_threshold_0_drops_eb_txs_offer() {
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
+        let mut bitmap = BTreeMap::new();
+        bitmap.insert(0u16, 1u64);
+        let fx = state.on_eb_txs_offered(point(10, 1), PeerId(1), bitmap, Instant::now());
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_hide_eb_tx_drops_received_processing() {
+        // hide_eb_tx + filtered (threshold 0) => on_eb_received produces nothing.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, true);
+        let fx = state.on_eb_received(None, point(10, 1), Some(vec![tx_id(0xA0)]));
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_without_hide_still_processes_received() {
+        // Without hide_eb_tx, on_eb_received is unaffected by the filter
+        // (the filter only gates offer/txs-offer fetching, not validation).
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
         let fx = state.on_eb_received(None, point(10, 1), None);
         assert_eq!(fx.len(), 1);
         assert!(matches!(fx[0], LeiosEffect::ValidateEb { .. }));
