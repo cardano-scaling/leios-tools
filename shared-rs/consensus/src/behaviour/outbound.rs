@@ -32,11 +32,11 @@ pub enum Outbound<'a> {
     /// equivocation slots.
     RbHeader { slot: u64, header: &'a [u8] },
     /// LeiosNotify `MsgLeiosBlockOffer` about to be served on a duplex
-    /// connection's server side.  `source` is the peer the EB was
-    /// originally received from (`None` for self-produced EBs); the
-    /// honest no-echo policy drops the send when `source == Some(peer)`
-    /// unless [`Behaviour::allow_echo_to_source`](super::Behaviour::allow_echo_to_source)
-    /// opens the gate.  `eb_size` is the encoded EB byte length
+    /// connection's server side.  `source` is the first peer the EB was
+    /// received from (`None` for self-produced EBs).  The net-core no-echo policy
+    /// drops delivery when the connected peer is present in the notification's full
+    /// `sources` set (which may include more than this single `source`) unless
+    /// [`Behaviour::allow_echo_to_source`](super::Behaviour::allow_echo_to_source) opens the gate.  `eb_size` is the encoded EB byte length
     /// advertised on the wire — CIP-0164 requires this to match the
     /// real size; a behaviour can mutate it via
     /// [`OutboundDecision::Replace`].
