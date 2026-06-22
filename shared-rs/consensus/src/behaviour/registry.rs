@@ -102,6 +102,60 @@ pub enum BehaviourSpec {
     EchoToSource,
 }
 
+/// Serialisable description of a behaviour-tree **leaf action** — the
+/// action-kind discriminant plus its parameters. This is the action registry
+/// for the BT engine ([`super::tree`]): a `[behaviours.<id>]` of `type =
+/// "Action"` carries a `spec` that deserialises into one of these, and
+/// [`build_action`](super::tree::actions::build_action) materialises the
+/// matching [`LeafAction`](super::tree::actions::LeafAction).
+///
+/// It is the `BehaviourSpec` minus `Honest`/`Composite` — those are expressed
+/// by the tree structure itself (`Action(honest)` / `Join`/`Sequence`), not by
+/// a leaf. It lives here, alongside [`BehaviourSpec`], during the migration; the
+/// hook-trait `BehaviourSpec` is removed in a later phase.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ActionSpec {
+    /// See [`BehaviourSpec::RbHeaderEquivocator`].
+    #[serde(rename = "rb-header-equivocator")]
+    RbHeaderEquivocator {
+        #[serde(default = "default_equivocator_ways")]
+        ways: u8,
+    },
+    /// See [`BehaviourSpec::LazyVoter`].
+    #[serde(rename = "lazy-voter")]
+    LazyVoter {
+        #[serde(default = "default_lazy_reason")]
+        reason: NoVoteReason,
+    },
+    /// See [`BehaviourSpec::T22`].
+    #[serde(rename = "t22")]
+    T22 {
+        vote_threshold: u8,
+        non_voting_threshold: u8,
+        hide_eb_tx_received: bool,
+    },
+    /// See [`BehaviourSpec::DeepReorg`].
+    #[serde(rename = "deep-reorg")]
+    DeepReorg { every_slots: u64, depth: u64 },
+    /// See [`BehaviourSpec::DropInboundPeers`].
+    #[serde(rename = "drop-inbound-peers")]
+    DropInboundPeers { probability: f64 },
+    /// See [`BehaviourSpec::LieAboutEbSize`].
+    #[serde(rename = "lie-about-eb-size")]
+    LieAboutEbSize {
+        #[serde(default = "default_lie_scale")]
+        scale_num: u32,
+        #[serde(default = "default_lie_scale")]
+        scale_den: u32,
+        #[serde(default)]
+        offset: i32,
+    },
+    /// See [`BehaviourSpec::EchoToSource`].
+    #[serde(rename = "echo-to-source")]
+    EchoToSource,
+}
+
 fn default_lazy_reason() -> NoVoteReason {
     NoVoteReason::Declined
 }

@@ -1,0 +1,693 @@
+//! The behaviour tree and its reactive tick/halt semantics.
+//!
+//! The compiled tree is an **owned tree of [`Behaviour`] nodes** (references in
+//! the config are expanded into independent instances at compile time, so each
+//! instance owns its node-local state). Evaluation is **reactive**: every tick
+//! re-evaluates a composite from its first child, carrying no resume cursor —
+//! the only state that persists between ticks is a `Join`'s succeeded-set and a
+//! `ForTicks`'s elapsed count (and an action's own progress). A `Condition`
+//! precondition is therefore re-checked each tick and can `halt` a running
+//! subtree (the reactive abort).
+//!
+//! Full operational semantics:
+//! `specs/001-behavior-tree-engine/design/bt-grammar-and-semantics.md` §5.
+
+use super::actions::LeafAction;
+use super::condition::ConditionExpr;
+use super::control::ControlSignal;
+use super::env::TickCtx;
+use super::Status;
+
+/// A behaviour's id (the `[behaviours.<id>]` key). Expanded instances share the
+/// id of the definition they came from; it is used for telemetry, not identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BehaviourId(pub String);
+
+impl BehaviourId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<S: Into<String>> From<S> for BehaviourId {
+    fn from(s: S) -> Self {
+        BehaviourId(s.into())
+    }
+}
+
+/// A single node in the compiled tree.
+#[derive(Debug)]
+pub struct Behaviour {
+    pub id: BehaviourId,
+    pub kind: BehaviourKind,
+}
+
+/// The node kinds. Composites and the `ForTicks` decorator own their (already
+/// expanded) children; leaves own their evaluator.
+#[derive(Debug)]
+pub enum BehaviourKind {
+    /// Ordered OR / fallback.
+    Selector(Vec<Behaviour>),
+    /// Ordered AND.
+    Sequence(Vec<Behaviour>),
+    /// Concurrent AND, fail-fast. `succeeded[i]` tracks children held done
+    /// until the join resets; it always has the same length as `children`.
+    Join {
+        children: Vec<Behaviour>,
+        succeeded: Vec<bool>,
+    },
+    /// Duration cap: run `child` for at most `count` ticks of active life.
+    ForTicks {
+        count: u32,
+        elapsed: u32,
+        child: Box<Behaviour>,
+    },
+    /// Immediate predicate (never `Running`).
+    Condition(ConditionExpr),
+    /// A leaf action (control-signal contributor).
+    Action(Box<dyn LeafAction>),
+}
+
+impl Behaviour {
+    pub fn new(id: impl Into<BehaviourId>, kind: BehaviourKind) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+        }
+    }
+}
+
+impl BehaviourKind {
+    /// Build a `Join`, initialising the succeeded-set to match the children.
+    pub fn join(children: Vec<Behaviour>) -> Self {
+        let succeeded = vec![false; children.len()];
+        BehaviourKind::Join {
+            children,
+            succeeded,
+        }
+    }
+
+    /// Build a `ForTicks` decorator with a zeroed elapsed count.
+    pub fn for_ticks(count: u32, child: Behaviour) -> Self {
+        BehaviourKind::ForTicks {
+            count,
+            elapsed: 0,
+            child: Box::new(child),
+        }
+    }
+}
+
+impl Behaviour {
+    /// Tick this node, accumulating any active leaf's contribution into `out`.
+    pub fn tick(&mut self, ctx: &TickCtx, out: &mut ControlSignal) -> Status {
+        match &mut self.kind {
+            BehaviourKind::Sequence(children) => tick_sequence(children, ctx, out),
+            BehaviourKind::Selector(children) => tick_selector(children, ctx, out),
+            BehaviourKind::Join {
+                children,
+                succeeded,
+            } => tick_join(children, succeeded, ctx, out),
+            BehaviourKind::ForTicks {
+                count,
+                elapsed,
+                child,
+            } => tick_for_ticks(*count, elapsed, child, ctx, out),
+            BehaviourKind::Condition(expr) => {
+                if expr.eval(ctx) {
+                    Status::Success
+                } else {
+                    Status::Failure
+                }
+            }
+            BehaviourKind::Action(action) => action.contribute(ctx, out),
+        }
+    }
+
+    /// Abort this node: recursively stop and reset it. An `Action` stops
+    /// contributing and resets its progress; a `Condition` is a no-op; a
+    /// composite halts all children (and clears carried state).
+    pub fn halt(&mut self) {
+        match &mut self.kind {
+            BehaviourKind::Sequence(children) | BehaviourKind::Selector(children) => {
+                for c in children {
+                    c.halt();
+                }
+            }
+            BehaviourKind::Join {
+                children,
+                succeeded,
+            } => {
+                for c in children.iter_mut() {
+                    c.halt();
+                }
+                for s in succeeded.iter_mut() {
+                    *s = false;
+                }
+            }
+            BehaviourKind::ForTicks { elapsed, child, .. } => {
+                child.halt();
+                *elapsed = 0;
+            }
+            BehaviourKind::Condition(_) => {}
+            BehaviourKind::Action(action) => action.reset(),
+        }
+    }
+}
+
+fn tick_sequence(children: &mut [Behaviour], ctx: &TickCtx, out: &mut ControlSignal) -> Status {
+    let n = children.len();
+    for i in 0..n {
+        match children[i].tick(ctx, out) {
+            Status::Success => continue,
+            Status::Failure => {
+                halt_from(children, i + 1);
+                return Status::Failure;
+            }
+            Status::Running => {
+                halt_from(children, i + 1);
+                return Status::Running;
+            }
+        }
+    }
+    Status::Success
+}
+
+fn tick_selector(children: &mut [Behaviour], ctx: &TickCtx, out: &mut ControlSignal) -> Status {
+    let n = children.len();
+    for i in 0..n {
+        match children[i].tick(ctx, out) {
+            Status::Failure => continue,
+            Status::Success => {
+                halt_from(children, i + 1);
+                return Status::Success;
+            }
+            Status::Running => {
+                halt_from(children, i + 1);
+                return Status::Running;
+            }
+        }
+    }
+    Status::Failure
+}
+
+fn tick_join(
+    children: &mut [Behaviour],
+    succeeded: &mut [bool],
+    ctx: &TickCtx,
+    out: &mut ControlSignal,
+) -> Status {
+    let n = children.len();
+    for i in 0..n {
+        if succeeded[i] {
+            continue;
+        }
+        match children[i].tick(ctx, out) {
+            Status::Failure => {
+                // Fail-fast: kill all children and reset.
+                for c in children.iter_mut() {
+                    c.halt();
+                }
+                for s in succeeded.iter_mut() {
+                    *s = false;
+                }
+                return Status::Failure;
+            }
+            Status::Success => succeeded[i] = true,
+            Status::Running => {}
+        }
+    }
+    if succeeded.iter().all(|s| *s) {
+        // All done — reset so the node can run again if re-entered.
+        for s in succeeded.iter_mut() {
+            *s = false;
+        }
+        Status::Success
+    } else {
+        Status::Running
+    }
+}
+
+fn tick_for_ticks(
+    count: u32,
+    elapsed: &mut u32,
+    child: &mut Behaviour,
+    ctx: &TickCtx,
+    out: &mut ControlSignal,
+) -> Status {
+    if *elapsed >= count {
+        // Budget already spent: stable "done".
+        child.halt();
+        return Status::Success;
+    }
+    let s = child.tick(ctx, out);
+    *elapsed += 1;
+    match s {
+        Status::Running if *elapsed < count => Status::Running,
+        Status::Running => {
+            // Hit the budget on this tick.
+            child.halt();
+            Status::Success
+        }
+        // Child finished early: propagate its terminal status.
+        terminal => terminal,
+    }
+}
+
+fn halt_from(children: &mut [Behaviour], start: usize) {
+    for c in &mut children[start..] {
+        c.halt();
+    }
+}
+
+/// The effective, validated tree, ticked as a unit once per slot.
+#[derive(Debug)]
+pub struct BehaviourTree {
+    name: String,
+    seed: u64,
+    root: Behaviour,
+}
+
+impl BehaviourTree {
+    pub fn new(name: impl Into<String>, seed: u64, root: Behaviour) -> Self {
+        Self {
+            name: name.into(),
+            seed,
+            root,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Tick the whole tree once. The only place decisions are made: returns the
+    /// root's status and the slot's accumulated `ControlSignal`.
+    pub fn tick(&mut self, ctx: &TickCtx) -> (Status, ControlSignal) {
+        let mut out = ControlSignal::default();
+        let status = self.root.tick(ctx, &mut out);
+        (status, out)
+    }
+
+    /// Abort the whole tree (reset all carried state).
+    pub fn halt(&mut self) {
+        self.root.halt();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::behaviour::tree::actions::{HonestAction, LeafAction};
+    use crate::behaviour::tree::condition::ConditionExpr;
+    use crate::behaviour::tree::control::ControlSignal;
+    use crate::behaviour::tree::env::{DynamicEnv, EnvValue, NativeChainState};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// A leaf returning a fixed status, recording tick + reset counts.
+    #[derive(Debug)]
+    struct Spy {
+        status: Status,
+        ticks: Arc<AtomicU32>,
+        resets: Arc<AtomicU32>,
+    }
+
+    impl Spy {
+        fn new(status: Status) -> (Self, Arc<AtomicU32>, Arc<AtomicU32>) {
+            let ticks = Arc::new(AtomicU32::new(0));
+            let resets = Arc::new(AtomicU32::new(0));
+            (
+                Spy {
+                    status,
+                    ticks: ticks.clone(),
+                    resets: resets.clone(),
+                },
+                ticks,
+                resets,
+            )
+        }
+    }
+
+    impl LeafAction for Spy {
+        fn contribute(&mut self, _ctx: &TickCtx, out: &mut ControlSignal) -> Status {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            // Mark a contribution so we can observe it in `out`.
+            out.leios.echo_to_source = true;
+            self.status
+        }
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn leaf(status: Status) -> Behaviour {
+        let (spy, _, _) = Spy::new(status);
+        Behaviour::new("leaf", BehaviourKind::Action(Box::new(spy)))
+    }
+
+    fn action(b: impl LeafAction + 'static) -> Behaviour {
+        Behaviour::new("a", BehaviourKind::Action(Box::new(b)))
+    }
+
+    fn run(node: &mut Behaviour, state: &NativeChainState) -> (Status, ControlSignal) {
+        let env = DynamicEnv::new();
+        let ctx = TickCtx {
+            env: &env,
+            state,
+            seed: 0,
+        };
+        let mut out = ControlSignal::default();
+        let s = node.tick(&ctx, &mut out);
+        (s, out)
+    }
+
+    fn run_env(
+        node: &mut Behaviour,
+        env: &DynamicEnv,
+        state: &NativeChainState,
+    ) -> (Status, ControlSignal) {
+        let ctx = TickCtx {
+            env,
+            state,
+            seed: 0,
+        };
+        let mut out = ControlSignal::default();
+        let s = node.tick(&ctx, &mut out);
+        (s, out)
+    }
+
+    // ---- Sequence (ordered AND) ----
+
+    #[test]
+    fn sequence_all_success_is_success() {
+        let mut seq = Behaviour::new(
+            "s",
+            BehaviourKind::Sequence(vec![
+                Behaviour::new("h1", BehaviourKind::Action(Box::new(HonestAction))),
+                Behaviour::new("h2", BehaviourKind::Action(Box::new(HonestAction))),
+            ]),
+        );
+        let (s, _) = run(&mut seq, &NativeChainState::default());
+        assert_eq!(s, Status::Success);
+    }
+
+    #[test]
+    fn sequence_fails_on_first_failure_and_halts_later() {
+        let (running, _, late_resets) = Spy::new(Status::Running);
+        let mut seq = Behaviour::new(
+            "s",
+            BehaviourKind::Sequence(vec![
+                leaf(Status::Failure),
+                Behaviour::new("late", BehaviourKind::Action(Box::new(running))),
+            ]),
+        );
+        let (s, _) = run(&mut seq, &NativeChainState::default());
+        assert_eq!(s, Status::Failure);
+        // The later child was halted, not ticked.
+        assert_eq!(late_resets.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sequence_running_halts_later_children() {
+        let (running, run_ticks, _) = Spy::new(Status::Running);
+        let (late, late_ticks, late_resets) = Spy::new(Status::Success);
+        let mut seq = Behaviour::new(
+            "s",
+            BehaviourKind::Sequence(vec![
+                Behaviour::new("r", BehaviourKind::Action(Box::new(running))),
+                Behaviour::new("late", BehaviourKind::Action(Box::new(late))),
+            ]),
+        );
+        let (s, _) = run(&mut seq, &NativeChainState::default());
+        assert_eq!(s, Status::Running);
+        assert_eq!(run_ticks.load(Ordering::SeqCst), 1);
+        assert_eq!(late_ticks.load(Ordering::SeqCst), 0);
+        assert_eq!(late_resets.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- Selector (ordered OR) ----
+
+    #[test]
+    fn selector_first_success_short_circuits() {
+        let (late, late_ticks, _) = Spy::new(Status::Success);
+        let mut sel = Behaviour::new(
+            "sel",
+            BehaviourKind::Selector(vec![
+                leaf(Status::Success),
+                Behaviour::new("late", BehaviourKind::Action(Box::new(late))),
+            ]),
+        );
+        let (s, _) = run(&mut sel, &NativeChainState::default());
+        assert_eq!(s, Status::Success);
+        assert_eq!(late_ticks.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn selector_all_fail_is_failure() {
+        let mut sel = Behaviour::new(
+            "sel",
+            BehaviourKind::Selector(vec![leaf(Status::Failure), leaf(Status::Failure)]),
+        );
+        let (s, _) = run(&mut sel, &NativeChainState::default());
+        assert_eq!(s, Status::Failure);
+    }
+
+    // ---- Join (concurrent AND, fail-fast) ----
+
+    #[test]
+    fn join_running_until_all_succeed_then_resets() {
+        // child A succeeds immediately; child B runs once then succeeds.
+        let (a, a_ticks, _) = Spy::new(Status::Success);
+        let mut join = Behaviour::new(
+            "j",
+            BehaviourKind::join(vec![
+                Behaviour::new("a", BehaviourKind::Action(Box::new(a))),
+                leaf(Status::Running),
+            ]),
+        );
+        // Tick 1: A succeeds, B running → Running.
+        let (s1, _) = run(&mut join, &NativeChainState::default());
+        assert_eq!(s1, Status::Running);
+        assert_eq!(a_ticks.load(Ordering::SeqCst), 1);
+        // Tick 2: A is held done (not re-ticked); B still running → Running.
+        let (s2, _) = run(&mut join, &NativeChainState::default());
+        assert_eq!(s2, Status::Running);
+        assert_eq!(
+            a_ticks.load(Ordering::SeqCst),
+            1,
+            "succeeded child re-ticked"
+        );
+    }
+
+    #[test]
+    fn join_all_success_is_success() {
+        let mut join = Behaviour::new(
+            "j",
+            BehaviourKind::join(vec![leaf(Status::Success), leaf(Status::Success)]),
+        );
+        let (s, _) = run(&mut join, &NativeChainState::default());
+        assert_eq!(s, Status::Success);
+    }
+
+    #[test]
+    fn join_fail_fast_halts_all() {
+        let (a, _, a_resets) = Spy::new(Status::Success);
+        let mut join = Behaviour::new(
+            "j",
+            BehaviourKind::join(vec![
+                Behaviour::new("a", BehaviourKind::Action(Box::new(a))),
+                leaf(Status::Failure),
+            ]),
+        );
+        let (s, _) = run(&mut join, &NativeChainState::default());
+        assert_eq!(s, Status::Failure);
+        // The succeeded sibling was halted on fail-fast.
+        assert_eq!(a_resets.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn join_ticks_both_running_actions_each_tick() {
+        // The duplex-follower shape: two always-Running actions under a Join.
+        let (a, a_ticks, _) = Spy::new(Status::Running);
+        let (b, b_ticks, _) = Spy::new(Status::Running);
+        let mut join = Behaviour::new("j", BehaviourKind::join(vec![action(a), action(b)]));
+        for _ in 0..3 {
+            let (s, out) = run(&mut join, &NativeChainState::default());
+            assert_eq!(s, Status::Running);
+            assert!(out.leios.echo_to_source);
+        }
+        assert_eq!(a_ticks.load(Ordering::SeqCst), 3);
+        assert_eq!(b_ticks.load(Ordering::SeqCst), 3);
+    }
+
+    // ---- ForTicks (duration cap) ----
+
+    #[test]
+    fn for_ticks_caps_a_running_child() {
+        let (running, ticks, resets) = Spy::new(Status::Running);
+        let mut node = Behaviour::new(
+            "ft",
+            BehaviourKind::for_ticks(
+                2,
+                Behaviour::new("r", BehaviourKind::Action(Box::new(running))),
+            ),
+        );
+        // Ticks 1..=2 within budget → Running.
+        assert_eq!(
+            run(&mut node, &NativeChainState::default()).0,
+            Status::Running
+        );
+        assert_eq!(
+            run(&mut node, &NativeChainState::default()).0,
+            Status::Success
+        );
+        // Budget hit on tick 2: child halted, returns Success thereafter.
+        assert_eq!(
+            run(&mut node, &NativeChainState::default()).0,
+            Status::Success
+        );
+        assert_eq!(ticks.load(Ordering::SeqCst), 2, "child ticked past budget");
+        assert!(resets.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn for_ticks_propagates_early_terminal() {
+        let mut node = Behaviour::new("ft", BehaviourKind::for_ticks(5, leaf(Status::Failure)));
+        assert_eq!(
+            run(&mut node, &NativeChainState::default()).0,
+            Status::Failure
+        );
+    }
+
+    // ---- Condition (immediate) ----
+
+    #[test]
+    fn condition_is_immediate_success_or_failure() {
+        let expr = ConditionExpr::parse("cardano.current_slot >= 100").unwrap();
+        let mut cond = Behaviour::new("c", BehaviourKind::Condition(expr));
+        let below = NativeChainState {
+            current_slot: 50,
+            ..Default::default()
+        };
+        let at = NativeChainState {
+            current_slot: 100,
+            ..Default::default()
+        };
+        assert_eq!(run(&mut cond, &below).0, Status::Failure);
+        assert_eq!(run(&mut cond, &at).0, Status::Success);
+    }
+
+    // ---- Reactive abort ----
+
+    #[test]
+    fn reactive_abort_halts_running_subtree_when_precondition_flips() {
+        // Selector[ Sequence[ Condition(slot >= trigger), runningAction ], honest ]
+        let (adv, adv_ticks, adv_resets) = Spy::new(Status::Running);
+        let expr = ConditionExpr::parse("cardano.current_slot >= env.trigger").unwrap();
+        let mut tree = Behaviour::new(
+            "root",
+            BehaviourKind::Selector(vec![
+                Behaviour::new(
+                    "attack",
+                    BehaviourKind::Sequence(vec![
+                        Behaviour::new("cond", BehaviourKind::Condition(expr)),
+                        Behaviour::new("adv", BehaviourKind::Action(Box::new(adv))),
+                    ]),
+                ),
+                Behaviour::new("honest", BehaviourKind::Action(Box::new(HonestAction))),
+            ]),
+        );
+
+        let mut env = DynamicEnv::new();
+        env.insert("trigger", EnvValue::U64(100));
+        let armed = NativeChainState {
+            current_slot: 100,
+            ..Default::default()
+        };
+        let disarmed = NativeChainState {
+            current_slot: 99,
+            ..Default::default()
+        };
+
+        // Armed: condition holds, adversarial action runs and contributes.
+        let (s, out) = run_env(&mut tree, &env, &armed);
+        assert_eq!(s, Status::Running);
+        assert!(out.leios.echo_to_source);
+        assert_eq!(adv_ticks.load(Ordering::SeqCst), 1);
+
+        // Precondition flips to Failure: the Sequence fails, the running action
+        // is halted (reset), and the Selector falls back to honest.
+        let (s2, out2) = run_env(&mut tree, &env, &disarmed);
+        assert_eq!(s2, Status::Success);
+        assert!(
+            !out2.leios.echo_to_source,
+            "adversarial effect should vanish"
+        );
+        assert_eq!(
+            adv_ticks.load(Ordering::SeqCst),
+            1,
+            "halted action re-ticked"
+        );
+        assert_eq!(
+            adv_resets.load(Ordering::SeqCst),
+            1,
+            "action not reset on abort"
+        );
+    }
+
+    // ---- halt resets carried state ----
+
+    #[test]
+    fn halt_resets_join_and_for_ticks_state() {
+        let mut join = Behaviour::new(
+            "j",
+            BehaviourKind::join(vec![leaf(Status::Success), leaf(Status::Running)]),
+        );
+        // Mark one child succeeded.
+        let _ = run(&mut join, &NativeChainState::default());
+        join.halt();
+        if let BehaviourKind::Join { succeeded, .. } = &join.kind {
+            assert!(
+                succeeded.iter().all(|s| !s),
+                "succeeded not cleared by halt"
+            );
+        } else {
+            panic!("expected Join");
+        }
+
+        let mut ft = Behaviour::new("ft", BehaviourKind::for_ticks(3, leaf(Status::Running)));
+        let _ = run(&mut ft, &NativeChainState::default());
+        ft.halt();
+        if let BehaviourKind::ForTicks { elapsed, .. } = &ft.kind {
+            assert_eq!(*elapsed, 0, "elapsed not reset by halt");
+        } else {
+            panic!("expected ForTicks");
+        }
+    }
+
+    // ---- BehaviourTree wrapper ----
+
+    #[test]
+    fn behaviour_tree_ticks_root_and_returns_signal() {
+        let mut tree = BehaviourTree::new(
+            "t",
+            42,
+            Behaviour::new("honest", BehaviourKind::Action(Box::new(HonestAction))),
+        );
+        assert_eq!(tree.name(), "t");
+        assert_eq!(tree.seed(), 42);
+        let env = DynamicEnv::new();
+        let state = NativeChainState::default();
+        let (s, out) = tree.tick(&TickCtx {
+            env: &env,
+            state: &state,
+            seed: 42,
+        });
+        assert_eq!(s, Status::Success);
+        assert_eq!(out, ControlSignal::default());
+    }
+}
