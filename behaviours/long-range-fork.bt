@@ -1,0 +1,38 @@
+# long-range-fork.bt
+#
+# Stay honest until a trigger slot, then run an equivocate + partition exploit
+# for two slots. One self-contained attack (one document, one root).
+#
+# Surface syntax (concrete .bt form of the abstract grammar in
+# specs/001-behavior-tree-engine/design/bt-grammar-and-semantics.md):
+#   - a `run { ... }` header carries the run metadata: name + reproducibility seed
+#   - an `env { ... }` block carries typed, overlay-able parameters (the controller's gains)
+#   - then (optionally named) behaviour definitions and the required `root`
+#   - `#` begins a line comment
+
+run {
+  name = "long-range-fork"
+  seed = 1234567
+}
+
+env {
+  trigger_slot = 345600
+}
+
+# Reusable sub-behaviour: equivocate + partition, run concurrently (Join = all-succeed,
+# fail-fast). Named so it can be referenced (here, by ForTicks below).
+Join "attack" [
+  Action("rb-header-equivocator", ways = 2),
+  Action("drop-inbound-peers", probability = 1.0)
+]
+
+# Strategy: honest until the trigger slot; then run the exploit for 2 slots; else honest.
+root [
+  Selector[
+    Sequence[
+      Condition(cardano.current_slot >= env.trigger_slot),
+      ForTicks(3, "attack")
+    ],
+    Action("honest")
+  ]
+]
