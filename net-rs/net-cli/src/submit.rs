@@ -13,9 +13,11 @@ use net_core::mux::{MuxConfig, ProtocolConfig};
 use net_core::protocols::keepalive;
 use net_core::protocols::keepalive::KeepAlive;
 use net_core::protocols::txsubmission;
-use net_core::protocols::txsubmission::{PendingTx, TxBody, TxId, TxSubmission};
+use net_core::protocols::txsubmission::{PendingTx, TxSubmission};
 use net_core::protocols::Role;
 use net_core::protocols::Runner;
+
+use shared_consensus::mempool::{TxBody, TxId};
 
 use crate::connect;
 
@@ -39,9 +41,11 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
     // TxId: random 32 bytes encoded as CBOR bytes.
     let mut hash = [0u8; 32];
     rng.fill(&mut hash);
-    let mut id_buf = Vec::new();
-    let mut enc = minicbor::Encoder::new(&mut id_buf);
-    enc.bytes(&hash).expect("CBOR encode tx id");
+
+    // TODO: do we really need CBOR-encoded TxId here? And TxBody as well?
+    //let mut id_buf = Vec::new();
+    //let mut enc = minicbor::Encoder::new(&mut id_buf);
+    //enc.bytes(&hash).expect("CBOR encode tx id");
 
     // TxBody: random bytes of the desired size, encoded as CBOR bytes.
     let mut payload = vec![0u8; size];
@@ -51,8 +55,8 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
     enc.bytes(&payload).expect("CBOR encode tx body");
 
     PendingTx {
-        tx_id: TxId(id_buf),
-        body: TxBody(body_buf),
+        tx_id: TxId::new_with_array(hash),
+        body: TxBody::new_with_vec(body_buf),
         size: size as u32,
     }
 }

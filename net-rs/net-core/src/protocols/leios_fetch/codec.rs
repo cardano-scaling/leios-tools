@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
-
+use shared_consensus::mempool::TxBody;
 use super::{Message, MAX_BITMAP_ENTRIES, MAX_BLOCK_SIZE, MAX_TRANSACTIONS, MAX_TRANSACTION_SIZE};
 use crate::types::Point;
 
@@ -127,11 +127,11 @@ fn encode_bitmap<W: minicbor::encode::Write>(
 /// (txs are opaque pass-through — `tx.tx` may be any CBOR shape).
 fn encode_tx_list<W: minicbor::encode::Write>(
     e: &mut Encoder<W>,
-    txs: &[Vec<u8>],
+    txs: &[TxBody],
 ) -> Result<(), EncodeError<W::Error>> {
     e.array(txs.len() as u64)?;
     for tx in txs {
-        encode_raw(e, tx)?;
+        encode_raw(e, tx.get_slice())?;
     }
     Ok(())
 }
@@ -167,7 +167,7 @@ fn decode_raw_bounded(
 
 /// Decode a tx list, capturing each tx's raw CBOR (count- and
 /// size-bounded).
-fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, DecodeError> {
+fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<TxBody>, DecodeError> {
     let len = d.array()?;
     match len {
         Some(n) => {
@@ -179,7 +179,7 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, DecodeError> {
             }
             let mut items = Vec::with_capacity(n);
             for _ in 0..n {
-                items.push(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?);
+                items.push(TxBody::new_with_vec(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?));
             }
             Ok(items)
         }
@@ -195,7 +195,7 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, DecodeError> {
                         "transaction list exceeds maximum of {MAX_TRANSACTIONS}"
                     )));
                 }
-                items.push(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?);
+                items.push(TxBody::new_with_vec(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?));
             }
             Ok(items)
         }
@@ -352,8 +352,8 @@ mod tests {
     }
 
     /// A single CBOR value used as an opaque tx in tests (uint).
-    fn tx(n: u8) -> Vec<u8> {
-        vec![n] // 0..=23 encode as a 1-byte CBOR uint
+    fn tx(n: u8) -> TxBody {
+        TxBody::new_with_vec(vec![n]) // 0..=23 encode as a 1-byte CBOR uint
     }
 
     #[test]

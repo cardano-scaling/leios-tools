@@ -89,7 +89,6 @@ impl OfferDedup {
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-
 use super::chain_fragment::ChainFragment;
 use crate::bearer::tcp::TcpBearer;
 use crate::mux::MuxConfig;
@@ -109,6 +108,7 @@ use crate::peer::types::{PeerCommand, PeerEvent};
 use crate::peer::{ConnectionMode, PeerId};
 use crate::store::chain_store::ChainStore;
 use crate::store::leios_store::LeiosStore;
+use shared_consensus::mempool::{TxBody, TxId};
 
 /// Capacity of the per-peer command channel (coordinator → peer task).
 /// Large enough that a brief peer-task stall doesn't immediately force
@@ -659,16 +659,16 @@ impl Coordinator {
                 // at the right slots in our sparse holdings.
                 if let (Some(store), Point::Specific { slot, hash }) = (&self.leios_store, &point) {
                     if let Some(manifest) = store.get_eb_manifest(*slot, hash) {
-                        let by_hash: HashMap<[u8; 32], u32> = manifest
+                        let by_hash: HashMap<TxId, u32> = manifest
                             .iter()
                             .enumerate()
-                            .map(|(i, h)| (*h, i as u32))
+                            .map(|(i, h)| (h.clone(), i as u32))
                             .collect();
-                        let indexed: BTreeMap<u32, Vec<u8>> = transactions
+                        let indexed: BTreeMap<u32, TxBody> = transactions
                             .iter()
                             .filter_map(|body| {
-                                let id = blake2b_256(body);
-                                by_hash.get(&id).map(|&i| (i, body.clone()))
+                                let id = body.get_blake2b_256();
+                                by_hash.get(&TxId::new_with_array(id)).map(|&i| (i, body.clone()))
                             })
                             .collect();
                         if !indexed.is_empty() {
@@ -1393,15 +1393,6 @@ impl Coordinator {
     }
 }
 
-/// Blake2b-256 over arbitrary bytes. Matches the tx-id derivation used
-/// by the consensus layer: `blake2b_simd::Params::new().hash_length(32)`.
-fn blake2b_256(bytes: &[u8]) -> [u8; 32] {
-    let result = blake2b_simd::Params::new().hash_length(32).hash(bytes);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(result.as_bytes());
-    out
-}
-
 /// Decrement the per-IP connection count, removing the entry if it reaches zero.
 fn decrement_ip_count(ip_counts: &Mutex<HashMap<IpAddr, usize>>, ip: IpAddr) {
     let mut counts = ip_counts.lock().expect("ip_counts lock poisoned");
@@ -1489,6 +1480,7 @@ pub fn spawn_coordinator(config: CoordinatorConfig) -> CoordinatorHandle {
 
 #[cfg(test)]
 mod tests {
+    use shared_consensus::mempool::{TxBody, TxId};
     use super::*;
     use crate::types::WrappedHeader;
 
@@ -2651,9 +2643,9 @@ mod tests {
     async fn record_leios_eb_manifest_enables_resolver_backed_serve() {
         use crate::store::leios_store::TxBodyResolver;
 
-        struct StubResolver(std::collections::HashMap<Vec<u8>, Vec<u8>>);
+        struct StubResolver(HashMap<TxId, TxBody>);
         impl TxBodyResolver for StubResolver {
-            fn resolve_body(&self, tx_id: &[u8]) -> Option<Vec<u8>> {
+            fn resolve_body(&self, tx_id: &TxId) -> Option<TxBody> {
                 self.0.get(tx_id).cloned()
             }
         }
@@ -2661,9 +2653,12 @@ mod tests {
         let h0 = [0x01u8; 32];
         let h1 = [0x02u8; 32];
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(
-            [(h0.to_vec(), vec![10u8]), (h1.to_vec(), vec![20u8])]
-                .into_iter()
-                .collect(),
+            [
+                (TxId::new_with_array(h0), TxBody::new_with_vec(vec![10u8])), 
+                (TxId::new_with_array(h1), TxBody::new_with_vec(vec![20u8]))
+            ]
+            .into_iter()
+            .collect(),
         ));
 
         let (peer_event_sender, peer_event_receiver) = mpsc::channel(256);
@@ -2693,7 +2688,10 @@ mod tests {
             .send(NetworkCommand::RecordLeiosEbManifest {
                 source: None,
                 point,
-                tx_hashes: vec![h0, h1],
+                tx_hashes: vec![
+                    TxId::new_with_array(h0),
+                    TxId::new_with_array(h1)
+                ],
             })
             .await
             .expect("command should accept");
@@ -2710,7 +2708,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(got, Some(vec![vec![10u8], vec![20u8]]));
+        assert_eq!(got, Some(vec![TxBody::new_with_vec(vec![10u8]), TxBody::new_with_vec(vec![20u8])]));
 
         net_cmd_sender
             .send(NetworkCommand::Shutdown)
@@ -2743,7 +2741,7 @@ mod tests {
 
         let hash = [0xA1u8; 32];
         let point = Point::Specific { slot: 7, hash };
-        let txs: Vec<Vec<u8>> = vec![vec![1, 2, 3], vec![4, 5, 6]];
+        let txs: Vec<TxBody> = vec![TxBody::new_with_vec(vec![1, 2, 3]), TxBody::new_with_vec(vec![4, 5, 6])];
 
         net_cmd_sender
             .send(NetworkCommand::InjectLeiosBlockTxs {
@@ -2798,12 +2796,12 @@ mod tests {
         // Manifest must be in place before the coordinator can position
         // received bodies. In production net-node records this after
         // decoding the EB body; here we set it directly.
-        let body0 = b"alpha".to_vec();
-        let body1 = b"bravo".to_vec();
-        let body2 = b"charlie".to_vec();
-        let h0 = blake2b_256(&body0);
-        let h1 = blake2b_256(&body1);
-        let h2 = blake2b_256(&body2);
+        let body0 = TxBody::new_with_vec(b"alpha".to_vec());
+        let body1 = TxBody::new_with_vec(b"bravo".to_vec());
+        let body2 = TxBody::new_with_vec(b"charlie".to_vec());
+        let h0 = body0.get_blake2b_txid();
+        let h1 = body1.get_blake2b_txid();
+        let h2 = body2.get_blake2b_txid();
         let eb_hash = [0xEEu8; 32];
         let point = Point::Specific {
             slot: 12,
@@ -2880,7 +2878,7 @@ mod tests {
                 PeerId(3),
                 PeerEvent::LeiosBlockTxsFetched {
                     point: point.clone(),
-                    transactions: vec![b"orphan".to_vec()],
+                    transactions: vec![TxBody::new_with_vec(b"orphan".to_vec())],
                 },
             )
             .await;

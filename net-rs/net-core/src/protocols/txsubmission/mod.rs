@@ -8,8 +8,8 @@ pub mod codec;
 
 use std::collections::VecDeque;
 use std::time::Duration;
-
 use tokio::sync::mpsc;
+use shared_consensus::mempool::{TxBody, TxId};
 
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 
@@ -34,9 +34,6 @@ pub const TIMEOUT_TXS: Duration = Duration::from_secs(10);
 /// Maximum number of unacknowledged tx ids (flow control window).
 pub const MAX_UNACKED: usize = 10;
 
-/// Maximum size of a single encoded tx id.
-pub const MAX_TX_ID_SIZE: usize = 128;
-
 /// Maximum size of a single encoded tx body.
 pub const MAX_TX_SIZE: usize = 2_500_000;
 
@@ -53,14 +50,7 @@ pub const MAX_TX_SIZE: usize = 2_500_000;
 pub const ORIGIN_ERA: u16 = 8;
 
 // --- Types ---
-
-/// Opaque transaction ID stored as raw CBOR bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxId(pub Vec<u8>);
-
-/// Opaque transaction body stored as raw CBOR bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxBody(pub Vec<u8>);
+pub const TX_ID_SIZE: usize = 32;
 
 /// A transaction ID as it travels on the NtN wire: the raw [`TxId`] plus
 /// the HFC `era` index cardano-node prefixes it with (`[era, bytes]`).
@@ -411,7 +401,7 @@ mod tests {
                 &Message::MsgRequestTxs {
                     tx_ids: vec![EraTxId {
                         era: ORIGIN_ERA,
-                        tx_id: TxId(vec![0x42])
+                        tx_id: TxId::new_with_array([0x42; 32])
                     }]
                 }
             )
@@ -468,7 +458,7 @@ mod tests {
             &Message::MsgRequestTxs {
                 tx_ids: vec![EraTxId {
                     era: ORIGIN_ERA,
-                    tx_id: TxId(vec![])
+                    tx_id: TxId::new_with_array([0u8; 32])
                 }]
             }
         )
@@ -543,8 +533,8 @@ mod tests {
 
     fn make_test_tx(id_byte: u8, size: usize) -> PendingTx {
         PendingTx {
-            tx_id: TxId(vec![id_byte; 32]),
-            body: TxBody(vec![id_byte; size]),
+            tx_id: TxId::new_with_array([id_byte; 32]),
+            body: TxBody::new_with_vec(vec![id_byte; size]),
             size: size as u32,
         }
     }
@@ -624,7 +614,7 @@ mod tests {
             tx_sender
                 .send(PendingTx {
                     tx_id: tx1_id,
-                    body: TxBody(tx1.body.0.clone()),
+                    body: tx1.body.clone(),
                     size: 1500,
                 })
                 .await
@@ -632,7 +622,7 @@ mod tests {
             tx_sender
                 .send(PendingTx {
                     tx_id: tx2_id,
-                    body: TxBody(tx2.body.0.clone()),
+                    body: tx2.body.clone(),
                     size: 2000,
                 })
                 .await

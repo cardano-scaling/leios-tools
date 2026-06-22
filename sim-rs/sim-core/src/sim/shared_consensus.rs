@@ -75,7 +75,7 @@ use shared_consensus::{
         ChainTipContext, LeiosEffect, LeiosState, LeiosTelemetryEvent, NoVoteReason, VotingConfig,
     },
     lottery as con_lottery,
-    mempool::{EbKey, MempoolEffect, MempoolState, PendingTx, TxId, TxRejectReason},
+    mempool::{EbKey, MempoolEffect, MempoolState, MempoolTx, TxId, TxRejectReason},
     peer::PeerId,
     pipeline::PipelineConfig,
     praos::{ParsedHeaderInfo, PraosEffect, PraosState},
@@ -83,7 +83,7 @@ use shared_consensus::{
     types::Point,
     committee,
 };
-
+use shared_consensus::mempool::TxBody;
 use crate::{
     clock::{Clock, Timestamp},
     config::{NodeConfiguration, NodeId, RelayStrategy, SimConfiguration},
@@ -205,7 +205,7 @@ fn derive_quorum_fraction(sim_config: &SimConfiguration) -> f64 {
 /// `MissingTX` voting predicate's `tx_known` callback — see
 /// [`tx_id_hash`].
 fn tx_id_for(id: TransactionId) -> TxId {
-    tx_id_hash(id).to_vec()
+    TxId::new_with_slice(&tx_id_hash(id))
 }
 
 /// 32-byte form of [`tx_id_for`], for callers that need the hash
@@ -587,10 +587,7 @@ impl NodeImpl for SharedConsensus {
         // self.leios is borrowed mutably.
         let mempool = &self.mempool;
         let tx_arcs = &self.tx_arcs;
-        let tx_known = |hash: &[u8; 32]| {
-            let key = hash.to_vec();
-            mempool.has_tx(&key) || tx_arcs.contains_key(&key)
-        };
+        let tx_known = |key: &TxId| mempool.has_tx(key) || tx_arcs.contains_key(key);
         let leios_fx = self.leios.on_slot(slot, &tx_known);
         self.apply_leios_effects(&mut out, leios_fx);
         // Praos RB lottery — shared formula with net-rs.  Threshold lives
@@ -621,7 +618,7 @@ impl NodeImpl for SharedConsensus {
         // linear_leios's `generate_tx → propagate_tx → mempool` shape.
         // CpuTask scheduling for validation happens for *peer-sent*
         // txs only, in `handle_message::Tx`.
-        let fx = self.mempool.admit_validated(id, vec![], tx.bytes as u32);
+        let fx = self.mempool.admit_validated(id, TxBody::new_with_vec(Vec::new()), tx.bytes as u32);
         self.apply_mempool_effects(&mut out, fx);
         // Announce to every consumer. linear_leios announces only to
         // consumers (downstream peers); we mirror that here.
@@ -718,7 +715,7 @@ impl NodeImpl for SharedConsensus {
                 self.pending_from.remove(&key);
                 let fx = self.mempool.admit_validated(
                     key.clone(),
-                    vec![],
+                    TxBody::new_with_vec(vec![]),
                     tx.bytes as u32,
                 );
                 let admitted = !fx
@@ -1777,7 +1774,7 @@ impl SharedConsensus {
             slot: eb_id.slot,
             hash: eb_hash,
         };
-        let manifest: Vec<[u8; 32]> = eb.txs.iter().map(|tx| tx_id_hash(tx.id)).collect();
+        let manifest: Vec<TxId> = eb.txs.iter().map(|tx| tx_id_for(tx.id)).collect();
         // Sim doesn't model the per-peer LeiosNotify source filter, so
         // pass None — the resulting RecordLeiosEbManifest effect is a
         // no-op in sim's dispatcher anyway.
@@ -2028,7 +2025,7 @@ impl SharedConsensus {
     /// in practice — every tx that enters the mempool has a matching
     /// `tx_arcs` entry — but is defensive against future eviction
     /// drift).
-    fn collect_arcs(&self, pending: Vec<PendingTx>) -> Vec<Arc<Transaction>> {
+    fn collect_arcs(&self, pending: Vec<MempoolTx>) -> Vec<Arc<Transaction>> {
         pending
             .into_iter()
             .filter_map(|tx| self.tx_arcs.get(&tx.tx_id).cloned())
@@ -2187,7 +2184,7 @@ impl SharedConsensus {
                         .tx_arcs
                         .get(&tx_id)
                         .map(|tx| tx.id)
-                        .or_else(|| sim_id_from_bytes(&tx_id))
+                        .or_else(|| sim_id_from_bytes(&tx_id.get_bytes()))
                     else {
                         continue;
                     };
