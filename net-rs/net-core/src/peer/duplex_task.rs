@@ -362,20 +362,30 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
     //   MsgKeepAlive after the relay activated the protocol), that's
     //   the relay's side of the keepalive going silent.  Per spec we
     //   must drop the connection.
+    let teardown_reason: String;
     loop {
         tokio::select! {
             cmd = command_receiver.recv() => {
                 if !dispatch_command(cmd, &senders).await {
+                    teardown_reason = "command channel closed".to_string();
                     break;
                 }
             }
             result = &mut cs_client => {
+                teardown_reason = match &result {
+                    Err(e) => format!("chainsync client panicked: {e}"),
+                    Ok(_) => "chainsync client exited".to_string(),
+                };
                 if let Err(e) = result {
                     tracing::warn!("peer {peer_id}: chainsync client panicked: {e}");
                 }
                 break;
             }
             result = &mut ka_client => {
+                teardown_reason = match &result {
+                    Err(e) => format!("keepalive client panicked: {e}"),
+                    Ok(_) => "keepalive client exited".to_string(),
+                };
                 if let Err(e) = result {
                     tracing::warn!("peer {peer_id}: keepalive client panicked: {e}");
                 } else {
@@ -386,6 +396,10 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
                 break;
             }
             result = &mut ka_server => {
+                teardown_reason = match &result {
+                    Err(e) => format!("keepalive responder panicked: {e}"),
+                    Ok(_) => "keepalive responder exited (liveness watchdog)".to_string(),
+                };
                 if let Err(e) = result {
                     tracing::warn!("peer {peer_id}: keepalive server panicked: {e}");
                 } else {
@@ -397,6 +411,18 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
             }
         }
     }
+
+    // Deterministically tell the coordinator this peer is gone so it
+    // removes and reconnects it. Previously teardown relied on an aborted
+    // sub-task racing a mux-error `Failed` event through `event_sender`
+    // first; when teardown aborted every sub-task before any event escaped
+    // (e.g. the keepalive liveness watchdog firing on a silent relay), the
+    // coordinator never learned the peer died — leaving a zombie peer in
+    // its table that was never removed or reconnected. `remove_peer` is
+    // idempotent, so a duplicate `Failed` from a racing sub-task is safe.
+    let _ = event_sender
+        .send((peer_id, PeerEvent::Failed { reason: teardown_reason }))
+        .await;
 
     // Clean up all sub-tasks.
     cs_client.abort();
