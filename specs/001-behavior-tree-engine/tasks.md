@@ -91,7 +91,7 @@ at/after it, with no REST or coordinator (quickstart Scenario 2).
 ### Implementation for User Story 1
 
 - [X] T020 [US1] Add `apply_control(&ControlSignal)` to `LeiosState`/`PraosState`/`MempoolState` in `shared-rs/consensus/src/{leios,praos,mempool}.rs` storing per-domain policy fields read by the actuators; test-first.
-- [ ] T021 [US1] Rewire the Leios vote path in `shared-rs/consensus/src/leios.rs` to apply `VotePolicy` (remove the `decide_vote` hook call + `invoke_hook`); test.
+- [X] T021 [US1] Rewire the Leios vote path in `shared-rs/consensus/src/leios.rs` to apply `VotePolicy` (remove the `decide_vote` hook call + `invoke_hook`); test. **Note: vote-decision now reads `control.leios.vote`; the shared `invoke_hook`/reactive-hook infra is removed in the bulk T025 deletion.**
 - [ ] T022 [US1] Rewire `shared-rs/consensus/src/praos.rs` (block/tip paths) to drop `on_block_received`/`on_tip_advanced` hook calls; reorg/drop read from `ControlSignal`; test.
 - [ ] T023 [US1] Rewire the mempool path in `shared-rs/consensus/src/mempool.rs` to apply `TxFilterPolicy` (remove `on_tx_*` hook calls); test.
 - [ ] T024 [US1] Rewire production: `shared-rs/consensus/src/production.rs` body-path and `net-rs/net-node/src/production.rs` to read `praos.production`/`praos.body_path` from the published `ControlSignal` (remove `rb_production_strategy`/`decide_body_path` hooks); test.

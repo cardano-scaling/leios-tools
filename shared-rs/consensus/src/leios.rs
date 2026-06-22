@@ -27,7 +27,7 @@ use serde::Serialize;
 use tracing::info;
 
 use crate::aggregation::QuorumFormed;
-use crate::behaviour::tree::control::ControlSignal;
+use crate::behaviour::tree::control::{ControlSignal, VotePolicy};
 use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
 use crate::committee;
 use crate::config::CommitteeSelection;
@@ -614,13 +614,13 @@ impl LeiosState {
                         continue;
                     }
                     let honest_vote = self.decide_vote(&eb_hash, eb_slot, eb_seen_slot, tx_known);
-                    // Decision hook: behaviours can override the honest
-                    // predicate result (lazy voter, wrong-EB voter).
-                    let arc = self.behaviour.clone();
-                    let mut guard = arc.lock().expect("behaviour mutex poisoned");
-                    let decision = guard.decide_vote(self, &eb_hash, eb_slot, &honest_vote);
-                    drop(guard);
-                    let resolved = decision.resolve(honest_vote);
+                    // Vote actuator: the BT control signal may override the
+                    // honest predicate with a policy abstention (e.g. the
+                    // lazy-voter action sets `leios.vote = Abstain(reason)`).
+                    let resolved = match &self.control.leios.vote {
+                        VotePolicy::Honest => honest_vote,
+                        VotePolicy::Abstain(reason) => Err(*reason),
+                    };
                     match resolved {
                         Ok((emit_pv, npv_signature)) if emit_pv || npv_signature.is_some() => {
                             info!(
@@ -2306,17 +2306,18 @@ mod tests {
     }
 
     #[test]
-    fn behaviour_decide_vote_override_forces_abstain() {
+    fn control_vote_abstain_forces_no_vote() {
+        // The BT control signal's vote-abstain policy (lazy-voter) overrides
+        // the honest predicate, exactly as the old decide_vote hook did.
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            vote_override: Some(NoVoteReason::WrongEB),
-            ..Default::default()
-        }));
+        let mut cs = ControlSignal::default();
+        cs.leios.vote = VotePolicy::Abstain(NoVoteReason::WrongEB);
+        state.apply_control(&cs);
         state.elections.announce(10, h(1));
         tip_for(&mut state, 10, h(1));
         let fx = state.on_slot(13, &tx_all);
         // Despite the seated PV that honest would have emitted, the
-        // override forced NoVote { WrongEB }.
+        // abstain policy forced NoVote { WrongEB }.
         assert_eq!(fx.len(), 1);
         match &fx[0] {
             LeiosEffect::NoVote { reason, .. } => {
