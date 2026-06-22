@@ -1,0 +1,8 @@
+# lie-about-eb-size.bt — rewrite eb_size on outbound MsgLeiosBlockOffer:
+# (eb_size * scale_num / scale_den) + offset. Here: the size-zero crash shape.
+run {
+  name = "lie-about-eb-size"
+  seed = 1
+}
+
+root [ Action("lie-about-eb-size", scale_num = 0, scale_den = 1, offset = 0) ]

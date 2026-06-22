@@ -1,0 +1,7 @@
+# drop-inbound-peers.bt — each slot, with probability p, reset inbound peers.
+run {
+  name = "drop-inbound-peers"
+  seed = 1
+}
+
+root [ Action("drop-inbound-peers", probability = 0.15) ]

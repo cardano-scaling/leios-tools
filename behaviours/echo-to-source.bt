@@ -1,0 +1,7 @@
+# echo-to-source.bt — open the no-echo gate: reflect EB/EB-tx offers back to their source.
+run {
+  name = "echo-to-source"
+  seed = 1
+}
+
+root [ Action("echo-to-source") ]

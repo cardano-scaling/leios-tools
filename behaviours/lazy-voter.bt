@@ -1,0 +1,7 @@
+# lazy-voter.bt — never casts a vote (always abstains).
+run {
+  name = "lazy-voter"
+  seed = 1
+}
+
+root [ Action("lazy-voter", reason = "declined") ]
