@@ -284,16 +284,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     store.tick_slot(slot);
                 }
 
-                // Behaviour-driven self-reorg (e.g. DeepReorg): re-anchor
-                // the adopted chain before production so the producer forks
-                // and downstream followers see a deep rollback. No-op for
-                // honest nodes.
-                if let Some(depth) = consensus.maybe_force_reorg(slot).await {
-                    info!(node_id = %node_id, slot, depth, "behaviour: forced deep self-reorg");
+                // BT-driven self-reorg (deep-reorg action sets
+                // praos.reorg_depth): re-anchor the adopted chain before
+                // production so the producer forks and downstream followers see
+                // a deep rollback. Honest signal leaves reorg_depth = None.
+                if let Some(depth) = control.praos.reorg_depth {
+                    if consensus.force_reorg(depth).await {
+                        info!(node_id = %node_id, slot, depth, "behaviour: forced deep self-reorg");
+                    }
                 }
-                // Behaviour-driven inbound reset (DropInboundPeers): RST
-                // accepted peers so they reconnect and re-intersect.
-                if consensus.should_drop_inbound_peers(slot) {
+                // BT-driven inbound reset (drop-inbound-peers action sets
+                // praos.drop_inbound): RST accepted peers so they reconnect and
+                // re-intersect.
+                if control.praos.drop_inbound {
                     let _ = commands.send(NetworkCommand::DropInboundPeers).await;
                     info!(node_id = %node_id, slot, "behaviour: dropping inbound peers");
                 }
@@ -341,13 +344,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let certified_eb_slot = if leios { consensus.cert_for_parent() } else { None };
                 let certified_eb = certified_eb_slot.is_some();
                 if let Some(produced) = producer.try_produce_block(slot, prev_hash, next_block_no, certified_eb, &mempool, consensus.leios_state()) {
-                    // Consult the per-node behaviour: an adversarial
-                    // `Suppress` drops the win silently; `Equivocate`
-                    // produces a duplicate RB with the same issuer +
-                    // slot but a different body, triggering CIP-0164
-                    // detection on every honest peer.
+                    // BT production strategy (praos.production): an adversarial
+                    // `Suppress` drops the win silently; `Equivocate` produces
+                    // duplicate RBs with the same issuer + slot but different
+                    // bodies, triggering CIP-0164 detection on every honest
+                    // peer. Honest signal is `Normal`.
                     use shared_consensus::behaviour::RbProductionStrategy;
-                    let strategy = consensus.rb_production_strategy(slot);
+                    let strategy = control.praos.production.clone();
                     if strategy == RbProductionStrategy::Suppress {
                         info!(
                             node_id = %node_id,

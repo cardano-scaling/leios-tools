@@ -167,45 +167,13 @@ impl Consensus {
         );
     }
 
-    /// Ask the per-node behaviour what to do for this slot's
-    /// self-produced RB.  See
-    /// [`shared_consensus::behaviour::RbProductionStrategy`].  Default
-    /// `HonestBehaviour` always returns `Normal`.
-    pub fn rb_production_strategy(
-        &mut self,
-        slot: u64,
-    ) -> shared_consensus::behaviour::RbProductionStrategy {
-        // The behaviour lives on `LeiosState` (chosen during the
-        // initial scaffolding because the Leios side has the broadest
-        // hook surface); the strategy method takes a `&PraosState`
-        // alongside.  Borrow split is done by passing `praos.state()`
-        // before mutably borrowing the leios layer.
-        let praos = self.praos.state();
-        self.leios
-            .state_mut()
-            .ask_rb_production_strategy(praos, slot)
-    }
-
-    /// Consult the behaviour for a deliberate self-reorg this slot and,
-    /// if requested, roll the adopted chain back and diffuse the
-    /// rollback to peers.  Returns the depth rolled back, or `None` when
-    /// the behaviour is honest or the chain is too short.  Honest nodes
-    /// pay only one cheap `None`-returning hook call per slot.
-    pub async fn maybe_force_reorg(&mut self, slot: u64) -> Option<u64> {
-        let depth = self.leios.state_mut().ask_praos_reorg(slot)?;
-        if self.praos.force_rollback(depth).await {
-            Some(depth)
-        } else {
-            None
-        }
-    }
-
-    /// Consult the behaviour for whether to reset accepted (inbound)
-    /// peer connections this slot.  The caller issues
-    /// `NetworkCommand::DropInboundPeers` when this returns true.  Honest
-    /// nodes pay one cheap `false`-returning hook call per slot.
-    pub fn should_drop_inbound_peers(&mut self, slot: u64) -> bool {
-        self.leios.state_mut().ask_drop_inbound_peers(slot)
+    /// Force a deliberate self-reorg of `depth` blocks (the `deep-reorg`
+    /// action, via `control.praos.reorg_depth`): roll the adopted chain back
+    /// and diffuse the rollback to peers. Returns `true` if a rollback actually
+    /// happened (the chain was long enough). The decision lives in the BT tick;
+    /// this is the mechanical actuator.
+    pub async fn force_reorg(&mut self, depth: u64) -> bool {
+        self.praos.force_rollback(depth).await
     }
 
     /// Notify the Leios layer of a new slot tick.
