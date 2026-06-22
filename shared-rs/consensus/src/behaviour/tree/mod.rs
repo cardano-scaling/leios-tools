@@ -21,6 +21,7 @@ pub mod condition;
 pub mod config;
 pub mod control;
 pub mod env;
+pub mod variants;
 
 pub use behaviour::{Behaviour, BehaviourId, BehaviourKind, BehaviourTree};
 pub use condition::{CompareOp, ConditionExpr, ValueRef};
@@ -30,6 +31,7 @@ pub use control::{
     TxFilterPolicy, VotePolicy,
 };
 pub use env::{DynamicEnv, EnvHandle, EnvValue, NativeChainState, TickCtx};
+pub use variants::{EquivocationVariants, RbVariant};
 
 /// The status a behaviour returns when ticked (spec FR-001).
 ///
