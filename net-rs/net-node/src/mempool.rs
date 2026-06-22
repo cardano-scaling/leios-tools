@@ -490,8 +490,14 @@ mod tests {
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0xCC; 32])), Some(TxBody::new_with_vec(vec![0xDE, 0xAD])));
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0x99; 32])), None);
+        assert_eq!(
+            resolver.resolve_body(&TxId::new_with_array([0xCC; 32])),
+            Some(TxBody::new_with_vec(vec![0xDE, 0xAD]))
+        );
+        assert_eq!(
+            resolver.resolve_body(&TxId::new_with_array([0x99; 32])),
+            None
+        );
     }
 
     #[tokio::test]

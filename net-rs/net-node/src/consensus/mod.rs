@@ -121,6 +121,18 @@ impl Consensus {
         }
     }
 
+    /// Apply the per-slot behaviour-tree [`ControlSignal`] to the consensus
+    /// state machines. Called once per slot by the I/O loop after ticking the
+    /// tree. The Leios state reads its vote policy and the t22 EB-processing
+    /// filter from this; the Praos state holds it for the production/reorg/drop
+    /// actuators the I/O loop consults.
+    ///
+    /// [`ControlSignal`]: shared_consensus::behaviour::tree::ControlSignal
+    pub fn apply_control(&mut self, control: &shared_consensus::behaviour::tree::ControlSignal) {
+        self.leios.state_mut().apply_control(control);
+        self.praos.state_mut().apply_control(control);
+    }
+
     /// Swap the per-node behaviour by replacing the trait object inside
     /// the shared handle.  Every state machine and the coordinator's
     /// outbound transform path observe the new behaviour from their

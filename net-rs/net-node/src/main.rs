@@ -1,3 +1,4 @@
+mod bt_runtime;
 mod clock;
 mod config;
 mod consensus;
@@ -16,10 +17,10 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use clap::Parser;
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
-use tokio::io::AsyncBufReadExt;
-use tracing::{info, warn};
 use shared_consensus::mempool::TxBody;
 use telemetry::NodeEvent;
+use tokio::io::AsyncBufReadExt;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(name = "net-node", about = "Cardano Leios test node")]
@@ -31,6 +32,11 @@ struct Cli {
     /// Override individual config values (repeatable, key=value).
     #[arg(long = "set", value_name = "KEY=VALUE")]
     set: Vec<String>,
+
+    /// Path to a self-contained behaviour-tree config (resolved by
+    /// `bt.py --resolve`). Overrides the `behaviour_tree` config key.
+    #[arg(long = "behaviour-tree", value_name = "FILE")]
+    behaviour_tree: Option<String>,
 }
 
 #[tokio::main]
@@ -38,7 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
-    let config = config::load(&cli.configs, &cli.set)?;
+    let mut config = config::load(&cli.configs, &cli.set)?;
+    if cli.behaviour_tree.is_some() {
+        config.behaviour_tree = cli.behaviour_tree.clone();
+    }
 
     info!(
         node_id = %config.node_id,
@@ -93,6 +102,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     let behaviour_handle =
         shared_consensus::behaviour::build_handle(&behaviour_spec, behaviour_seed);
+
+    // Behaviour-tree runtime: ticked once per slot to produce the control
+    // signal the consensus actuators read. An invalid config refuses startup
+    // (US1 scenario 5). `None` runs an implicit honest tree.
+    let mut bt_runtime = match config.behaviour_tree.as_deref() {
+        Some(path) => match bt_runtime::BtRuntime::load(path) {
+            Ok(rt) => {
+                info!(
+                    node_id = %config.node_id,
+                    behaviour_tree = %path,
+                    name = %rt.name(),
+                    seed = rt.seed(),
+                    "loaded behaviour tree"
+                );
+                rt
+            }
+            Err(e) => return Err(format!("invalid --behaviour-tree {path}: {e}").into()),
+        },
+        None => bt_runtime::BtRuntime::honest(),
+    };
 
     let mut handle = network::start(
         &config,
@@ -233,6 +262,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokio::select! {
             slot = slot_clock.tick() => {
                 telem.current_slot = slot;
+
+                // Tick the behaviour tree and apply its control signal to the
+                // consensus state machines for this slot. The Leios vote policy
+                // and t22 EB-filter read it directly; Praos holds it for the
+                // production/reorg/drop actuators consulted below.
+                // TODO(phase3): thread the real current_epoch + mempool tx
+                // count; the MVP slot-trigger attacks read only current_slot.
+                let control = bt_runtime.tick(slot, 0, 0);
+                consensus.apply_control(&control);
                 retry_counter += 1;
 
                 // Advance the LeiosStore retention clock on every wall-clock

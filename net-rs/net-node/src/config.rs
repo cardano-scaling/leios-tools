@@ -274,6 +274,13 @@ pub struct NodeConfig {
     #[serde(default)]
     pub behaviour: Option<shared_consensus::behaviour::BehaviourSpec>,
 
+    /// Path to a self-contained behaviour-tree config (TOML), resolved by
+    /// `bt.py --resolve`. When set, the node ticks this tree each slot and
+    /// applies the resulting control signal. `None` runs an implicit honest
+    /// tree. This is the BT-engine replacement for the legacy `behaviour` spec.
+    #[serde(default)]
+    pub behaviour_tree: Option<String>,
+
     /// Outbound peer list.
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
@@ -673,6 +680,7 @@ impl Default for NodeConfig {
             telemetry: TelemetryConfig::default(),
             fetch_policy: FetchPolicyConfig::default(),
             behaviour: None,
+            behaviour_tree: None,
             peers: Vec::new(),
         }
     }

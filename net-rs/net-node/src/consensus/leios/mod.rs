@@ -11,6 +11,10 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
+use crate::production::decode_overflow_eb;
+use crate::telemetry::NodeEvent;
+use crate::validation::{LedgerCommand, Validator};
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
 use net_core::types::{Point, Vote};
 use rand::rngs::StdRng;
@@ -21,14 +25,10 @@ pub use shared_consensus::leios::EbTxMatchOutcome;
 use shared_consensus::leios::{
     ChainTipContext, LeiosEffect, LeiosState, LeiosTelemetryEvent, VotingConfig,
 };
+use shared_consensus::mempool::{TxBody, TxId};
 pub use shared_consensus::pipeline::PipelineConfig;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
-use shared_consensus::mempool::{TxBody, TxId};
-use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
-use crate::production::decode_overflow_eb;
-use crate::telemetry::NodeEvent;
-use crate::validation::{LedgerCommand, Validator};
 
 pub struct LeiosConsensus {
     pub(crate) state: LeiosState,
@@ -325,10 +325,14 @@ impl LeiosConsensus {
             .iter()
             .map(|body| {
                 let hash = body.get_blake2b_256();
-                (body.clone(), shared_consensus::mempool::TxId::new_with_slice(&hash))
+                (
+                    body.clone(),
+                    shared_consensus::mempool::TxId::new_with_slice(&hash),
+                )
             })
             .collect();
-        self.state.match_eb_tx_response(point, bodies_with_hashes.as_slice())
+        self.state
+            .match_eb_tx_response(point, bodies_with_hashes.as_slice())
     }
 
     /// Re-issue a `FetchLeiosBlockTxs` for the still-missing indices.
@@ -928,7 +932,7 @@ mod tests {
     // -- Bitmap construction tests ------------------------------------------
 
     use net_core::protocols::leios_fetch::bitmap as bitmap_helpers;
-    use net_core::protocols::txsubmission::{PendingTx};
+    use net_core::protocols::txsubmission::PendingTx;
     use shared_consensus::mempool::{TxBody, TxId};
 
     /// Build the manifest bytes that the producer would emit for a given

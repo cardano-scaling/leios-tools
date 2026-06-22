@@ -127,6 +127,12 @@ impl PraosConsensus {
         &self.state
     }
 
+    /// Mutable access to the underlying state, e.g. to apply the per-slot
+    /// behaviour-tree control signal.
+    pub(crate) fn state_mut(&mut self) -> &mut shared_consensus::praos::PraosState {
+        &mut self.state
+    }
+
     /// Deliberate self-reorg (the `DeepReorg` behaviour): roll the
     /// adopted chain back `depth` blocks, abandon the suffix, and diffuse
     /// the resulting `InjectRollback` so downstream followers see a deep
