@@ -90,7 +90,7 @@ at/after it, with no REST or coordinator (quickstart Scenario 2).
 
 ### Implementation for User Story 1
 
-- [ ] T020 [US1] Add `apply_control(&ControlSignal)` to `LeiosState`/`PraosState`/`MempoolState` in `shared-rs/consensus/src/{leios,praos,mempool}.rs` storing per-domain policy fields read by the actuators; test-first.
+- [X] T020 [US1] Add `apply_control(&ControlSignal)` to `LeiosState`/`PraosState`/`MempoolState` in `shared-rs/consensus/src/{leios,praos,mempool}.rs` storing per-domain policy fields read by the actuators; test-first.
 - [ ] T021 [US1] Rewire the Leios vote path in `shared-rs/consensus/src/leios.rs` to apply `VotePolicy` (remove the `decide_vote` hook call + `invoke_hook`); test.
 - [ ] T022 [US1] Rewire `shared-rs/consensus/src/praos.rs` (block/tip paths) to drop `on_block_received`/`on_tip_advanced` hook calls; reorg/drop read from `ControlSignal`; test.
 - [ ] T023 [US1] Rewire the mempool path in `shared-rs/consensus/src/mempool.rs` to apply `TxFilterPolicy` (remove `on_tx_*` hook calls); test.

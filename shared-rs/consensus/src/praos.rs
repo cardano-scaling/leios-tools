@@ -311,6 +311,11 @@ pub struct PraosState {
     /// instance.  Swapping the inner `Box` under the lock changes the
     /// live behaviour for every Arc holder.
     pub behaviour: Arc<Mutex<Box<dyn crate::behaviour::Behaviour>>>,
+
+    /// The full control signal applied by the BT tick each slot
+    /// (`apply_control`). Honest by default; actuators read it instead of
+    /// calling behaviour hooks.
+    pub control: crate::behaviour::tree::control::ControlSignal,
 }
 
 impl PraosState {
@@ -360,12 +365,20 @@ impl PraosState {
             block_policy,
             rtt,
             behaviour: Arc::new(Mutex::new(Box::new(crate::behaviour::HonestBehaviour))),
+            control: crate::behaviour::tree::control::ControlSignal::default(),
         }
     }
 
     /// Replace the behaviour.  Swaps the trait object under the mutex;
     /// other Arc holders observe the new behaviour from their next hook
     /// call.
+    /// Apply the per-slot [`ControlSignal`](crate::behaviour::tree::ControlSignal)
+    /// produced by the BT tick, storing the Praos-domain slice for the actuators
+    /// to read. Called once per slot by the I/O wrapper.
+    pub fn apply_control(&mut self, control: &crate::behaviour::tree::control::ControlSignal) {
+        self.control = control.clone();
+    }
+
     pub fn set_behaviour(&mut self, behaviour: Box<dyn crate::behaviour::Behaviour>) {
         *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
     }
@@ -2142,6 +2155,20 @@ pub struct LeiosCertSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_control_stores_praos_domain_slice() {
+        use crate::behaviour::tree::control::ControlSignal;
+        let mut s = PraosState::new("test".to_string(), 100);
+        assert_eq!(s.control.praos.reorg_depth, None);
+        assert!(!s.control.praos.drop_inbound);
+        let mut cs = ControlSignal::default();
+        cs.praos.reorg_depth = Some(7);
+        cs.praos.drop_inbound = true;
+        s.apply_control(&cs);
+        assert_eq!(s.control.praos.reorg_depth, Some(7));
+        assert!(s.control.praos.drop_inbound);
+    }
 
     fn h(seed: u8) -> [u8; 32] {
         [seed; 32]

@@ -27,6 +27,7 @@ use serde::Serialize;
 use tracing::info;
 
 use crate::aggregation::QuorumFormed;
+use crate::behaviour::tree::control::ControlSignal;
 use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
 use crate::committee;
 use crate::config::CommitteeSelection;
@@ -382,6 +383,12 @@ pub struct LeiosState {
     /// the lock changes the live behaviour for every Arc holder at once
     /// (used by runtime config updates).
     pub behaviour: Arc<Mutex<Box<dyn Behaviour>>>,
+
+    /// The control signal applied by the BT tick each slot (`apply_control`).
+    /// The whole signal is stored (not just the Leios slice) so this state's
+    /// actuators can read cross-domain fields — e.g. the t22 EB-processing
+    /// filter reads `control.mempool.tx_filter`. Honest by default.
+    pub control: ControlSignal,
 }
 
 impl LeiosState {
@@ -431,6 +438,7 @@ impl LeiosState {
             eb_txs_policy,
             rtt,
             behaviour: Arc::new(Mutex::new(Box::new(HonestBehaviour))),
+            control: ControlSignal::default(),
         }
     }
 
@@ -440,6 +448,13 @@ impl LeiosState {
     /// handle observe the new behaviour from their next hook call.
     pub fn set_behaviour(&mut self, behaviour: Box<dyn Behaviour>) {
         *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
+    }
+
+    /// Apply the per-slot [`ControlSignal`] produced by the BT tick, storing the
+    /// Leios-domain slice for the actuators in this state to read. Replaces the
+    /// hook-driven decision path; called once per slot by the I/O wrapper.
+    pub fn apply_control(&mut self, control: &ControlSignal) {
+        self.control = control.clone();
     }
 
     /// Ask the installed behaviour what to do for this slot's
@@ -1361,6 +1376,22 @@ mod tests {
             diffuse_window: 5,
             dedup_window: 10,
         }
+    }
+
+    #[test]
+    fn apply_control_stores_leios_domain_slice() {
+        use crate::behaviour::tree::control::{ControlSignal, VotePolicy};
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
+        assert_eq!(state.control.leios.vote, VotePolicy::Honest);
+        let mut cs = ControlSignal::default();
+        cs.leios.vote = VotePolicy::Abstain(NoVoteReason::Declined);
+        cs.leios.echo_to_source = true;
+        state.apply_control(&cs);
+        assert_eq!(
+            state.control.leios.vote,
+            VotePolicy::Abstain(NoVoteReason::Declined)
+        );
+        assert!(state.control.leios.echo_to_source);
     }
 
     fn elections_for(node_id: &str) -> Elections {

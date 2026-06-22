@@ -219,6 +219,11 @@ pub struct MempoolState {
     /// [`crate::behaviour`].  Shared with the I/O wrapper via
     /// `Arc<Mutex<>>` so out-of-band callers can lock the same instance.
     pub behaviour: Arc<Mutex<Box<dyn Behaviour>>>,
+
+    /// The full control signal applied by the BT tick each slot
+    /// (`apply_control`). Honest by default; actuators read it instead of
+    /// calling behaviour hooks.
+    pub control: crate::behaviour::tree::control::ControlSignal,
 }
 
 impl MempoolState {
@@ -241,12 +246,20 @@ impl MempoolState {
             max_eb_slot: 0,
             eb_retention_slots,
             behaviour: Arc::new(Mutex::new(Box::new(HonestBehaviour))),
+            control: crate::behaviour::tree::control::ControlSignal::default(),
         }
     }
 
     /// Replace the behaviour.  Swaps the trait object under the mutex.
     pub fn set_behaviour(&mut self, behaviour: Box<dyn Behaviour>) {
         *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
+    }
+
+    /// Apply the per-slot [`ControlSignal`](crate::behaviour::tree::ControlSignal)
+    /// produced by the BT tick, storing the mempool-domain slice. Called once
+    /// per slot by the I/O wrapper.
+    pub fn apply_control(&mut self, control: &crate::behaviour::tree::control::ControlSignal) {
+        self.control = control.clone();
     }
 
     /// Lock the behaviour and call the hook with `(&mut dyn Behaviour,
@@ -772,6 +785,28 @@ impl MempoolState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_control_stores_mempool_domain_slice() {
+        use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy};
+        let mut s = MempoolState::new(10);
+        assert_eq!(s.control.mempool.tx_filter, TxFilterPolicy::None);
+        let mut cs = ControlSignal::default();
+        cs.mempool.tx_filter = TxFilterPolicy::ChecksumThreshold {
+            vote: 42,
+            non_voting: 99,
+            hide_eb_tx: true,
+        };
+        s.apply_control(&cs);
+        assert_eq!(
+            s.control.mempool.tx_filter,
+            TxFilterPolicy::ChecksumThreshold {
+                vote: 42,
+                non_voting: 99,
+                hide_eb_tx: true
+            }
+        );
+    }
 
     fn pid(n: u64) -> PeerId {
         PeerId(n)
