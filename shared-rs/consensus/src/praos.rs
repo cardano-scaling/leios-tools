@@ -286,6 +286,21 @@ pub struct PraosState {
     /// `block_cache` on the k-prune path.
     pub header_first_seen: BTreeMap<[u8; 32], u64>,
 
+    /// Authentic ChainSync-wire header bytes, keyed by block hash, fed by
+    /// the I/O wrapper via [`PraosState::note_authentic_header`] from the
+    /// header-announcement path.  Consumed (removed) when the matching
+    /// block is cached in [`PraosState::on_block_received`], so the cached
+    /// block — and the header we later re-serve downstream — carries the
+    /// *exact* bytes the upstream peer sent rather than a copy
+    /// reconstructed from the fetched body.  The two are not always
+    /// byte-identical: a block body can wrap its inner block under a
+    /// different era tag than the ChainSync header used on the wire, and
+    /// forwarding the body-derived era tag makes a downstream consumer
+    /// reject the header.  Pruned alongside `block_cache` on the k-prune
+    /// path; the consume-on-cache step bounds the live set to
+    /// announced-but-not-yet-fetched headers.
+    pub authentic_headers: BTreeMap<[u8; 32], Vec<u8>>,
+
     /// CIP-0164 RB-header equivocation tracker.  Per `(slot, issuer)`
     /// pair, the set of distinct RB header hashes observed.  The
     /// tracker is fed from every path that surfaces a parsed header
@@ -355,6 +370,7 @@ impl PraosState {
             last_stuck_warning_at: None,
             last_gap_warning_at: BTreeMap::new(),
             header_first_seen: BTreeMap::new(),
+            authentic_headers: BTreeMap::new(),
             header_hashes_by_slot_issuer: BTreeMap::new(),
             equivocating_rb_slots: BTreeSet::new(),
             block_policy,
@@ -573,6 +589,18 @@ impl PraosState {
         self.header_first_seen
             .entry(header_hash)
             .or_insert(current_slot);
+    }
+
+    /// Record the authentic ChainSync-wire header bytes for a block hash.
+    /// Called by the I/O wrapper from the header-announcement path, where
+    /// the original wire bytes are still in hand.  These are preferred over
+    /// the body-reconstructed header when the block is later cached, so the
+    /// header we re-serve downstream is byte-identical to what we received.
+    /// See [`PraosState::authentic_headers`].
+    pub fn note_authentic_header(&mut self, header_hash: [u8; 32], header_bytes: Vec<u8>) {
+        self.authentic_headers
+            .entry(header_hash)
+            .or_insert(header_bytes);
     }
 
     /// Record an observed RB header for equivocation detection.
@@ -890,6 +918,14 @@ impl PraosState {
             );
         }
         let body_bytes_len = body_bytes.len();
+        // Prefer the authentic ChainSync-wire header (recorded from the
+        // announcement path) over the body-reconstructed `header_bytes`.
+        // The body can wrap its inner block under a different era tag than
+        // the wire header; re-serving the body-derived tag downstream gets
+        // the header rejected.  Consume the entry — once cached we don't
+        // need the standalone copy.  Falls back to `header_bytes` when the
+        // block was never announced to us first.
+        let header_bytes = self.authentic_headers.remove(&hash).unwrap_or(header_bytes);
         self.block_cache.insert(
             hash,
             CachedBlock {
@@ -1123,6 +1159,11 @@ impl PraosState {
                     self.block_cache.retain(|_, cb| cb.block_no >= min);
                     self.validated.retain(|h| self.block_cache.contains_key(h));
                     self.header_first_seen
+                        .retain(|h, _| self.block_cache.contains_key(h));
+                    // Backstop for headers announced but never fetched (so
+                    // never consumed into block_cache): drop any not backed
+                    // by a cached block once we prune below k.
+                    self.authentic_headers
                         .retain(|h, _| self.block_cache.contains_key(h));
                 }
             }
@@ -2534,6 +2575,56 @@ mod tests {
         assert!(matches!(fx[0], PraosEffect::InjectBlock { .. }));
         assert!(s.validated.contains(&h(1)));
         assert_eq!(s.last_validated_tip, Some(h(1)));
+    }
+
+    #[test]
+    fn authentic_header_overrides_body_reconstructed_on_cache() {
+        // The wire ChainSync header (era tag 7) and the body-reconstructed
+        // header (era tag 8) hash to the same block, but differ in bytes.
+        // The cached — and later forwarded — header must be the wire bytes.
+        let mut s = fresh();
+        let wire_header = vec![0x82, 0x07, 0xAA, 0xBB];
+        let body_reconstructed = vec![0x82, 0x08, 0xAA, 0xBB];
+
+        s.note_authentic_header(h(1), wire_header.clone());
+        s.on_block_received(
+            pt(100, 1),
+            body_reconstructed.clone(),
+            vec![0xCC],
+            Some(hi(1, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+
+        let cached = s.block_cache.get(&h(1)).expect("block cached");
+        assert_eq!(cached.header, wire_header, "must cache the wire header");
+        assert_ne!(cached.header, body_reconstructed);
+        // Consumed: no longer pending after the block is cached.
+        assert!(!s.authentic_headers.contains_key(&h(1)));
+
+        // And the InjectBlock we emit downstream carries the wire bytes.
+        let fx = s.on_block_applied(pt(100, 1), Instant::now());
+        let injected = fx.iter().find_map(|e| match e {
+            PraosEffect::InjectBlock { header, .. } => Some(header.clone()),
+            _ => None,
+        });
+        assert_eq!(injected, Some(wire_header));
+    }
+
+    #[test]
+    fn body_reconstructed_header_used_when_no_authentic_recorded() {
+        // Fallback path: a block never announced to us first (no authentic
+        // header) keeps the body-reconstructed bytes the wrapper passes.
+        let mut s = fresh();
+        let body_reconstructed = vec![0x82, 0x08, 0xAA, 0xBB];
+        s.on_block_received(
+            pt(100, 1),
+            body_reconstructed.clone(),
+            vec![0xCC],
+            Some(hi(1, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+        let cached = s.block_cache.get(&h(1)).expect("block cached");
+        assert_eq!(cached.header, body_reconstructed);
     }
 
     #[test]
