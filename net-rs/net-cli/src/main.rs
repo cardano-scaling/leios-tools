@@ -206,6 +206,16 @@ enum Command {
         #[arg(long)]
         wire_hex: bool,
 
+        /// On each LeiosBlockOffer, issue a LeiosFetch MsgLeiosBlockRequest for
+        /// the offered EB (so its MsgLeiosBlock reply can be captured).
+        #[arg(long)]
+        fetch_eb: bool,
+
+        /// On each LeiosBlockTxsOffer, issue a MsgLeiosBlockTxsRequest for the
+        /// first tx chunk (so its MsgLeiosBlockTxs reply can be captured).
+        #[arg(long)]
+        fetch_eb_txs: bool,
+
         /// Maximum concurrent inbound handshakes
         #[arg(long, default_value_t = 64)]
         max_handshaking: usize,
@@ -315,6 +325,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             duplex,
             leios,
             wire_hex,
+            fetch_eb,
+            fetch_eb_txs,
             max_handshaking,
             max_connections_per_ip,
             scheduler_args,
@@ -327,6 +339,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 listen,
                 duplex,
                 leios,
+                fetch_eb,
+                fetch_eb_txs,
                 max_handshaking,
                 max_connections_per_ip,
                 &scheduler_args,
