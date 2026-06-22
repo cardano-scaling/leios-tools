@@ -1,0 +1,92 @@
+# Sybil-probe overlay: 3 relays × 10 duplicate connections = 30 peer
+# entries from a single net-node instance.  Bumps `max_peers` from
+# its default 20 to 40 to fit.  Used to push the relay's per-source-IP
+# application-layer cap higher than `follow-dev-relay-3x3-sybil.toml`
+# proved (>3).  Findings (2026-06-16: ≥10/relay accepted, sub-linear
+# sync speedup of 2.4× over 1-peer):
+# `project_dev_relay_sybil_capacity.md`.
+
+node_id = "dev-relay-sybil"
+seed = 1
+max_peers = 40
+
+[production]
+stake = 0
+
+[transactions]
+tx_rate = 0.0
+
+[telemetry]
+stats_interval_secs = 10
+
+[[telemetry.stats_sinks]]
+type = "log"
+
+[fetch_policy.eb_txs]
+kind = "no_fetch"
+
+# 3.131.54.190 — US Ohio (×10)
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+
+# 34.251.133.12 — EU Ireland (×10)
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+
+# 52.29.179.71 — EU Frankfurt (×10)
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"

@@ -1,0 +1,40 @@
+# Honest multi-peer follower: 3 relays × 1 connection each
+# (3.131.54.190 / 34.251.133.12 / 52.29.179.71, the three IPv4 backends
+# behind leios-node.play.dev.cardano.org:3001, network magic 164).
+# Exercises multi-peer flows — an EB offer arriving on one connection
+# should propagate as outbound offers on the other two via the
+# LeiosStore notification queue.
+#
+# Overlay on top of leios-dev.toml; run from the net-rs/ workspace root:
+#   cargo run --release -p net-node -- \
+#       --config net-node/configs/leios-dev.toml \
+#       --config net-node/configs/follow-dev-relay-3x1.toml
+
+node_id = "dev-relay-follower"
+seed = 1
+
+[production]
+stake = 0
+
+[transactions]
+tx_rate = 0.0
+
+[telemetry]
+stats_interval_secs = 10
+
+[[telemetry.stats_sinks]]
+type = "log"
+
+# Suppress EB-tx fetch — the relay RSTs on MsgLeiosBlockTxsRequest
+# (upstream CDDL/behaviour gap, cardano-scaling/cardano-blueprint#68).
+[fetch_policy.eb_txs]
+kind = "no_fetch"
+
+[[peers]]
+address = "3.131.54.190:3001"
+
+[[peers]]
+address = "34.251.133.12:3001"
+
+[[peers]]
+address = "52.29.179.71:3001"

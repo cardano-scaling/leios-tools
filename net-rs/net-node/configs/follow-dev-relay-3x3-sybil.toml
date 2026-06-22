@@ -1,0 +1,52 @@
+# Sybil-probe overlay: 3 relays × 3 duplicate connections = 9 peer
+# entries, all from a single net-node instance.  The coordinator
+# doesn't dedup AddPeer by address (`max_peers` is the only cap) so
+# each duplicate opens its own TCP socket with a distinct ephemeral
+# source port — indistinguishable to the relay from "three separate
+# followers behind the same NAT" at the 5-tuple layer.
+#
+# Used to probe whether the relay caps connections per source IP at
+# the application layer.  Findings:
+# `project_dev_relay_sybil_capacity.md`.
+
+node_id = "dev-relay-sybil"
+seed = 1
+
+[production]
+stake = 0
+
+[transactions]
+tx_rate = 0.0
+
+[telemetry]
+stats_interval_secs = 10
+
+[[telemetry.stats_sinks]]
+type = "log"
+
+[fetch_policy.eb_txs]
+kind = "no_fetch"
+
+# 3.131.54.190 — US Ohio
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+[[peers]]
+address = "3.131.54.190:3001"
+
+# 34.251.133.12 — EU Ireland
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+[[peers]]
+address = "34.251.133.12:3001"
+
+# 52.29.179.71 — EU Frankfurt
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"
+[[peers]]
+address = "52.29.179.71:3001"

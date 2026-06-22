@@ -1,0 +1,33 @@
+# Second follower instance — same 3 relays × 1 connection shape as
+# follow-dev-relay-3x1.toml, but a distinct node_id and seed so logs
+# and telemetry don't collide when both run concurrently.  Used to
+# probe whether the relay distinguishes peers by 5-tuple (TCP src
+# port) or caps by source IP.  See
+# `project_dev_relay_sybil_capacity.md` for the 2026-06-16 finding.
+
+node_id = "dev-relay-follower-b"
+seed = 2
+
+[production]
+stake = 0
+
+[transactions]
+tx_rate = 0.0
+
+[telemetry]
+stats_interval_secs = 10
+
+[[telemetry.stats_sinks]]
+type = "log"
+
+[fetch_policy.eb_txs]
+kind = "no_fetch"
+
+[[peers]]
+address = "3.131.54.190:3001"
+
+[[peers]]
+address = "34.251.133.12:3001"
+
+[[peers]]
+address = "52.29.179.71:3001"
