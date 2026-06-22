@@ -399,11 +399,10 @@ pub trait Behaviour: Send + Sync {
 
     /// Open the no-echo gate on `serve_leios_notify`'s server side.
     ///
-    /// The honest policy is: if an [`Outbound::LeiosBlockOffer`] or
-    /// [`Outbound::LeiosBlockTxsOffer`] has `source == Some(peer)`, the
-    /// I/O wrapper drops the send (re-offering data back to the peer
-    /// that supplied it is a CIP-0164 violation).  The default for this
-    /// method (`false`) preserves that policy.  An adversarial
+    /// The honest policy is: if an outbound LeiosNotify offer would be sent to a peer
+    /// that is listed as a source for that offer (net-core maintains a `sources` set),
+    /// the I/O wrapper drops the send (re-offering data back to a supplying peer is a
+    /// CIP-0164 violation).  The default for this method (`false`) preserves that policy.  An adversarial
     /// behaviour can return `true` to deliberately reflect — used to
     /// reproduce the original duplex-follower bug for regression
     /// testing against the relay.
