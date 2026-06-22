@@ -31,7 +31,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
-
 use tracing::info;
 
 use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
@@ -54,13 +53,73 @@ pub struct EbKey {
 /// Opaque transaction identifier.  Conventionally Blake2b-256 of the
 /// body, but this crate doesn't enforce that — the wrapper picks the hash
 /// scheme and supplies it on every entry path.
-pub type TxId = Vec<u8>;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TxId(Arc<[u8; 32]>);
+
+impl TxId {
+    /// Copies slice bytes into the inner array.
+    pub fn new_with_slice(bytes: &[u8; 32]) -> Self {
+        Self(Arc::new(bytes.clone()))
+    }
+    
+    /// Moves array to inner one.
+    pub fn new_with_array(bytes: [u8; 32]) -> Self {
+        Self(Arc::new(bytes))
+    }
+    
+    /// Return a short hex representation of the first 4 bytes.
+    pub fn hex_short(&self) -> String {
+        self.0
+            .iter()
+            .take(4)
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    }
+
+    pub fn get_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TxBody(Arc<[u8]>);
+
+impl TxBody {
+    pub fn new_with_vec(body: Vec<u8>) -> TxBody {
+        TxBody(body.into())
+    }
+    
+    pub fn new_with_slice(body: &[u8]) -> TxBody {
+        TxBody(body.to_vec().into())
+    }
+
+    pub fn get_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Blake2b-256 over arbitrary bytes. Matches the tx-id derivation used
+    /// by the consensus layer: `blake2b_simd::Params::new().hash_length(32)`.
+    pub fn get_blake2b_256(&self) -> [u8; 32] {
+        let result = blake2b_simd::Params::new().hash_length(32).hash(self.get_slice());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(result.as_bytes());
+        out
+    }
+
+    pub fn get_blake2b_txid(&self) -> TxId {
+        TxId::new_with_array(self.get_blake2b_256())
+    }
+}
 
 /// A transaction body the mempool is holding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingTx {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MempoolTx {
     pub tx_id: TxId,
-    pub body: Vec<u8>,
+    pub body: TxBody,
     pub size: u32,
 }
 
@@ -75,7 +134,7 @@ pub enum MempoolEffect {
     /// validator returns, the wrapper calls
     /// [`MempoolState::on_tx_validated`] or
     /// [`MempoolState::on_tx_validation_failed`].
-    ValidateTx { tx_id: TxId, body: Vec<u8> },
+    ValidateTx { tx_id: TxId, body: TxBody },
     /// A tx was dropped before reaching the mempool (overflow,
     /// validation failure) or evicted from it.  Telemetry only — the
     /// wrapper forwards this to its events sink.
@@ -115,7 +174,7 @@ pub enum TxRejectReason {
 pub struct MempoolState {
     /// Admitted transactions in arrival order — the "free" pool drained
     /// for RB body inclusion.
-    pub txs: VecDeque<PendingTx>,
+    pub txs: VecDeque<MempoolTx>,
     /// Membership index over `txs`, kept in lockstep with every push /
     /// pop / retain so `contains` and `current_tx_ids` are `O(log n)`
     /// instead of a linear scan.
@@ -139,7 +198,7 @@ pub struct MempoolState {
     /// Bodies currently with the validator.  Cleared on
     /// `on_tx_validated` (body moves to `txs`) or
     /// `on_tx_validation_failed` (body dropped).
-    pub pending_validation: BTreeMap<TxId, Vec<u8>>,
+    pub pending_validation: BTreeMap<TxId, TxBody>,
     /// Per-EB ordered tx-hash list — the "EB Body" in CIP-0164 terms.
     /// Producers populate this from `produce_eb`; receivers from
     /// `record_eb_manifest` after decoding a fetched EB body.
@@ -149,7 +208,7 @@ pub struct MempoolState {
     /// serveable) or when a receiver fetches it via LeiosFetch.  Drops
     /// out of the slot retention window prune away EBs whose manifests
     /// no longer reference a body in here.
-    pub eb_pinned: BTreeMap<TxId, PendingTx>,
+    pub eb_pinned: BTreeMap<TxId, MempoolTx>,
     /// Highest EB slot observed.  Drives slot-window retention.
     pub max_eb_slot: u64,
     /// EB retention window in slots.  Manifests + pinned bodies older
@@ -208,7 +267,7 @@ impl MempoolState {
     /// `AlreadyKnown` and discards.  Otherwise records the body and
     /// emits `ValidateTx`; the wrapper validates and reports back via
     /// [`Self::on_tx_validated`] or [`Self::on_tx_validation_failed`].
-    pub fn on_tx_received(&mut self, tx_id: TxId, body: Vec<u8>) -> Vec<MempoolEffect> {
+    pub fn on_tx_received(&mut self, tx_id: TxId, body: TxBody) -> Vec<MempoolEffect> {
         let appended: Vec<MempoolEffect> =
             match self.invoke_hook(|b, s| b.on_tx_received(s, &tx_id, &body)) {
                 BehaviourOutcome::Continue => Vec::new(),
@@ -264,7 +323,7 @@ impl MempoolState {
     /// a locally-produced tx the wrapper has validated against its own
     /// ledger view, or a test fixture.  Bypasses the
     /// `on_tx_received` → `ValidateTx` → `on_tx_validated` dance.
-    pub fn admit_validated(&mut self, tx_id: TxId, body: Vec<u8>, size: u32) -> Vec<MempoolEffect> {
+    pub fn admit_validated(&mut self, tx_id: TxId, body: TxBody, size: u32) -> Vec<MempoolEffect> {
         if self.contains(&tx_id) {
             return vec![MempoolEffect::TxRejected {
                 tx_id,
@@ -335,11 +394,11 @@ impl MempoolState {
     /// mempool sizes this prototype targets keep it acceptable.  Used
     /// by the LeiosFetch BlockTxs server (via the `TxBodyResolver`
     /// trait in the consumer's wrapper) to resolve manifest entries.
-    pub fn get_body_by_id(&self, id: &[u8]) -> Option<Vec<u8>> {
+    pub fn get_body_by_id(&self, id: &TxId) -> Option<TxBody> {
         if let Some(body) = self
             .txs
             .iter()
-            .find(|tx| tx.tx_id == id)
+            .find(|tx| &tx.tx_id == id)
             .map(|tx| tx.body.clone())
         {
             return Some(body);
@@ -357,7 +416,7 @@ impl MempoolState {
         &mut self,
         peer_id: PeerId,
         max_count: usize,
-    ) -> Vec<PendingTx> {
+    ) -> Vec<MempoolTx> {
         self.ensure_peer_registered(peer_id);
         let unann = self
             .peer_unannounced
@@ -426,7 +485,7 @@ impl MempoolState {
     /// least one tx is always returned if the queue is non-empty,
     /// even if it exceeds `max_bytes` on its own.  Used for RB body
     /// production.
-    pub fn drain_up_to(&mut self, max_bytes: usize) -> Vec<PendingTx> {
+    pub fn drain_up_to(&mut self, max_bytes: usize) -> Vec<MempoolTx> {
         let mut result = Vec::new();
         let mut bytes = 0usize;
         while let Some(front) = self.txs.front() {
@@ -450,9 +509,9 @@ impl MempoolState {
     }
 
     /// Drain everything (for EB overflow path).
-    pub fn drain_all(&mut self) -> Vec<PendingTx> {
+    pub fn drain_all(&mut self) -> Vec<MempoolTx> {
         self.total_bytes = 0;
-        let drained: Vec<PendingTx> = self.txs.drain(..).collect();
+        let drained: Vec<MempoolTx> = self.txs.drain(..).collect();
         self.tx_index.clear();
         for tx in &drained {
             self.prune_from_peer_sets(&tx.tx_id);
@@ -528,7 +587,7 @@ impl MempoolState {
     /// retention window.
     pub fn produce_eb(&mut self, eb_key: EbKey, count: usize) -> (Vec<TxId>, Vec<MempoolEffect>) {
         let take = count.min(self.txs.len());
-        let mut drained: Vec<PendingTx> = Vec::with_capacity(take);
+        let mut drained: Vec<MempoolTx> = Vec::with_capacity(take);
         for _ in 0..take {
             let tx = self.txs.pop_front().expect("checked len");
             self.tx_index.remove(&tx.tx_id);
@@ -568,12 +627,12 @@ impl MempoolState {
     /// wrapper hashes incoming bodies and matches against the manifest
     /// before calling here.  No-op if the tx is already known via
     /// `txs` or `eb_pinned`.
-    pub fn merge_eb_body(&mut self, tx_id: TxId, body: Vec<u8>, size: u32) {
-        if self.contains(&tx_id) || self.eb_pinned.contains_key(&tx_id) {
+    pub fn merge_eb_body(&mut self, tx_id: &TxId, body: TxBody, size: u32) {
+        if self.contains(tx_id) || self.eb_pinned.contains_key(tx_id) {
             return;
         }
         self.eb_pinned
-            .insert(tx_id.clone(), PendingTx { tx_id, body, size });
+            .insert(tx_id.clone(), MempoolTx { tx_id: tx_id.clone(), body, size });
     }
 
     /// True iff the body for `tx_id` is locally available — either
@@ -593,12 +652,12 @@ impl MempoolState {
     /// returns bodies for every requested index whose body is locally
     /// resolvable.  Out-of-range indices and indices whose body is
     /// missing are silently dropped (partial response).
-    pub fn get_eb_bodies<I>(&self, eb_key: &EbKey, indices: I) -> Option<Vec<Vec<u8>>>
+    pub fn get_eb_bodies<I>(&self, eb_key: &EbKey, indices: I) -> Option<Vec<TxBody>>
     where
         I: IntoIterator<Item = u32>,
     {
         let manifest = self.eb_manifests.get(eb_key)?;
-        let bodies: Vec<Vec<u8>> = indices
+        let bodies: Vec<TxBody> = indices
             .into_iter()
             .filter_map(|i| {
                 let tx_id = manifest.get(i as usize)?;
@@ -660,7 +719,7 @@ impl MempoolState {
         fx
     }
 
-    fn admit_internal(&mut self, tx_id: TxId, body: Vec<u8>, size: u32) -> Vec<MempoolEffect> {
+    fn admit_internal(&mut self, tx_id: TxId, body: TxBody, size: u32) -> Vec<MempoolEffect> {
         let mut fx = Vec::new();
         if self.txs.len() >= self.capacity {
             if let Some(old) = self.txs.pop_front() {
@@ -669,7 +728,7 @@ impl MempoolState {
                 let evicted_id = old.tx_id.clone();
                 self.prune_from_peer_sets(&evicted_id);
                 tracing::debug!(
-                    evicted = ?hex_short(&evicted_id),
+                    evicted = ?evicted_id.hex_short(),
                     capacity = self.capacity,
                     "mempool: evicting oldest tx to make room"
                 );
@@ -686,7 +745,7 @@ impl MempoolState {
         for set in self.peer_unannounced.values_mut() {
             set.insert(tx_id.clone());
         }
-        self.txs.push_back(PendingTx { tx_id, body, size });
+        self.txs.push_back(MempoolTx { tx_id, body, size });
         fx
     }
 
@@ -710,13 +769,6 @@ impl MempoolState {
     }
 }
 
-fn hex_short(id: &[u8]) -> String {
-    id.iter()
-        .take(4)
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,8 +777,8 @@ mod tests {
         PeerId(n)
     }
 
-    fn tx(id: u8, size: u32) -> (TxId, Vec<u8>, u32) {
-        (vec![id; 32], vec![0u8; size as usize], size)
+    fn tx(id: u8, size: u32) -> (TxId, TxBody, u32) {
+        (TxId::new_with_slice(&[id; 32]), TxBody::new_with_vec(vec![0u8; size as usize]), size)
     }
 
     fn admit(state: &mut MempoolState, id: u8, size: u32) -> Vec<MempoolEffect> {
@@ -842,7 +894,7 @@ mod tests {
                 tx_id,
                 reason: TxRejectReason::QueueFull,
             } => {
-                assert_eq!(*tx_id, vec![1u8; 32]);
+                assert_eq!(*tx_id, TxId::new_with_slice(&[1u8; 32]));
             }
             other => panic!("expected TxRejected QueueFull, got {other:?}"),
         }
@@ -858,10 +910,10 @@ mod tests {
         admit(&mut s, 1, 100);
         admit(&mut s, 2, 200);
         admit(&mut s, 3, 300);
-        let included = vec![vec![1u8; 32], vec![3u8; 32]];
+        let included = vec![TxId::new_with_slice(&[1u8; 32]), TxId::new_with_slice(&[3u8; 32])];
         s.on_block_applied(&included);
         assert_eq!(s.len(), 1);
-        assert_eq!(s.txs.front().unwrap().tx_id, vec![2u8; 32]);
+        assert_eq!(s.txs.front().unwrap().tx_id, TxId::new_with_slice(&[2u8; 32]));
         assert_eq!(s.total_bytes(), 200);
     }
 
@@ -877,7 +929,7 @@ mod tests {
     fn on_block_applied_unknown_ids_is_noop() {
         let mut s = MempoolState::new(10);
         admit(&mut s, 1, 100);
-        s.on_block_applied(&[vec![99u8; 32]]);
+        s.on_block_applied(&[TxId::new_with_slice(&[99u8; 32])]);
         assert_eq!(s.len(), 1);
     }
 
@@ -951,7 +1003,7 @@ mod tests {
         admit(&mut s, 2, 100);
         let next = s.peek_unannounced_for_peer(peer, 10);
         assert_eq!(next.len(), 1);
-        assert_eq!(next[0].tx_id, vec![2u8; 32]);
+        assert_eq!(next[0].tx_id, TxId::new_with_slice(&[2u8; 32]));
     }
 
     #[test]
@@ -963,8 +1015,8 @@ mod tests {
         let _ = s.peek_unannounced_for_peer(peer, 10);
         admit(&mut s, 3, 100);
         let advertised = s.peer_advertised.get(&peer).unwrap();
-        assert!(!advertised.contains(&vec![1u8; 32]));
-        assert!(advertised.contains(&vec![2u8; 32]));
+        assert!(!advertised.contains(&TxId::new_with_slice(&[1u8; 32])));
+        assert!(advertised.contains(&TxId::new_with_slice(&[2u8; 32])));
     }
 
     #[test]
@@ -989,10 +1041,10 @@ mod tests {
         admit(&mut s, 2, 100);
         let peer = pid(0);
         let _ = s.peek_unannounced_for_peer(peer, 10);
-        s.on_block_applied(&[vec![1u8; 32]]);
+        s.on_block_applied(&[TxId::new_with_slice(&[1u8; 32])]);
         let advertised = s.peer_advertised.get(&peer).unwrap();
-        assert!(!advertised.contains(&vec![1u8; 32]));
-        assert!(advertised.contains(&vec![2u8; 32]));
+        assert!(!advertised.contains(&TxId::new_with_slice(&[1u8; 32])));
+        assert!(advertised.contains(&TxId::new_with_slice(&[2u8; 32])));
     }
 
     #[test]
@@ -1065,11 +1117,11 @@ mod tests {
         let eb = eb_key(50, 0xEE);
         let (manifest, evictions) = s.produce_eb(eb, 3);
 
-        assert_eq!(manifest, vec![vec![1u8; 32], vec![2u8; 32], vec![3u8; 32]]);
+        assert_eq!(manifest, vec![TxId::new_with_slice(&[1u8; 32]), TxId::new_with_slice(&[2u8; 32]), TxId::new_with_slice(&[3u8; 32])]);
         assert!(evictions.is_empty(), "no older EBs to evict yet");
         assert!(s.is_empty(), "txs are drained");
         assert_eq!(s.total_bytes(), 0);
-        assert!(s.eb_pinned.contains_key(&vec![1u8; 32]));
+        assert!(s.eb_pinned.contains_key(&TxId::new_with_slice(&[1u8; 32])));
         assert_eq!(s.get_eb_manifest(&eb), Some(manifest.as_slice()));
     }
 
@@ -1081,12 +1133,12 @@ mod tests {
         let eb = eb_key(10, 0x11);
         let _ = s.produce_eb(eb, 2);
         // Both still locally available, just under different roofs.
-        assert!(s.has_tx(&vec![1u8; 32]));
-        assert!(s.has_tx(&vec![2u8; 32]));
-        assert!(!s.has_tx(&vec![99u8; 32]));
+        assert!(s.has_tx(&TxId::new_with_slice(&[1u8; 32])));
+        assert!(s.has_tx(&TxId::new_with_slice(&[2u8; 32])));
+        assert!(!s.has_tx(&TxId::new_with_slice(&[99u8; 32])));
         // After draining into an EB, a new tx in the free pool is also has_tx-true.
         admit(&mut s, 3, 100);
-        assert!(s.has_tx(&vec![3u8; 32]));
+        assert!(s.has_tx(&TxId::new_with_slice(&[3u8; 32])));
     }
 
     #[test]
@@ -1101,7 +1153,7 @@ mod tests {
         let (id2, body2, sz2) = tx(2, 60);
         s.admit_validated(id2.clone(), body2.clone(), sz2);
         assert_eq!(s.get_body_by_id(&id2), Some(body2));
-        assert_eq!(s.get_body_by_id(&[99u8; 32]), None);
+        assert_eq!(s.get_body_by_id(&TxId::new_with_slice(&[99u8; 32])), None);
     }
 
     #[test]
@@ -1109,8 +1161,8 @@ mod tests {
         // Receiver-side flow: see the EB header → fetch body → decode
         // manifest → record. Bodies arrive later via merge_eb_body.
         let mut s = MempoolState::new(10);
-        let id_a = vec![0xAAu8; 32];
-        let id_b = vec![0xBBu8; 32];
+        let id_a = TxId::new_with_slice(&[0xAAu8; 32]);
+        let id_b = TxId::new_with_slice(&[0xBBu8; 32]);
         let eb = eb_key(20, 0x77);
         s.record_eb_manifest(eb, vec![id_a.clone(), id_b.clone()]);
 
@@ -1118,29 +1170,29 @@ mod tests {
         assert_eq!(s.missing_eb_indices(&eb), vec![0, 1]);
 
         // Merge the second body first (out-of-order delivery is fine).
-        s.merge_eb_body(id_b.clone(), vec![0xB0], 1);
+        s.merge_eb_body(&id_b, TxBody::new_with_vec(vec![0xB0]), 1);
         assert_eq!(s.missing_eb_indices(&eb), vec![0]);
         assert!(s.has_tx(&id_b));
 
         // Then the first.
-        s.merge_eb_body(id_a.clone(), vec![0xA0], 1);
+        s.merge_eb_body(&id_a, TxBody::new_with_vec(vec![0xA0]), 1);
         assert!(s.missing_eb_indices(&eb).is_empty());
     }
 
     #[test]
     fn get_eb_bodies_returns_partial_subset_in_index_order() {
         let mut s = MempoolState::new(10);
-        let ids: Vec<TxId> = (0..5).map(|i| vec![i as u8; 32]).collect();
+        let ids: Vec<TxId> = (0..5).map(|i| TxId::new_with_slice(&[i as u8; 32])).collect();
         let eb = eb_key(30, 0x33);
         s.record_eb_manifest(eb, ids.clone());
         // Only bodies for indices 1 and 3 are locally available.
-        s.merge_eb_body(ids[1].clone(), vec![0x11], 1);
-        s.merge_eb_body(ids[3].clone(), vec![0x33], 1);
+        s.merge_eb_body(&ids[1], TxBody::new_with_vec(vec![0x11]), 1);
+        s.merge_eb_body(&ids[3], TxBody::new_with_vec(vec![0x33]), 1);
 
         // Server gets a bitmap request for [0, 1, 2, 3, 4]; returns only the
         // bodies it has, in ascending index order.
         let got = s.get_eb_bodies(&eb, 0..5).unwrap();
-        assert_eq!(got, vec![vec![0x11], vec![0x33]]);
+        assert_eq!(got, vec![TxBody::new_with_vec(vec![0x11]), TxBody::new_with_vec(vec![0x33])]);
     }
 
     #[test]
@@ -1153,12 +1205,12 @@ mod tests {
     #[test]
     fn merge_eb_body_idempotent_against_existing() {
         let mut s = MempoolState::new(10);
-        let id = vec![0xCCu8; 32];
+        let id = TxId::new_with_slice(&[0xCCu8; 32]);
         s.record_eb_manifest(eb_key(40, 0x40), vec![id.clone()]);
-        s.merge_eb_body(id.clone(), vec![0xCC], 1);
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xCC]), 1);
         // Second call with a different (faked) body must not overwrite.
-        s.merge_eb_body(id.clone(), vec![0xFF], 1);
-        assert_eq!(s.get_body_by_id(&id), Some(vec![0xCC]));
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xFF]), 1);
+        assert_eq!(s.get_body_by_id(&id), Some(TxBody::new_with_vec(vec![0xCC])));
     }
 
     #[test]
@@ -1168,7 +1220,7 @@ mod tests {
         let mut s = MempoolState::new(10);
         let (id, body, sz) = tx(1, 100);
         s.admit_validated(id.clone(), body.clone(), sz);
-        s.merge_eb_body(id.clone(), body, sz);
+        s.merge_eb_body(&id, body, sz);
         assert_eq!(s.eb_pinned.len(), 0);
     }
 
@@ -1177,15 +1229,15 @@ mod tests {
         // Tight window so the test stays small.
         let mut s = MempoolState::new_with_eb_retention(100, 5);
         let old_eb = eb_key(1, 0x01);
-        let evicted_id = vec![0xAAu8; 32];
+        let evicted_id = TxId::new_with_slice(&[0xAAu8; 32]);
         let evictions_initial = s.record_eb_manifest(old_eb, vec![evicted_id.clone()]);
         assert!(evictions_initial.is_empty(), "no evictions on first record");
-        s.merge_eb_body(evicted_id.clone(), vec![0xAA], 1);
+        s.merge_eb_body(&evicted_id, TxBody::new_with_vec(vec![0xAA]), 1);
         assert!(s.has_tx(&evicted_id));
         assert!(s.get_eb_manifest(&old_eb).is_some());
 
         // Push max_eb_slot far past the window.
-        let evictions = s.record_eb_manifest(eb_key(100, 0x02), vec![vec![0xBBu8; 32]]);
+        let evictions = s.record_eb_manifest(eb_key(100, 0x02), vec![TxId::new_with_slice(&[0xBBu8; 32])]);
 
         // Old EB and its body are evicted; new EB stays.
         assert!(s.get_eb_manifest(&old_eb).is_none());
@@ -1207,9 +1259,9 @@ mod tests {
     fn produce_eb_emits_evictions_for_aged_pins() {
         let mut s = MempoolState::new_with_eb_retention(100, 5);
         // Old EB with a pinned body.
-        let old_id = vec![0xAAu8; 32];
+        let old_id = TxId::new_with_slice(&[0xAAu8; 32]);
         let _ = s.record_eb_manifest(eb_key(1, 0x01), vec![old_id.clone()]);
-        s.merge_eb_body(old_id.clone(), vec![0xAA], 1);
+        s.merge_eb_body(&old_id, TxBody::new_with_vec(vec![0xAA]), 1);
 
         // Produce a new EB far past the retention window — the
         // producer-side path also evicts the aged closure.
@@ -1230,10 +1282,10 @@ mod tests {
         // Same tx referenced by two EBs — pruning one shouldn't drop
         // the body if the other still references it.
         let mut s = MempoolState::new_with_eb_retention(100, 5);
-        let id = vec![0xCCu8; 32];
+        let id = TxId::new_with_slice(&[0xCCu8; 32]);
         s.record_eb_manifest(eb_key(1, 0x01), vec![id.clone()]);
         s.record_eb_manifest(eb_key(95, 0x02), vec![id.clone()]);
-        s.merge_eb_body(id.clone(), vec![0xCC], 1);
+        s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xCC]), 1);
         // Bump max so the slot=1 EB falls out of the window but slot=95 stays.
         s.record_eb_manifest(eb_key(99, 0x03), vec![]);
         assert!(s.get_eb_manifest(&eb_key(1, 0x01)).is_none());

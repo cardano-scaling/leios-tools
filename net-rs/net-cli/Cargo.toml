@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 net-core = { path = "../net-core" }
+shared-consensus = { path = "../../shared-rs/consensus" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 minicbor = { version = "0.25", features = ["std"] }
 clap = { version = "4", features = ["derive"] }

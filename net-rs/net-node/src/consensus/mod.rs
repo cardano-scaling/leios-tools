@@ -21,6 +21,7 @@ use shared_consensus::leios::ChainTipContext;
 
 pub use leios::{EbTxMatchOutcome, LeiosConsensus, PipelineConfig};
 pub use praos::PraosConsensus;
+use shared_consensus::mempool::TxBody;
 
 /// Top-level consensus, composing Praos and Leios sub-layers.
 pub struct Consensus {
@@ -279,7 +280,7 @@ impl Consensus {
     /// EB manifest. Returns the bodies whose hash lies in the manifest,
     /// in manifest-index order, plus how many indices were requested
     /// and which indices remain unfilled.
-    pub fn match_eb_tx_response(&mut self, point: &Point, bodies: &[Vec<u8>]) -> EbTxMatchOutcome {
+    pub fn match_eb_tx_response(&mut self, point: &Point, bodies: &[TxBody]) -> EbTxMatchOutcome {
         self.leios.match_eb_tx_response(point, bodies)
     }
 

@@ -9,7 +9,7 @@ pub mod codec;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
-
+use shared_consensus::mempool::TxBody;
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 use crate::types::Point;
 
@@ -84,7 +84,7 @@ pub enum Message {
     MsgLeiosBlockTxs {
         point: Point,
         bitmap: BTreeMap<u16, u64>,
-        transactions: Vec<Vec<u8>>,
+        transactions: Vec<TxBody>,
     },
     /// Client terminates. [9]
     MsgDone,
@@ -166,7 +166,7 @@ pub async fn fetch_block_txs(
     runner: &mut Runner<LeiosFetch>,
     point: Point,
     bitmap: BTreeMap<u16, u64>,
-) -> Result<Vec<Vec<u8>>, ProtocolError> {
+) -> Result<Vec<TxBody>, ProtocolError> {
     runner
         .send(&Message::MsgLeiosBlockTxsRequest { point, bitmap })
         .await?;
@@ -432,7 +432,11 @@ mod tests {
                 .send(&Message::MsgLeiosBlockTxs {
                     point: req_point,
                     bitmap: req_bitmap,
-                    transactions: vec![vec![0x01], vec![0x02], vec![0x03]],
+                    transactions: vec![
+                        TxBody::new_with_vec(vec![0x01]),
+                        TxBody::new_with_vec(vec![0x02]),
+                        TxBody::new_with_vec(vec![0x03])
+                    ],
                 })
                 .await
                 .unwrap();

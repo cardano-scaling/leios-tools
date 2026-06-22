@@ -841,9 +841,11 @@ mod tests {
     use crate::protocols::keepalive::{KeepAlive, Message as KaMsg};
     use crate::protocols::leios_fetch::{self, LeiosFetch, Message as LfMsg};
     use crate::protocols::leios_notify::{self, LeiosNotify, Message as LnMsg};
-    use crate::protocols::txsubmission::{self as ts, PendingTx, TxBody, TxId};
+    use crate::protocols::txsubmission::{self as ts, PendingTx};
     use crate::protocols::Runner as ProtocolRunner;
     use crate::types::{Point, Tip, WrappedHeader};
+
+    use shared_consensus::mempool::{TxBody, TxId};
 
     /// Minimal fake server: serves ChainSync and KeepAlive over MemBearer.
     /// Generates `block_count` blocks then holds at tip.
@@ -1368,8 +1370,8 @@ mod tests {
 
         // Send a transaction.
         let tx = PendingTx {
-            tx_id: TxId(vec![0x44, 0x01, 0x02, 0x03, 0x04]), // CBOR bytes(4)
-            body: TxBody(vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]), // CBOR bytes(5)
+            tx_id: TxId::new_with_array([0x44; 32]),
+            body: TxBody::new_with_vec(vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]), // CBOR bytes(5)
             size: 5,
         };
         tx_sender.send(tx).await.unwrap();
@@ -1379,7 +1381,7 @@ mod tests {
             let (_id, event) = server_event_rx.recv().await.unwrap();
             match event {
                 PeerEvent::TransactionReceived { body } => {
-                    assert_eq!(body, vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]);
+                    assert_eq!(body, TxBody::new_with_vec(vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]));
                 }
                 other => panic!("expected TransactionReceived, got {other:?}"),
             }
