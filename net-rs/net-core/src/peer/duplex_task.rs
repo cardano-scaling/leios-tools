@@ -366,8 +366,16 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
     loop {
         tokio::select! {
             cmd = command_receiver.recv() => {
+                let was_none = cmd.is_none();
+                let was_disconnect = matches!(cmd, Some(PeerCommand::Disconnect));
                 if !dispatch_command(cmd, &senders).await {
-                    teardown_reason = "command channel closed".to_string();
+                    teardown_reason = if was_none {
+                        "command channel closed".to_string()
+                    } else if was_disconnect {
+                        "disconnect requested".to_string()
+                    } else {
+                        "command dispatch failed".to_string()
+                    };
                     break;
                 }
             }
