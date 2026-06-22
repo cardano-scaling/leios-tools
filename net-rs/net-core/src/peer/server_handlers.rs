@@ -188,15 +188,26 @@ async fn send_roll_forward(
     peer: PeerId,
     behaviour: Option<&BehaviourHandle>,
 ) {
+    let slot = match block_point {
+        Point::Specific { slot, .. } => *slot,
+        Point::Origin => 0,
+    };
+    // Observe each forward: header length + leading bytes. Byte 1 is the
+    // era tag — the #18 fidelity signal (we must serve the authentic
+    // ChainSync era, not the body-reconstructed one).
+    tracing::info!(
+        peer = peer.0,
+        slot,
+        header_bytes = header.raw.len(),
+        head = ?&header.raw[..header.raw.len().min(2)],
+        "chainsync: forwarding MsgRollForward to downstream"
+    );
+
     let Some(handle) = behaviour else {
         let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
         return;
     };
 
-    let slot = match block_point {
-        Point::Specific { slot, .. } => *slot,
-        Point::Origin => 0,
-    };
     let decision = {
         let mut guard = handle.lock().expect("behaviour mutex poisoned");
         guard.transform_outbound(
