@@ -44,8 +44,9 @@ leaf actions, with no REST API or coordinator involved.
 4. **Given** a slot advance, **When** the engine ticks the tree, **Then** every behaviour
    ticked returns exactly one of SUCCESS, FAILURE, or RUNNING to its parent.
 5. **Given** a malformed or self-contradictory config (unknown node type, missing
-   child reference, cyclic include), **When** the node starts, **Then** it refuses to
-   start and reports a precise, actionable error rather than running partially.
+   child reference, behaviour-graph cycle, or an unresolved `includes`), **When** the node
+   starts, **Then** it refuses to start and reports a precise, actionable error rather than
+   running partially.
 
 ---
 
@@ -115,29 +116,34 @@ parameters it was assigned.
 ### User Story 4 - Compose behaviors from reusable sub-behavior files (Priority: P3)
 
 A red-team engineer factors common sub-trees (e.g., a reusable "honest producer" or a
-"mempool flood" payload) into separate TOML files and references them from a root
-config via an include mechanism, so strategies can be assembled from shared building
-blocks instead of being duplicated.
+"mempool flood" payload) into separate files and references them from an attack config
+via an include mechanism, so strategies can be assembled from shared building blocks
+instead of being duplicated. Includes are resolved **at build time** by the `bt.py
+--resolve` translator, which deep-merges an attack and its includes into one
+self-contained config; the node then loads that resolved config (it never resolves
+includes itself).
 
 **Why this priority**: Composition keeps a growing library of attack strategies
 maintainable and is important for the fuzzer that follows, but a single self-contained
 TOML (US1) already delivers the MVP, so this can follow.
 
-**Independent Test**: Author a root config that includes two sub-behavior files by
-relative path, load it into a node, and confirm the resulting effective tree contains
-the nodes contributed by each included file and behaves identically to an equivalent
-single-file config.
+**Independent Test**: Author an attack config that includes two sub-behavior files,
+run `bt.py --resolve` on it, and confirm the resolved config contains the behaviours
+contributed by each included file and loads/behaves identically to an equivalent
+hand-written single-file config.
 
 **Acceptance Scenarios**:
 
-1. **Given** a root config with `includes` referencing other TOML files by relative
-   path, **When** it is loaded, **Then** the included sub-behaviors are resolved and
-   merged into one effective tree.
-2. **Given** an include that cannot be resolved or introduces a cycle, **When** the
-   config is loaded, **Then** loading fails with a clear error identifying the offending
-   include.
-3. **Given** included files that define `env` parameters, **When** they are merged,
-   **Then** parameter precedence is well-defined and reported (root overrides includes).
+1. **Given** an attack config with `includes` referencing other files, **When** it is
+   passed through `bt.py --resolve`, **Then** the included sub-behaviors are resolved and
+   deep-merged into one self-contained config (root overrides includes).
+2. **Given** an include that cannot be resolved or introduces a cycle, **When**
+   `bt.py --resolve` runs, **Then** resolution fails with a clear error identifying the
+   offending include. **And** if an unresolved config (non-empty `includes`) is handed to
+   the node, loading fails with a clear "run `bt.py --resolve`" error.
+3. **Given** included files that define `env` parameters, **When** they are merged by
+   `--resolve`, **Then** parameter precedence is well-defined (attack/root overrides
+   includes) and the resolved config carries the final values.
 
 ---
 
@@ -200,12 +206,14 @@ single-file config.
   the REST API.
 - **FR-011**: Node `state` (e.g., current slot, current epoch, mempool transaction
   count, connected peers) MUST be readable by Condition and Action behaviours.
-- **FR-012**: Configurations MUST support including other configuration files by relative
-  path to compose reusable sub-behaviors, with well-defined merge and parameter-
-  precedence rules and cycle detection.
+- **FR-012**: Configurations MUST support including other configuration files by name to
+  compose reusable sub-behaviors, with well-defined merge and parameter-precedence rules
+  and cycle detection. Include resolution is a **build step** (`bt.py --resolve`); the
+  node loads the resolved, self-contained config.
 - **FR-013**: The system MUST validate a configuration before activating it, rejecting
-  unknown behaviour types, dangling child/include references, cycles, and references to
-  missing or mistyped `env`/`state` fields, with precise error messages.
+  unknown behaviour types, dangling child references, behaviour-graph cycles, an unresolved
+  `includes` (run `bt.py --resolve`), and references to missing or mistyped `env`/`state`
+  fields, with precise error messages.
 
 #### Single-node operation (MVP)
 
@@ -247,9 +255,12 @@ single-file config.
 ### Key Entities
 
 - **Behavior Configuration**: A TOML document defining a strategy — metadata (name,
-  revision), a seed, an `env` parameter block, the set of behaviours, and optional includes.
-- **Behavior Tree**: The effective tree assembled from a root configuration plus any
-  included sub-behaviors; rooted at a single behaviour; ticked as a unit.
+  revision), a seed, an `env` parameter block, the set of behaviours, and (in unresolved
+  form) optional includes. The node loads the **self-contained** form produced by
+  `bt.py --resolve`.
+- **Behavior Tree**: The effective tree assembled from a resolved configuration (an attack
+  plus any included sub-behaviors, merged at build time by `bt.py --resolve`); rooted at a
+  single behaviour; ticked as a unit.
 - **Behaviour**: A tree element with a type and an id. Composite behaviours (Selector, Sequence,
   Join) reference children by id; Condition behaviours hold an expression; Action behaviours
   reference a registered action type (from the action registry) and its parameters.

@@ -4,4 +4,4 @@ run {
   seed = 1
 }
 
-root [ Action("t22", vote_threshold = 42, non_voting_threshold = 99, hide_eb_tx_received = true) ]
+root [ Action ("t22", vote_threshold = 42, non_voting_threshold = 99, hide_eb_tx_received = true) ]

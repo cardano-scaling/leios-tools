@@ -280,6 +280,23 @@ the decision and the rejected alternatives.
   load error (rejected — inconsistent with `[env]`'s overlay semantics; namespacing handles
   it); an implicit always-loaded `default_env.toml` (rejected — hidden magic; prefer an
   explicit include for reproducibility).
+- **Amendment (2026-06-22): resolution is a build step, not a load step.** Include
+  resolution and the deep-merge above are performed at **build time** by the `bt.py
+  --resolve` translator, which follows `include`s (by filename, against an
+  `--include-path` search path), applies this deep-merge rule, and emits **one
+  self-contained config**. The engine loads only self-contained configs and **rejects**
+  any config that still carries a non-empty `includes` (loud error: "config not resolved
+  — run `bt.py --resolve`"). `bt.py --resolve` likewise **hard-errors** on an include it
+  cannot locate; neither end silently defers resolution. The deep-merge rule in this
+  decision is therefore the **contract `--resolve` implements** — the engine itself does
+  no cross-file merge and never touches the filesystem for includes. **Rationale**: a
+  resolved config is a frozen, hashable artifact (reproducibility for the fuzzer); the
+  engine stays filesystem-free and compiles a single flat table (simplicity, TDD);
+  federation ships one self-contained file rather than a tree of files plus matching
+  search paths on every node. The fuzzer only mutates `env`, so the tree is never
+  recomposed at runtime — no consumer needs load-time includes. The `include` directive
+  thus survives only as a **translator (`.bt` ⇄ unresolved-`.toml`) intermediate**, not as
+  an engine input.
 
 ## D14. Terminology: tree elements are "behaviours"; the registry is the "action registry"
 

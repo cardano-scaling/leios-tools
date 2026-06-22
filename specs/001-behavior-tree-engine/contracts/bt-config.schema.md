@@ -3,6 +3,14 @@
 The on-disk format for a behavior tree, consumed by `BtConfig::load`. This is the stable
 interface authors, the coordinator, and the fuzzer write against.
 
+The config the **engine** loads is always **self-contained** (includes already resolved).
+Cross-file composition via `includes` is a **build step** owned by the `bt.py --resolve`
+translator (research D13 amendment): it follows includes, deep-merges per *Composition*
+below, and emits one includes-free config. The engine **rejects** a config that still
+carries a non-empty `includes`. So `includes` is a property of the *unresolved* form
+(`.bt` source and its 1:1 TOML translation) — the *Composition* rules below specify the
+contract `--resolve` implements, not engine load-time behaviour.
+
 ## Top-level sections
 
 The document is **all nested tables**, composed by a single uniform rule (see
@@ -11,7 +19,7 @@ Composition). The sections:
 | Section            | Required | Purpose |
 |--------------------|----------|---------|
 | `[run]`            | yes (root) | the run's identity + entry: `name` (string), `seed` (int, reproducibility), `root` (id of the root behaviour). Exactly one resolved `[run]`; supplied by the root config. |
-| `includes`         | no       | top-level array of relative paths to sub-behaviour TOMLs (any file may include) |
+| `includes`         | no (unresolved form only) | top-level array of include names resolved at **build time** by `bt.py --resolve`; absent in configs the engine loads (a non-empty value is a load-time rejection) |
 | `[metadata.<owner>]` | no     | optional per-module documentation (`revision`, `description`, …) |
 | `[env]` / `[env.<owner>]` | no | named parameters; overlay-able and (later) REST-mutable; typed (int/float/string/bool). Top-level keys are shared/cross-cutting; `[env.<owner>]` are owner-namespaced |
 | `[behaviours.<id>]`     | yes (≥1) | behaviour definitions, keyed by id (the table key **is** the id); a multi-behaviour module nests as `[behaviours.<owner>.<local>]` |
@@ -84,13 +92,14 @@ mismatches are load-time errors.
 
 ## Composition & namespacing
 
-Composition is a **single uniform rule**: a config plus its `includes` is **deep-merged
-table-by-table, with the closer-to-root file winning** on any key conflict (the root
-config wins over what it includes; includes apply in list order). This is exactly
-`figment`'s deep table merge — and it works for the *whole* document because every section
-is a keyed table (no arrays to special-case except `children`/`includes`, which are
+Composition is a **single uniform rule**, applied by `bt.py --resolve` at **build time**
+(not by the engine): a config plus its `includes` is **deep-merged table-by-table, with the
+closer-to-root file winning** on any key conflict (the root config wins over what it
+includes; includes apply in list order). It works for the *whole* document because every
+section is a keyed table (no arrays to special-case except `children`/`includes`, which are
 defined in one place and replace-on-conflict). There are **no per-section resolution
-rules**.
+rules**. `--resolve` hard-errors on an include it cannot locate; the result is one
+self-contained config the engine can load.
 
 The one singleton is `[run]` (`name`/`seed`/`root`): it deep-merges like everything, and
 validation requires exactly one resolved `[run]` (a fragment setting `[run]` is a lint —
@@ -202,12 +211,14 @@ Resolved result (one deep-merge, root wins):
 ## Validation outcomes
 
 - Valid config → `Ok(BehaviourTree)`.
+- A non-empty `includes` → `Err` ("config not resolved — run `bt.py --resolve`"). The
+  engine never resolves includes (research D13 amendment); resolution is a build step.
 - Any violation in data-model.md §"Validation rules" → `Err` naming the offending
-  `id`/path/field (unknown type, dangling child/include, cycle, **undefined `env.X`
-  reference**, mistyped condition ref, missing/duplicate `[run]`, or `[run]` set in an
-  included fragment). The node refuses to start (US1-5); a REST replace is rejected and
-  the prior tree stays active (US2-3/4).
+  `id`/path/field (unknown type, dangling child reference, behaviour-graph cycle,
+  **undefined `env.X` reference**, mistyped condition ref, missing/duplicate `[run]`). The
+  node refuses to start (US1-5); a REST replace is rejected and the prior tree stays active
+  (US2-3/4).
 - A same-id behaviour or env key appearing in more than one file is **not** an error — it
-  deep-merges with the closer-to-root file winning (the uniform overlay rule), exactly as
-  for `[env]`. Authors namespace by owner (`[behaviours.<owner>...]`, `[env.<owner>]`) to avoid
-  unintended collisions.
+  deep-merges with the closer-to-root file winning (the uniform overlay rule, applied by
+  `bt.py --resolve`), exactly as for `[env]`. Authors namespace by owner
+  (`[behaviours.<owner>...]`, `[env.<owner>]`) to avoid unintended collisions.

@@ -44,7 +44,10 @@ Gate per workspace before each commit: `cargo test`, `cargo fmt --check`,
 ## Phase 2: Foundational — pure engine (sans-IO, deterministic)
 
 **Purpose**: the complete BT engine, unit-tested in isolation, before any consensus
-rewiring. Blocks all user stories. Also satisfies US4 (composition/includes).
+rewiring. Blocks all user stories. The engine loads **self-contained** configs only;
+US4 composition (`includes`) is resolved at build time by `bt.py --resolve` (D13
+amendment), so the engine's job here is to **reject** unresolved `includes` and compile a
+flat config.
 
 **⚠️ Leaves the existing `Behaviour` hook system in place** so the crate stays green; the old
 system is deleted in Phase 3 (T025).
@@ -64,8 +67,8 @@ system is deleted in Phase 3 (T025).
 - [ ] T015 [P] [US4-support] Re-home `t22` (sets `mempool.tx_filter = ChecksumThreshold{..}`) in `shared-rs/consensus/src/behaviour/actions/t22.rs`; test-first.
 - [ ] T015a [P] [US4-support] Re-home the merged `lie-about-eb-size` (sets `leios.offer_eb_size = Linear{scale_num, scale_den, offset}`; reuse the i128 `mutate_size` math) in `shared-rs/consensus/src/behaviour/actions/lie_about_eb_size.rs`; port the merged size-math unit tests.
 - [ ] T015b [P] [US4-support] Re-home the merged `echo-to-source` (sets `leios.echo_to_source = true`) in `shared-rs/consensus/src/behaviour/actions/echo_to_source.rs`; port the merged trait-wiring tests.
-- [ ] T016 Write failing tests for `BtConfig::load` in `shared-rs/consensus/src/behaviour/tree/config.rs`: parse `[run]`/`[env]`/`[behaviours.<id>]`/`includes`; uniform deep-merge (closer-to-root wins); name resolution with **expansion to independent instances**; and every validation rule (exactly one `[run]`; dangling child/include reference; reference + include cycles; undefined `env.X`; type mismatch; `seed`/`root` forbidden in a fragment).
-- [ ] T017 Implement `BtConfig` + `load`/`validate`/compile-to-`BehaviourTree` in `shared-rs/consensus/src/behaviour/tree/config.rs` to pass T016 (figment table merge, relative `includes`, reference expansion). Satisfies US4.
+- [ ] T016 Write failing tests for `BtConfig::load` in `shared-rs/consensus/src/behaviour/tree/config.rs`: parse `[run]`/`[env]`/`[behaviours.<id>]` from a **self-contained** config; name resolution with **expansion to independent instances**; **reject a non-empty `includes`** with a clear "run `bt.py --resolve`" error (the engine does not resolve includes — D13 amendment); and every validation rule (exactly one `[run]`; dangling child reference; behaviour-graph reference cycles; undefined `env.X`; type mismatch).
+- [ ] T017 Implement `BtConfig` + `load`/`validate`/compile-to-`BehaviourTree` in `shared-rs/consensus/src/behaviour/tree/config.rs` to pass T016 (parse one flat config, reject unresolved `includes`, reference expansion). Cross-file `includes` are resolved upstream by `bt.py --resolve`; US4 composition is delivered by that translator step.
 - [ ] T018 Add a determinism test in `shared-rs/consensus/src/behaviour/tree/`: same config + seed ⇒ identical `(Status, ControlSignal)` sequence over a slot range (SC-003, FR-023).
 
 **Checkpoint**: engine compiles, all engine unit tests green; `fmt`/`clippy` clean on `shared-rs/`.
@@ -123,7 +126,7 @@ US2 REST surface, reporting per-node success/failure. Builds on US2.
 
 ## Phase 6: Polish & Cross-Cutting
 
-- [ ] T034 [P] Security/robustness audit of new untrusted-input paths (config parsing, env REST later): allocation/recursion bounds on `includes`/tree depth; no panics in non-test code (`unwrap`/`expect`/index) per net-rs `CLAUDE.md`.
+- [ ] T034 [P] Security/robustness audit of new untrusted-input paths (config parsing, env REST later): allocation/recursion bounds on tree depth / reference expansion; no panics in non-test code (`unwrap`/`expect`/index) per net-rs `CLAUDE.md`. (Include-resolution bounds — cycle/recursion limits — belong to `bt.py --resolve`, the build-time resolver.)
 - [ ] T035 [P] Update `net-rs/CLAUDE.md` and `shared-rs/consensus/CLAUDE.md` to describe the BT engine, `ControlSignal`, and the action registry; remove stale references to the deleted hook trait.
 - [ ] T036 Run the full quickstart validation suite (Scenarios 1–3) and the per-workspace gate (`cargo test` + `fmt --check` + `clippy -D warnings`) on `shared-rs/` and `net-rs/`.
 

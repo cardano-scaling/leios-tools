@@ -241,16 +241,19 @@ pub struct BtConfig {
     pub env: BTreeMap<String, EnvValue>,          // dotted keys: shared `x` or owner `owner.x`
     pub behaviours: BTreeMap<BehaviourId, RawBehaviour>,    // [behaviours.<id>] (BehaviourId may be dotted)
     pub metadata: BTreeMap<String, ModuleMeta>,   // optional per-owner docs
-    pub includes: Vec<String>,                    // relative paths to sub-behaviour TOMLs
+    pub includes: Vec<String>,                    // unresolved form only; load() rejects a non-empty value (resolve at build time via bt.py --resolve, D13)
 }
 pub struct Run { pub name: String, pub seed: u64, pub root: BehaviourId }
 pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
 ```
 
-- `BtConfig::load(path)` resolves `includes` relative to `path` by a **single uniform
-  rule** (D13): deep-merge the document and its includes table-by-table, closer-to-root
-  wins (no per-section special handling). It detects cycles (behaviour graph + include graph),
-  then `validate()`s and compiles to `BehaviourTree`.
+- `BtConfig::load(path)` expects a **self-contained** config and does **not** resolve
+  `includes` — cross-file resolution and the uniform deep-merge (D13) are a **build step**
+  performed by the `bt.py --resolve` translator, which emits one includes-free config. A
+  loaded config that still carries a non-empty `includes` is a **load error** ("config not
+  resolved — run `bt.py --resolve`"). `load` then `validate()`s and compiles to
+  `BehaviourTree`, resolving name references (expansion, below) and detecting reference
+  cycles in the behaviour graph.
 - **Name references expand.** The config is a map of named definitions whose `children` ids
   may reference the same definition from more than one site (a DAG). Compilation **expands**
   each reference into an **independent instance**, so the `BehaviourTree` the engine ticks is
@@ -262,10 +265,13 @@ pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
 
 ## Validation rules (spec FR-013) — all enforced at load, before activation
 
-1. Exactly one resolved `[run]` carrying `seed` and `root`; `run.root` names a defined
-   behaviour (that behaviour is the root). `[run]` set in an included fragment is flagged (lint).
-2. Every `children` / include reference resolves to a defined behaviour / readable file.
-3. No cycles in the behaviour graph or the include graph.
+0. `includes` is empty — a config still carrying includes is rejected (resolution is a
+   build step, D13: run `bt.py --resolve`). The `[run]`-in-a-fragment lint lives in the
+   translator, which knows the pre-merge file boundaries.
+1. Exactly one `[run]` carrying `seed` and `root`; `run.root` names a defined behaviour
+   (that behaviour is the root).
+2. Every `children` reference resolves to a defined behaviour.
+3. No cycles in the behaviour graph.
 4. Every behaviour `type` is known; composites have ≥1 child; leaves have none.
 5. Every `Condition` references only env keys present in the merged `[env]` and known
    chain-state fields, with matching types. A **referenced-but-undefined `env.X` is an

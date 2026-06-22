@@ -22,6 +22,7 @@ Canonical form / round-trip rule:
 """
 
 import argparse
+import os
 import re
 import sys
 import tomllib
@@ -256,8 +257,21 @@ class Parser:
         self.eat("}")
         return out
 
+    def string_list(self):
+        """A `[ "a", "b" ]` list of strings (include directive)."""
+        self.eat("[")
+        items = []
+        if self.peek() != "]":
+            while True:
+                items.append(self.string())
+                if not self.try_eat(","):
+                    break
+        self.eat("]")
+        return items
+
     def document(self):
-        doc = {"run": {}, "env": {}, "behaviours": self.behaviours, "root": None}
+        doc = {"run": {}, "env": {}, "behaviours": self.behaviours,
+               "root": None, "includes": []}
         while True:
             self.ws()
             if self.i >= self.n:
@@ -268,6 +282,8 @@ class Parser:
                 doc["run"] = self.block()
             elif word == "env":
                 doc["env"] = self.block()
+            elif word == "include":
+                doc["includes"] += self.string_list()
             elif word == "root":
                 self.eat("[")
                 doc["root"] = self.child("root")
@@ -278,8 +294,9 @@ class Parser:
                 self.anon += 1
             else:
                 self.fail(f"unexpected token {word!r}")
-        if doc["root"] is None:
-            raise BtError("missing required `root [...]`")
+        # No required `root`: a document with run+root is a runnable attack; a
+        # document with neither is a pure-behaviour library (fragment). The engine
+        # enforces "an attack has run+root"; the translator is permissive.
         return doc
 
 
@@ -303,17 +320,18 @@ def _flatten(d, prefix=""):
 
 def parse_toml(text):
     data = tomllib.loads(text)
+    run = dict(data.get("run", {}))
+    root = run.pop("root", None)  # keep doc["run"] symmetric with the .bt parser
     doc = {
-        "run": dict(data.get("run", {})),
+        "run": run,
         "env": _flatten(data.get("env", {})),
         "behaviours": {},
-        "root": data.get("run", {}).get("root"),
+        "root": root,
+        "includes": list(data.get("includes", [])),
     }
     for bid, node in data.get("behaviours", {}).items():
         doc["behaviours"][bid] = dict(node)
-    if doc["root"] is None:
-        raise BtError("TOML is missing run.root")
-    return doc
+    return doc  # no root => a fragment (pure-behaviour library)
 
 
 # ---------------------------------------------------------------------------
@@ -337,25 +355,34 @@ def _toml_key(k):
 
 def write_toml(doc):
     out = []
-    run = dict(doc["run"])
-    run["root"] = doc["root"]
-    out.append("[run]")
-    for k in ("name", "seed", "root"):
-        if k in run and run[k] is not None:
-            out.append(f"{k} = {_toml_scalar(run[k])}")
-    for k, v in run.items():
-        if k not in ("name", "seed", "root"):
-            out.append(f"{_toml_key(k)} = {_toml_scalar(v)}")
+    if doc.get("includes"):
+        items = ", ".join(_toml_scalar(i) for i in doc["includes"])
+        out.append(f"includes = [{items}]")
+
+    if doc["run"] or doc["root"] is not None:
+        if out:
+            out.append("")
+        out.append("[run]")
+        run = dict(doc["run"])
+        run["root"] = doc["root"]
+        for k in ("name", "seed", "root"):
+            if run.get(k) is not None:
+                out.append(f"{k} = {_toml_scalar(run[k])}")
+        for k, v in run.items():
+            if k not in ("name", "seed", "root"):
+                out.append(f"{_toml_key(k)} = {_toml_scalar(v)}")
 
     if doc["env"]:
-        out.append("")
+        if out:
+            out.append("")
         out.append("[env]")
         for k, v in doc["env"].items():
             out.append(f"{_toml_key(k)} = {_toml_scalar(v)}")
 
     for bid in sorted(doc["behaviours"]):
         node = doc["behaviours"][bid]
-        out.append("")
+        if out:
+            out.append("")
         out.append(f"[behaviours.{_toml_key(bid)}]")
         out.append(f'type = "{node["type"]}"')
         if node["type"] in COMPOSITES:
@@ -451,7 +478,12 @@ def write_bt(doc):
         return f'"{bid}"'  # reference
 
     out = []
+    if doc.get("includes"):
+        items = ", ".join(_bt_value(i) for i in doc["includes"])
+        out.append(f"include [ {items} ]")
     if doc["run"]:
+        if out:
+            out.append("")
         out.append("run {")
         for k in ("name", "seed"):
             if k in doc["run"]:
@@ -473,15 +505,79 @@ def write_bt(doc):
             out.append("")
         out.append(f'{node["type"]} "{bid}" {emit_body(bid, 0)}')
 
-    if out:
-        out.append("")
-    root_id = doc["root"]
-    rc = emit_child(root_id, 1) if inline(root_id) else f'"{root_id}"'
-    if "\n" in rc:
-        out.append("root [\n" + INDENT + rc + "\n]")
-    else:
-        out.append(f"root [ {rc} ]")
+    if doc["root"] is not None:
+        if out:
+            out.append("")
+        root_id = doc["root"]
+        rc = emit_child(root_id, 1) if inline(root_id) else f'"{root_id}"'
+        if "\n" in rc:
+            out.append("root [\n" + INDENT + rc + "\n]")
+        else:
+            out.append(f"root [ {rc} ]")
     return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Resolve includes -> one self-contained TOML (build step)
+#
+# Follows `include [...]` by bare name, searching the including file's directory plus
+# any --include-path dirs (for `name`, looks for `name.bt`). Merges per the spec rules:
+# env and behaviours deep-merge with closer-to-root winning; run/root come from the top
+# (attack) document; includes are consumed (dropped from the output). The result is a
+# self-contained TOML the engine can load without any include resolution.
+# ---------------------------------------------------------------------------
+def _read_file(path):
+    return sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+
+
+def _parse_any(path, text):
+    if path != "-" and path.endswith(".toml"):
+        return parse_toml(text)
+    return parse_bt(text)
+
+
+def _find_include(name, dirs):
+    stem = name[:-3] if name.endswith(".bt") else name
+    for d in dirs:
+        cand = os.path.join(d, stem + ".bt")
+        if os.path.isfile(cand):
+            return cand
+    raise BtError(f"include {name!r} not found (searched: {', '.join(dirs) or '.'})")
+
+
+def resolve(path, include_paths, stack=()):
+    """Recursively resolve `path`'s includes into one merged doc (includes consumed)."""
+    if path in stack:
+        raise BtError("include cycle: " + " -> ".join(stack + (path,)))
+    doc = _parse_any(path, _read_file(path))
+    dirs = [os.path.dirname(path) or "." if path != "-" else "."] + include_paths
+    env, beh = {}, {}
+    for inc in doc["includes"]:
+        sub = resolve(_find_include(inc, dirs), include_paths, stack + (path,))
+        env.update(sub["env"])          # later/closer-to-root overrides earlier
+        beh.update(sub["behaviours"])
+    env.update(doc["env"])              # the including (root) doc wins
+    beh.update(doc["behaviours"])
+    return {"run": doc["run"], "env": env, "behaviours": beh,
+            "root": doc["root"], "includes": []}
+
+
+def validate_refs(doc):
+    """Every reference (root, children, ForTicks child) must resolve post-merge."""
+    beh = doc["behaviours"]
+
+    def check(bid, ctx):
+        if bid not in beh:
+            raise BtError(f"unresolved reference {bid!r} (from {ctx})")
+
+    if doc["root"] is not None:
+        check(doc["root"], "run.root")
+    for bid, node in beh.items():
+        if node["type"] in COMPOSITES:
+            for c in node["children"]:
+                check(c, f"behaviour {bid!r}")
+        elif node["type"] == "ForTicks":
+            check(node["child"], f"behaviour {bid!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -492,21 +588,30 @@ def main(argv=None):
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--bt-to-toml", action="store_true", help="force .bt -> TOML")
     g.add_argument("--toml-to-bt", action="store_true", help="force TOML -> .bt")
+    g.add_argument("--resolve", action="store_true",
+                   help="resolve includes into one self-contained TOML (build step)")
+    ap.add_argument("--include-path", action="append", default=[], metavar="DIR",
+                    help="extra include search directory (repeatable)")
     ap.add_argument("file", help="input file, or - for stdin")
     args = ap.parse_args(argv)
 
-    direction = "bt2toml" if args.bt_to_toml else "toml2bt" if args.toml_to_bt else None
-    if direction is None:
-        if args.file.endswith(".bt"):
-            direction = "bt2toml"
-        elif args.file.endswith(".toml"):
-            direction = "toml2bt"
-        else:
-            ap.error("cannot infer direction; pass --bt-to-toml or --toml-to-bt")
-
-    text = sys.stdin.read() if args.file == "-" else open(args.file, encoding="utf-8").read()
-
     try:
+        if args.resolve:
+            doc = resolve(args.file, args.include_path)
+            validate_refs(doc)
+            sys.stdout.write(write_toml(doc))
+            return 0
+
+        direction = "bt2toml" if args.bt_to_toml else "toml2bt" if args.toml_to_bt else None
+        if direction is None:
+            if args.file.endswith(".bt"):
+                direction = "bt2toml"
+            elif args.file.endswith(".toml"):
+                direction = "toml2bt"
+            else:
+                ap.error("cannot infer direction; pass --bt-to-toml or --toml-to-bt")
+
+        text = _read_file(args.file)
         if direction == "bt2toml":
             sys.stdout.write(write_toml(parse_bt(text)))
         else:

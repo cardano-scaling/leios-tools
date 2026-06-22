@@ -1,0 +1,22 @@
+# long-range-fork.bt — a pure behaviour (library / fragment).
+#
+# Named, reusable behaviours: no `run`, no `root`. Meant to be `include`d by an attack
+# that supplies the run metadata, the `env` values (e.g. trigger_slot), and the `root`.
+# References `env.trigger_slot`; the including attack owns its value.
+
+Join "lrf-attack" [
+  Action("rb-header-equivocator", ways = 2),
+  Action("drop-inbound-peers", probability = 1.0)
+]
+
+# Strategy:
+# honest until the trigger slot;
+#  then run the exploit for 3 slots,
+#  else honest.
+Selector "long-range-fork" [
+  Sequence[
+    Condition(cardano.current_slot >= env.trigger_slot),
+    ForTicks(3, "lrf-attack")
+  ],
+  Action("honest")
+]

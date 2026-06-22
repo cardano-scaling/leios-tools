@@ -1,0 +1,18 @@
+# long-range-fork-attack.bt — a runnable attack.
+#
+# Pulls in the reusable `long-range-fork` behaviour (by filename; resolved against the
+# include search path), supplies the run metadata and the env value it reads, and names
+# it as the root. `bt.py --resolve` merges this + the include into one self-contained TOML.
+
+include [ "long-range-fork.bt" ]
+
+run {
+  name = "long-range-fork-attack"
+  seed = 1234567
+}
+
+env {
+  trigger_slot = 345600
+}
+
+root [ "long-range-fork" ]
