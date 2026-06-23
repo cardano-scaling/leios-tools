@@ -209,6 +209,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stdin = tokio::io::stdin();
     let mut stdin_reader = tokio::io::BufReader::new(stdin);
     let mut stdin_line = String::new();
+    // Once stdin reaches EOF (e.g. launched with stdin from /dev/null, a
+    // closed pipe, or any non-interactive source), `read_line` returns
+    // `Ok(0)` immediately and forever. Without disabling the select! arm
+    // that would busy-loop a core. Track open-ness and gate the arm.
+    let mut stdin_open = true;
 
     let leios = config.leios_enabled;
     let node_id = config.node_id.clone();
@@ -563,9 +568,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
             }
-            result = stdin_reader.read_line(&mut stdin_line) => {
+            result = stdin_reader.read_line(&mut stdin_line), if stdin_open => {
                 match result {
-                    Ok(0) => {} // EOF — stdin closed, no more updates
+                    Ok(0) => {
+                        // EOF — stdin closed. Stop polling it so this arm
+                        // doesn't busy-loop returning Ok(0) forever.
+                        stdin_open = false;
+                    }
                     Ok(_) => {
                         match serde_json::from_str::<config::DynamicConfigUpdate>(&stdin_line) {
                             Ok(update) => {
@@ -590,6 +599,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                     Err(e) => {
                         warn!(node_id = %node_id, "stdin read error: {e}");
+                        // A persistent read error would also busy-loop the
+                        // arm; stop polling stdin.
+                        stdin_open = false;
                     }
                 }
             }
