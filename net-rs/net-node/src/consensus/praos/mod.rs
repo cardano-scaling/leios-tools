@@ -313,6 +313,11 @@ impl PraosConsensus {
                             },
                         };
                         self.state.note_header_first_seen(hash, self.current_slot);
+                        // Record the authentic wire header bytes; reused
+                        // when the block is cached so we re-serve them
+                        // downstream verbatim.
+                        self.state
+                            .note_authentic_header(hash, info.block_number, header.raw.clone());
                         self.state.on_tip_advanced(
                             *peer_id,
                             tip.point.clone(),

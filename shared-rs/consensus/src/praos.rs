@@ -286,6 +286,17 @@ pub struct PraosState {
     /// `block_cache` on the k-prune path.
     pub header_first_seen: BTreeMap<[u8; 32], u64>,
 
+    /// Authentic ChainSync-wire header bytes (with their block number),
+    /// keyed by block hash, fed by the I/O wrapper via
+    /// [`PraosState::note_authentic_header`] from the announcement path.
+    /// The cached block — and the header we re-serve downstream — carries
+    /// these exact wire bytes rather than a copy reconstructed from the
+    /// fetched body. Entries are consumed when the block is cached
+    /// ([`PraosState::on_block_received`]) and otherwise pruned by block
+    /// number on the k-prune path, bounding the live set to announced-
+    /// but-not-yet-fetched headers.
+    pub authentic_headers: BTreeMap<[u8; 32], (u64, Vec<u8>)>,
+
     /// CIP-0164 RB-header equivocation tracker.  Per `(slot, issuer)`
     /// pair, the set of distinct RB header hashes observed.  The
     /// tracker is fed from every path that surfaces a parsed header
@@ -355,6 +366,7 @@ impl PraosState {
             last_stuck_warning_at: None,
             last_gap_warning_at: BTreeMap::new(),
             header_first_seen: BTreeMap::new(),
+            authentic_headers: BTreeMap::new(),
             header_hashes_by_slot_issuer: BTreeMap::new(),
             equivocating_rb_slots: BTreeSet::new(),
             block_policy,
@@ -573,6 +585,29 @@ impl PraosState {
         self.header_first_seen
             .entry(header_hash)
             .or_insert(current_slot);
+    }
+
+    /// Record the authentic ChainSync-wire header bytes for a block hash,
+    /// from the announcement path where the wire bytes are still in hand.
+    /// If the block is already cached its header is corrected in place;
+    /// otherwise the bytes are stashed and used when the block is cached,
+    /// so the header we re-serve downstream matches what we received.
+    /// See [`PraosState::authentic_headers`].
+    pub fn note_authentic_header(
+        &mut self,
+        header_hash: [u8; 32],
+        block_no: u64,
+        header_bytes: Vec<u8>,
+    ) {
+        // If the block is already cached, correct its header in place;
+        // otherwise stash until the block is fetched.
+        if let Some(cached) = self.block_cache.get_mut(&header_hash) {
+            cached.header = header_bytes;
+            return;
+        }
+        self.authentic_headers
+            .entry(header_hash)
+            .or_insert((block_no, header_bytes));
     }
 
     /// Record an observed RB header for equivocation detection.
@@ -808,14 +843,16 @@ impl PraosState {
     }
 
     /// A fetched block arrived.  Caches it and tries a fork switch
-    /// targeting this specific block.  `parsed_header` is `Some` when
-    /// the wrapper successfully parsed the header into block-no /
-    /// slot / prev-hash; `None` for opaque headers.
+    /// targeting this specific block.  `fallback_header_bytes` is the
+    /// header the wrapper reconstructed from the body; it is used unless an
+    /// authentic wire header was recorded for this hash.  `parsed_header`
+    /// is `Some` when the wrapper parsed the header into block-no / slot /
+    /// prev-hash; `None` for opaque headers.
     #[allow(clippy::too_many_arguments)]
     pub fn on_block_received(
         &mut self,
         point: Point,
-        header_bytes: Vec<u8>,
+        fallback_header_bytes: Vec<u8>,
         body_bytes: Vec<u8>,
         parsed_header: Option<ParsedHeaderInfo>,
         parsed_body: ParsedBodyInfo,
@@ -890,6 +927,13 @@ impl PraosState {
             );
         }
         let body_bytes_len = body_bytes.len();
+        // Prefer the authentic wire header (announcement path) over the
+        // body-reconstructed bytes, consuming it now that we cache the block.
+        let header_bytes = self
+            .authentic_headers
+            .remove(&hash)
+            .map(|(_, bytes)| bytes)
+            .unwrap_or(fallback_header_bytes);
         self.block_cache.insert(
             hash,
             CachedBlock {
@@ -1124,6 +1168,10 @@ impl PraosState {
                     self.validated.retain(|h| self.block_cache.contains_key(h));
                     self.header_first_seen
                         .retain(|h, _| self.block_cache.contains_key(h));
+                    // Pending headers (announced, not yet fetched) live here
+                    // until consumed on cache; drop any whose block fell
+                    // below the k window so they can't accumulate.
+                    self.authentic_headers.retain(|_, (bn, _)| *bn >= min);
                 }
             }
         }
@@ -2534,6 +2582,96 @@ mod tests {
         assert!(matches!(fx[0], PraosEffect::InjectBlock { .. }));
         assert!(s.validated.contains(&h(1)));
         assert_eq!(s.last_validated_tip, Some(h(1)));
+    }
+
+    #[test]
+    fn authentic_header_overrides_body_reconstructed_on_cache() {
+        // The wire ChainSync header (era tag 7) and the body-reconstructed
+        // header (era tag 8) hash to the same block, but differ in bytes.
+        // The cached — and later forwarded — header must be the wire bytes.
+        let mut s = fresh();
+        let wire_header = vec![0x82, 0x07, 0xAA, 0xBB];
+        let body_reconstructed = vec![0x82, 0x08, 0xAA, 0xBB];
+
+        s.note_authentic_header(h(1), 1, wire_header.clone());
+        s.on_block_received(
+            pt(100, 1),
+            body_reconstructed.clone(),
+            vec![0xCC],
+            Some(hi(1, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+
+        let cached = s.block_cache.get(&h(1)).expect("block cached");
+        assert_eq!(cached.header, wire_header, "must cache the wire header");
+        assert_ne!(cached.header, body_reconstructed);
+        // Consumed: no longer pending after the block is cached.
+        assert!(!s.authentic_headers.contains_key(&h(1)));
+
+        // And the InjectBlock we emit downstream carries the wire bytes.
+        let fx = s.on_block_applied(pt(100, 1), Instant::now());
+        let injected = fx.iter().find_map(|e| match e {
+            PraosEffect::InjectBlock { header, .. } => Some(header.clone()),
+            _ => None,
+        });
+        assert_eq!(injected, Some(wire_header));
+    }
+
+    #[test]
+    fn body_reconstructed_header_used_when_no_authentic_recorded() {
+        // Fallback path: a block never announced to us first (no authentic
+        // header) keeps the body-reconstructed bytes the wrapper passes.
+        let mut s = fresh();
+        let body_reconstructed = vec![0x82, 0x08, 0xAA, 0xBB];
+        s.on_block_received(
+            pt(100, 1),
+            body_reconstructed.clone(),
+            vec![0xCC],
+            Some(hi(1, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+        let cached = s.block_cache.get(&h(1)).expect("block cached");
+        assert_eq!(cached.header, body_reconstructed);
+    }
+
+    #[test]
+    fn authentic_header_corrects_body_first_cache_in_place() {
+        // Body fetched/cached first (era-8 reconstruction), authentic wire
+        // header arrives afterward: it must correct the cached header in
+        // place rather than stash an entry that never gets consumed.
+        let mut s = fresh();
+        s.on_block_received(
+            pt(100, 1),
+            vec![0x82, 0x08, 0xAA, 0xBB],
+            vec![0xCC],
+            Some(hi(1, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+        let wire_header = vec![0x82, 0x07, 0xAA, 0xBB];
+        s.note_authentic_header(h(1), 1, wire_header.clone());
+        assert_eq!(s.block_cache.get(&h(1)).unwrap().header, wire_header);
+        // No orphan stashed for an already-cached block.
+        assert!(!s.authentic_headers.contains_key(&h(1)));
+    }
+
+    #[test]
+    fn k_prune_keeps_recent_pending_authentic_headers() {
+        // Pending (not-yet-fetched) authentic headers must survive the
+        // k-prune as long as their block is within k of the adopted tip.
+        let mut s = PraosState::new("test".to_string(), 2); // k = 2
+        // Adopt a tip at block 5 so the prune window is block_no >= 3.
+        install_validated_block(&mut s, 100, 1, 1, None);
+        install_validated_block(&mut s, 101, 2, 2, Some(1));
+        install_validated_block(&mut s, 102, 3, 3, Some(2));
+        install_validated_block(&mut s, 103, 4, 4, Some(3));
+        install_validated_block(&mut s, 104, 5, 5, Some(4));
+        s.adopted_tip_hash = Some(h(5)); // bn=5, k=2 ⇒ prune window bn >= 3
+        // A recent pending header (block 5) and a stale one (block 1).
+        s.note_authentic_header(h(20), 5, vec![0x82, 0x07, 0x01]);
+        s.note_authentic_header(h(21), 1, vec![0x82, 0x07, 0x02]);
+        s.on_block_applied(pt(104, 5), Instant::now());
+        assert!(s.authentic_headers.contains_key(&h(20)), "recent kept");
+        assert!(!s.authentic_headers.contains_key(&h(21)), "stale dropped");
     }
 
     #[test]
