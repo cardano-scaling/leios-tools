@@ -800,6 +800,7 @@ impl LeiosState {
         // EB-processing filter (t22): the control signal's checksum-threshold
         // policy may drop processing of this EB offer.
         if !self.should_process_eb(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, peer = peer.0, "t22: filtered EB offer (checksum-threshold)");
             return Vec::new();
         }
         self.evict_stale_in_flight(now);
@@ -836,6 +837,7 @@ impl LeiosState {
     ) -> Vec<LeiosEffect> {
         // EB-processing filter (t22): drop tx-offer processing for a filtered EB.
         if !self.should_process_eb(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, peer = peer.0, "t22: filtered EB-txs offer (checksum-threshold)");
             return Vec::new();
         }
         self.evict_stale_in_flight(now);
@@ -902,6 +904,7 @@ impl LeiosState {
         // EB-processing filter (t22 with `hide_eb_tx`): drop manifest + validate
         // processing for a filtered EB.
         if self.should_hide_eb_received(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, "t22: filtered EB-received processing (hide_eb_tx)");
             return Vec::new();
         }
         self.in_flight.remove(&point);
