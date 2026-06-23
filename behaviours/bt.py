@@ -330,7 +330,13 @@ def parse_toml(text):
         "includes": list(data.get("includes", [])),
     }
     for bid, node in data.get("behaviours", {}).items():
-        doc["behaviours"][bid] = dict(node)
+        n = dict(node)
+        # The engine's dedicated honest leaf maps back to the canonical IR
+        # form (an Action with kind "honest"), so it round-trips to .bt as
+        # `Action("honest")`.
+        if n.get("type") == "HonestAction":
+            n = {"type": "Action", "spec": {"kind": "honest"}}
+        doc["behaviours"][bid] = n
     return doc  # no root => a fragment (pure-behaviour library)
 
 
@@ -384,6 +390,12 @@ def write_toml(doc):
         if out:
             out.append("")
         out.append(f"[behaviours.{_toml_key(bid)}]")
+        # The honest leaf is canonical in the IR as an Action with kind
+        # "honest"; on the wire it is the engine's dedicated `HonestAction`
+        # type (no spec).
+        if node["type"] == "Action" and node["spec"].get("kind") == "honest":
+            out.append('type = "HonestAction"')
+            continue
         out.append(f'type = "{node["type"]}"')
         if node["type"] in COMPOSITES:
             kids = ", ".join(_toml_scalar(c) for c in node["children"])

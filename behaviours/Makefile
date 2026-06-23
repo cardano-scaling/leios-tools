@@ -49,11 +49,12 @@ bless-resolve:
 # from its source.
 #
 # Mapping below is `<lib source>:<consumer destination>` (one per line; the same
-# source may feed several consumers). `honest.toml` is intentionally NOT here —
-# bt.py has no honest leaf, so it stays a static hand-maintained file.
+# source may feed several consumers). The honest leaf is the `Action("honest")`
+# .bt syntax (resolves to the engine's `type = "HonestAction"`).
 NET_BEH = ../net-rs/net-cluster/behaviours
 SIM_BEH = ../sim-rs/parameters/behaviours
 CONFIG_MAP = \
+  lib/honest.bt:$(NET_BEH)/honest.toml \
   lib/lazy-voter.bt:$(NET_BEH)/lazy-voter.toml \
   lib/lazy-voter.bt:$(SIM_BEH)/lazy-voter.toml \
   lib/rb-header-equivocator.bt:$(NET_BEH)/rb-equivocator.toml \

@@ -24,8 +24,7 @@ count = 3
 child = "lrf-attack"
 
 [behaviours."long-range-fork.1"]
-type = "Action"
-spec = { kind = "honest" }
+type = "HonestAction"
 
 [behaviours.lrf-attack]
 type = "Join"

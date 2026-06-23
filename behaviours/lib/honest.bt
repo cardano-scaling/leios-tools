@@ -1,0 +1,9 @@
+# honest.bt — a single honest leaf (no perturbation). Equivalent to running
+# with no behaviour tree at all; the honest leaf maps to the engine's
+# `type = "HonestAction"`.
+run {
+  name = "honest"
+  seed = 0
+}
+
+root [ Action("honest") ]
