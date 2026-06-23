@@ -843,14 +843,16 @@ impl PraosState {
     }
 
     /// A fetched block arrived.  Caches it and tries a fork switch
-    /// targeting this specific block.  `parsed_header` is `Some` when
-    /// the wrapper successfully parsed the header into block-no /
-    /// slot / prev-hash; `None` for opaque headers.
+    /// targeting this specific block.  `fallback_header_bytes` is the
+    /// header the wrapper reconstructed from the body; it is used unless an
+    /// authentic wire header was recorded for this hash.  `parsed_header`
+    /// is `Some` when the wrapper parsed the header into block-no / slot /
+    /// prev-hash; `None` for opaque headers.
     #[allow(clippy::too_many_arguments)]
     pub fn on_block_received(
         &mut self,
         point: Point,
-        header_bytes: Vec<u8>,
+        fallback_header_bytes: Vec<u8>,
         body_bytes: Vec<u8>,
         parsed_header: Option<ParsedHeaderInfo>,
         parsed_body: ParsedBodyInfo,
@@ -931,7 +933,7 @@ impl PraosState {
             .authentic_headers
             .remove(&hash)
             .map(|(_, bytes)| bytes)
-            .unwrap_or(header_bytes);
+            .unwrap_or(fallback_header_bytes);
         self.block_cache.insert(
             hash,
             CachedBlock {
