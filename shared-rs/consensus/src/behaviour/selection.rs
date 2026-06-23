@@ -163,6 +163,34 @@ pub fn resolve_specs(
     out
 }
 
+/// Resolve a list of `(payload, selection)` items to per-node `(index,
+/// payload)` assignments, payload-agnostic. Items are walked in declaration
+/// order; an item emits one `(index, payload.clone())` per node its selection
+/// picks. Overlapping selections produce multiple entries for the same index
+/// (in item order) — the caller decides how to reconcile (e.g. collect into a
+/// map for last-wins). `seed` is salted per item via
+/// [`child_seed`](super::registry::child_seed) so two `StakeRandom` items pick
+/// independent subsets.
+///
+/// This is the generic core used by consumers whose per-node payload isn't a
+/// `BehaviourSpec` (e.g. sim-rs assigns a behaviour-tree config path).
+/// [`resolve_specs`] is the `BehaviourSpec`-specific variant that *composes*
+/// overlaps into [`BehaviourSpec::Composite`].
+pub fn resolve_assignments<T: Clone>(
+    items: &[(T, BehaviourSelection)],
+    stakes: &[u64],
+    seed: Option<u64>,
+) -> Vec<(usize, T)> {
+    let mut out: Vec<(usize, T)> = Vec::new();
+    for (item_idx, (payload, selection)) in items.iter().enumerate() {
+        let item_seed = seed.map(|s| super::registry::child_seed(s, item_idx));
+        for idx in resolve_selection(selection, stakes, item_seed) {
+            out.push((idx, payload.clone()));
+        }
+    }
+    out
+}
+
 /// Stake-bearing nodes sorted by stake descending, ties broken by
 /// index ascending.  Returns indices only; pair with
 /// [`stake_ranked_with_stake`] when you also need the stake.
@@ -334,6 +362,25 @@ mod tests {
             None,
         );
         assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn resolve_assignments_is_payload_agnostic_and_emits_per_pick() {
+        // Generic over the payload (here &str); two overlapping items emit one
+        // (idx, payload) per pick, in item order — the caller reconciles dups.
+        let items = vec![
+            ("a.toml", BehaviourSelection::All),
+            ("b.toml", BehaviourSelection::Nodes { indices: vec![1] }),
+        ];
+        let out = resolve_assignments(&items, &[1, 1, 1], None);
+        assert_eq!(
+            out,
+            vec![(0, "a.toml"), (1, "a.toml"), (2, "a.toml"), (1, "b.toml"),]
+        );
+        // Collecting into a map gives last-wins: node 1 → b.toml.
+        let map: BTreeMap<usize, &str> = out.into_iter().collect();
+        assert_eq!(map.get(&1), Some(&"b.toml"));
+        assert_eq!(map.get(&0), Some(&"a.toml"));
     }
 
     #[test]

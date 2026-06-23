@@ -6,10 +6,11 @@ timestamp-resolution-ms: 0.05
 leios-header-diffusion-time-ms: 3000.0
 linear-tx-max-age-slots: 23
 
+# The behaviour-tree config is resolved by `bt.py --resolve` and assigned to
+# the selected nodes; the path resolves relative to the working directory
+# (run from the sim-rs/ crate root).
 consensus-behaviours:
-  - spec:
-      kind: lazy-voter
-      reason: declined
+  - behaviour-tree: parameters/behaviours/lazy-voter.toml
     selection:
       kind: stake-fraction
       fraction: 0.2

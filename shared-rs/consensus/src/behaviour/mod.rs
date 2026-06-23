@@ -109,7 +109,7 @@ pub use outbound::{Outbound, OutboundDecision, OwnedOutbound};
 pub use registry::{
     build, build_handle, seed_from_node_id, swap_handle, ActionSpec, BehaviourSpec,
 };
-pub use selection::{resolve_selection, resolve_specs, BehaviourSelection};
+pub use selection::{resolve_assignments, resolve_selection, resolve_specs, BehaviourSelection};
 
 // `BehaviourHandle` is defined at the top of this module.
 
