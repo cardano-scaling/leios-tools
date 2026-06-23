@@ -555,6 +555,51 @@ fn should_vote_for_eb() {
 }
 
 #[test]
+fn should_fetch_referenced_txs_for_eb() {
+    // Node 1 produces an EB referencing txs that Node 2 never received (as if
+    // they were generated on the far side of a partition).  In the references
+    // variant Node 2 cannot vote until it has every referenced body, so it must
+    // fetch the missing ones from the EB sender via RequestEBTxs/EBTxs, then
+    // validate the EB.  This is the on-demand fetch the variant needs to recover
+    // after a partition heal — without it the EB stays stuck below quorum.
+    let topology = new_topology(vec![
+        ("node-1", new_node(Some(1000), vec!["node-2"])),
+        ("node-2", new_node(Some(1000), vec!["node-1"])),
+    ]);
+    let mut sim = TestDriver::new(topology);
+    let node1 = sim.id_for("node-1");
+    let node2 = sim.id_for("node-2");
+
+    // Node 1 generates the txs but we deliberately do NOT diffuse them to
+    // Node 2 (skip expect_tx_sent), so Node 2 is missing every referenced tx.
+    let _txs: [_; 3] = sim.produce_txs(node1, false);
+
+    sim.win_next_rb_lottery(node1, 0);
+    sim.next_slot();
+    let (rb, eb) = sim.expect_cpu_task_matching(node1, is_new_rb_task);
+    let eb = eb.expect("node did not produce EB");
+    assert!(!eb.txs.is_empty(), "EB should reference at least one tx");
+
+    // RB+EB diffuse to Node 2.  Validating the EB header, Node 2 finds it is
+    // missing every referenced tx, so it issues a RequestEBTxs to the sender.
+    sim.expect_rb_and_eb_sent(node1, node2, rb.clone(), Some(eb.clone()));
+
+    // The fetch round-trip: Node 2 -> Node 1 RequestEBTxs(all indices), Node 1
+    // replies with the bodies straight out of its stored EB.
+    let indices: Vec<u32> = (0..eb.txs.len() as u32).collect();
+    let bitmap = shared_consensus::bitmap::from_indices(&indices);
+    sim.expect_message(node2, node1, Message::RequestEBTxs(eb.id(), bitmap));
+    sim.expect_message(node1, node2, Message::EBTxs(eb.id(), eb.txs.clone()));
+
+    // The bodies run through the normal validation pipeline; once the last one
+    // lands, the gated EB is released and validated.
+    for tx in &eb.txs {
+        sim.expect_cpu_task(node2, CpuTask::TransactionValidated(node1, tx.clone()));
+    }
+    sim.expect_eb_validated(node2, eb);
+}
+
+#[test]
 fn should_not_include_tx_twice() {
     let topology = new_topology(vec![
         ("node-1", new_node(Some(1000), vec!["node-2"])),
