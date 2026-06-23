@@ -212,6 +212,16 @@ pub enum NetworkCommand {
     /// inbound connections (the reconnect-handover trigger).
     DropInboundPeers,
 
+    /// Replace this node's outbound peer blocklist (full replace; an
+    /// empty set heals).  While an address is blocklisted the
+    /// coordinator refuses to dial it (`AddPeer` and peer discovery),
+    /// parks any pending reconnection to it, and disconnects it if it is
+    /// currently connected.  Because a duplex connection carries both
+    /// directions over a single socket, dropping the dialing side cuts
+    /// the link in both directions — this is the enforcement primitive
+    /// behind cluster-driven network partitions.
+    SetPeerBlocklist { addresses: Vec<String> },
+
     /// Shut down all peers and stop the coordinator.
     Shutdown,
 }
