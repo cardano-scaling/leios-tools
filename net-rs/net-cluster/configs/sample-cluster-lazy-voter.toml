@@ -35,6 +35,11 @@ rb_generation_probability = 0.05
 # no-vote signal and masks the lazy-stake effect.
 tx_rate = 1.0
 
+# Behaviour-tree config (resolved, self-contained) installed on the selected
+# nodes via `--behaviour-tree` at spawn. Top-level key so it isn't captured by
+# a later `[section]` table. Path is relative to the net-rs CWD.
+behaviour_tree = "net-cluster/behaviours/lazy-voter.toml"
+
 topology_source = "random"
 
 [topology_random]
@@ -43,9 +48,6 @@ degree = 3
 min_latency_ms = 5
 max_latency_ms = 100
 stake_distribution = "mainnet-shaped"
-
-[behaviour]
-kind = "lazy-voter"
 
 # `stake-fraction` selects the smallest prefix of stake-bearing nodes
 # (sorted by stake descending) whose cumulative stake covers

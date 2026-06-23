@@ -8,11 +8,19 @@
 //! `bt.py --resolve`); `BtConfig::parse`/`compile` reject an unresolved config.
 //! Loading reads the file here (the engine itself is sans-IO).
 
+use std::sync::{Arc, Mutex};
+
 use shared_consensus::behaviour::tree::actions::HonestAction;
 use shared_consensus::behaviour::tree::{
-    Behaviour, BehaviourKind, BehaviourTree, BtConfig, ControlSignal, DynamicEnv, NativeChainState,
-    TickCtx,
+    Behaviour, BehaviourKind, BehaviourTree, BtConfig, ControlSignal, DynamicEnv,
+    EquivocationVariants, NativeChainState, TickCtx,
 };
+use tokio::sync::watch;
+
+/// Shared, slot-keyed store of RB-header equivocation variants. The producer
+/// (net-node) writes the variants it builds on an equivocating slot; the
+/// per-peer send actuators (net-core `server_handlers`) read them.
+pub type SharedVariants = Arc<Mutex<EquivocationVariants>>;
 
 /// The node's behaviour-tree runtime.
 #[derive(Debug)]
@@ -21,6 +29,11 @@ pub struct BtRuntime {
     env: DynamicEnv,
     /// The compiled tree, ticked once per slot.
     tree: BehaviourTree,
+    /// Publishes the latest per-slot control signal to the per-peer outbound
+    /// actuators (which hold `watch::Receiver` clones).
+    control_tx: watch::Sender<ControlSignal>,
+    /// Equivocation variants produced this run, shared with the send actuators.
+    variants: SharedVariants,
 }
 
 impl BtRuntime {
@@ -28,10 +41,28 @@ impl BtRuntime {
     /// no `--behaviour-tree` is supplied.
     pub fn honest() -> Self {
         let root = Behaviour::new("honest", BehaviourKind::Action(Box::new(HonestAction)));
+        Self::from_parts(DynamicEnv::new(), BehaviourTree::new("honest", 0, root))
+    }
+
+    fn from_parts(env: DynamicEnv, tree: BehaviourTree) -> Self {
+        let (control_tx, _rx) = watch::channel(ControlSignal::default());
         BtRuntime {
-            env: DynamicEnv::new(),
-            tree: BehaviourTree::new("honest", 0, root),
+            env,
+            tree,
+            control_tx,
+            variants: Arc::new(Mutex::new(EquivocationVariants::new())),
         }
+    }
+
+    /// Subscribe to the published per-slot control signal (for the per-peer
+    /// send actuators). The latest value is always available via `borrow()`.
+    pub fn subscribe(&self) -> watch::Receiver<ControlSignal> {
+        self.control_tx.subscribe()
+    }
+
+    /// A handle to the shared equivocation-variant store.
+    pub fn variants(&self) -> SharedVariants {
+        self.variants.clone()
     }
 
     /// Build a runtime from a self-contained BT config (TOML text). Returns a
@@ -41,7 +72,7 @@ impl BtRuntime {
         let cfg = BtConfig::parse(text).map_err(|e| e.to_string())?;
         let env = DynamicEnv(cfg.env.clone());
         let tree = cfg.compile().map_err(|e| e.to_string())?;
-        Ok(BtRuntime { env, tree })
+        Ok(Self::from_parts(env, tree))
     }
 
     /// Load and compile a BT config from a file path.
@@ -75,6 +106,9 @@ impl BtRuntime {
             seed,
         };
         let (_status, control) = self.tree.tick(&ctx);
+        // Publish for the per-peer send actuators. Ignore the no-receiver case
+        // (no peers subscribed yet); the latest value is retained regardless.
+        let _ = self.control_tx.send(control.clone());
         control
     }
 }

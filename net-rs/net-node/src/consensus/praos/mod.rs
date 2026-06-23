@@ -102,16 +102,6 @@ impl PraosConsensus {
         self.state.set_fetch_policy(policy);
     }
 
-    /// Install a shared behaviour handle on the underlying state.  The
-    /// `Consensus` facade calls this with the same handle for every
-    /// owned state machine and the coordinator, so one behaviour
-    /// instance sees events from every layer.
-    pub fn install_behaviour_handle(
-        &mut self,
-        handle: shared_consensus::behaviour::BehaviourHandle,
-    ) {
-        self.state.behaviour = handle;
-    }
 
     /// Borrow the node identifier the state was constructed with.  The
     /// `Consensus` facade uses this to derive a deterministic behaviour

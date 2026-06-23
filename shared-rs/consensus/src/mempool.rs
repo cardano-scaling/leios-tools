@@ -30,10 +30,9 @@
 //! [`MempoolState::admit_validated`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::info;
 
-use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
 use crate::peer::PeerId;
 
 /// Slot-window retention for EB-pinned bodies.  Holds wide enough that
@@ -215,11 +214,6 @@ pub struct MempoolState {
     /// than `max_eb_slot - eb_retention_slots` are evicted on every
     /// `record_eb_manifest` / `produce_eb` call.
     pub eb_retention_slots: u64,
-    /// Pluggable behaviour for tx-acceptance and admission hooks.  See
-    /// [`crate::behaviour`].  Shared with the I/O wrapper via
-    /// `Arc<Mutex<>>` so out-of-band callers can lock the same instance.
-    pub behaviour: Arc<Mutex<Box<dyn Behaviour>>>,
-
     /// The full control signal applied by the BT tick each slot
     /// (`apply_control`). Honest by default; actuators read it instead of
     /// calling behaviour hooks.
@@ -245,14 +239,8 @@ impl MempoolState {
             eb_pinned: BTreeMap::new(),
             max_eb_slot: 0,
             eb_retention_slots,
-            behaviour: Arc::new(Mutex::new(Box::new(HonestBehaviour))),
             control: crate::behaviour::tree::control::ControlSignal::default(),
         }
-    }
-
-    /// Replace the behaviour.  Swaps the trait object under the mutex.
-    pub fn set_behaviour(&mut self, behaviour: Box<dyn Behaviour>) {
-        *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
     }
 
     /// Apply the per-slot [`ControlSignal`](crate::behaviour::tree::ControlSignal)
@@ -260,17 +248,6 @@ impl MempoolState {
     /// per slot by the I/O wrapper.
     pub fn apply_control(&mut self, control: &crate::behaviour::tree::control::ControlSignal) {
         self.control = control.clone();
-    }
-
-    /// Lock the behaviour and call the hook with `(&mut dyn Behaviour,
-    /// &MempoolState)`.
-    fn invoke_hook<F>(&mut self, hook: F) -> BehaviourOutcome<MempoolEffect>
-    where
-        F: FnOnce(&mut dyn Behaviour, &MempoolState) -> BehaviourOutcome<MempoolEffect>,
-    {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        hook(&mut **guard, self)
     }
 
     // -- Network event handlers --------------------------------------------
@@ -281,24 +258,14 @@ impl MempoolState {
     /// emits `ValidateTx`; the wrapper validates and reports back via
     /// [`Self::on_tx_validated`] or [`Self::on_tx_validation_failed`].
     pub fn on_tx_received(&mut self, tx_id: TxId, body: TxBody) -> Vec<MempoolEffect> {
-        let appended: Vec<MempoolEffect> =
-            match self.invoke_hook(|b, s| b.on_tx_received(s, &tx_id, &body)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         if self.pending_validation.contains_key(&tx_id) || self.contains(&tx_id) {
-            let mut fx = vec![MempoolEffect::TxRejected {
+            return vec![MempoolEffect::TxRejected {
                 tx_id,
                 reason: TxRejectReason::AlreadyKnown,
             }];
-            fx.extend(appended);
-            return fx;
         }
         self.pending_validation.insert(tx_id.clone(), body.clone());
-        let mut fx = vec![MempoolEffect::ValidateTx { tx_id, body }];
-        fx.extend(appended);
-        fx
+        vec![MempoolEffect::ValidateTx { tx_id, body }]
     }
 
     // -- Validation outcomes -----------------------------------------------
@@ -308,18 +275,10 @@ impl MempoolState {
     /// `TxRejected { reason: QueueFull }` for it.  No-op if the
     /// tx_id wasn't pending validation.
     pub fn on_tx_validated(&mut self, tx_id: TxId, size: u32) -> Vec<MempoolEffect> {
-        let appended: Vec<MempoolEffect> =
-            match self.invoke_hook(|b, s| b.on_tx_validated(s, &tx_id, size)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         let Some(body) = self.pending_validation.remove(&tx_id) else {
-            return appended;
+            return Vec::new();
         };
-        let mut fx = self.admit_internal(tx_id, body, size);
-        fx.extend(appended);
-        fx
+        self.admit_internal(tx_id, body, size)
     }
 
     /// Validator rejected `tx_id`.  Drops the pending body and emits

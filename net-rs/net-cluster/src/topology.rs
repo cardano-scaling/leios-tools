@@ -48,9 +48,10 @@ pub struct NodeTopology {
     pub stake: u64,
     /// Deterministic PRNG seed for this node.
     pub seed: u64,
-    /// Behaviour spec installed at startup, or `None` for honest.
+    /// Behaviour-tree config path installed at startup (via `--behaviour-tree`),
+    /// or `None` for honest.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub behaviour: Option<shared_consensus::behaviour::BehaviourSpec>,
+    pub behaviour_tree: Option<String>,
     /// Outbound peer connections (not serialized — use `edges` instead).
     #[serde(skip)]
     pub peers: Vec<PeerLink>,
@@ -117,8 +118,8 @@ pub fn generate_random(config: &ClusterConfig, total_stake: u64) -> Topology {
     let mut nodes: Vec<NodeTopology> = (0..n)
         .map(|i| {
             let port = config.base_port + i as u16;
-            let behaviour = if config.behaviour.is_some() && behaviour_set.contains(&i) {
-                config.behaviour.clone()
+            let behaviour_tree = if config.behaviour_tree.is_some() && behaviour_set.contains(&i) {
+                config.behaviour_tree.clone()
             } else {
                 None
             };
@@ -129,7 +130,7 @@ pub fn generate_random(config: &ClusterConfig, total_stake: u64) -> Topology {
                 listen_port: port,
                 stake: stakes[i],
                 seed: config.seed.unwrap_or(0) + i as u64,
-                behaviour,
+                behaviour_tree,
                 peers: Vec::new(),
             }
         })
@@ -253,8 +254,8 @@ fn build_from_raw(
     let mut nodes: Vec<NodeTopology> = (0..kept_count)
         .map(|i| {
             let port = config.base_port + i as u16;
-            let behaviour = if config.behaviour.is_some() && behaviour_set.contains(&i) {
-                config.behaviour.clone()
+            let behaviour_tree = if config.behaviour_tree.is_some() && behaviour_set.contains(&i) {
+                config.behaviour_tree.clone()
             } else {
                 None
             };
@@ -265,7 +266,7 @@ fn build_from_raw(
                 listen_port: port,
                 stake: stakes[i],
                 seed: config.seed.unwrap_or(0) + i as u64,
-                behaviour,
+                behaviour_tree,
                 peers: Vec::new(),
             }
         })
@@ -1145,15 +1146,15 @@ nodes:
         // StakeOrdered{count=2} should attach to nodes 0 and 1 (the two
         // highest stakes among the four in YAML_FIXTURE: 1000 > 500 > 250 > 0).
         let mut config = yaml_test_config();
-        config.behaviour = Some(shared_consensus::behaviour::BehaviourSpec::Honest);
+        config.behaviour_tree = Some("bt.toml".to_string());
         config.behaviour_selection =
             Some(crate::config::BehaviourSelection::StakeOrdered { count: 2 });
         let raw = parse_yaml_fixture();
         let topo = build_from_raw(&config, raw, None).unwrap();
-        assert!(topo.nodes[0].behaviour.is_some());
-        assert!(topo.nodes[1].behaviour.is_some());
-        assert!(topo.nodes[2].behaviour.is_none()); // stake = 0, not eligible
-        assert!(topo.nodes[3].behaviour.is_none()); // stake = 250, but count=2
+        assert!(topo.nodes[0].behaviour_tree.is_some());
+        assert!(topo.nodes[1].behaviour_tree.is_some());
+        assert!(topo.nodes[2].behaviour_tree.is_none()); // stake = 0, not eligible
+        assert!(topo.nodes[3].behaviour_tree.is_none()); // stake = 250, but count=2
     }
 
     /// Regression test: when the YAML uses numeric IDs (`node-0`, `node-1`,

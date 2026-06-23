@@ -1,25 +1,21 @@
-//! Behaviour selection — pick which nodes in a multi-node deployment
-//! run a given [`BehaviourSpec`].
+//! Behaviour selection — pick which nodes in a multi-node deployment run a
+//! configured behaviour.
 //!
-//! Consumers (sim-rs, net-cluster) hold a list of `(spec, selection)`
-//! pairs describing an experiment and ask this module to materialise
-//! the per-node assignment.  The module is sans-IO: it takes a stake
+//! Consumers (sim-rs, net-cluster) hold a list of `(payload, selection)` pairs
+//! describing an experiment and ask this module to materialise the per-node
+//! assignment via [`resolve_assignments`] (the payload is consumer-specific —
+//! e.g. a behaviour-tree config path). The module is sans-IO: it takes a stake
 //! vector indexed in node order and returns indices into that vector.
 //!
-//! All variants are deterministic for a given seed so re-runs land on
-//! the same nodes.  Stake-aware variants (`StakeRandom`, `StakeOrdered`,
-//! `StakeFraction`) ignore zero-stake nodes — under mainnet-shaped
-//! topologies these are relays that don't vote and aren't meaningful
-//! targets for behaviour assignment.
-//!
-//! [`BehaviourSpec`]: super::BehaviourSpec
+//! All variants are deterministic for a given seed so re-runs land on the same
+//! nodes.  Stake-aware variants (`StakeRandom`, `StakeOrdered`, `StakeFraction`)
+//! ignore zero-stake nodes — under mainnet-shaped topologies these are relays
+//! that don't vote and aren't meaningful targets for behaviour assignment.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
-
-use super::BehaviourSpec;
 
 /// Which subset of nodes runs a configured behaviour.
 ///
@@ -112,57 +108,6 @@ pub fn resolve_selection(
     }
 }
 
-/// Resolve a list of `(spec, selection)` items to a per-node
-/// [`BehaviourSpec`] assignment.
-///
-/// Items are walked in declaration order.  When two items select the
-/// same node, the specs **compose** rather than override: the entry
-/// becomes [`BehaviourSpec::Composite`] with the existing spec followed
-/// by the new one.  This matches the documented composite-dispatch
-/// semantics (first non-`Continue` wins) and the
-/// [`build`](super::build) helper's seeding contract — children are
-/// re-seeded via `child_seed(seed, idx)`, so a composed assignment
-/// from this resolver behaves the same as a hand-written
-/// [`BehaviourSpec::Composite`].
-///
-/// `seed` is salted per item via [`child_seed`](super::registry::child_seed),
-/// so two `StakeRandom` items pick independent subsets rather than the
-/// same shuffle (or nested prefixes when their `count` differs).
-///
-/// Nodes not picked by any item are absent from the returned map; the
-/// caller treats those as honest.
-pub fn resolve_specs(
-    items: &[(BehaviourSpec, BehaviourSelection)],
-    stakes: &[u64],
-    seed: Option<u64>,
-) -> BTreeMap<usize, BehaviourSpec> {
-    let mut out: BTreeMap<usize, BehaviourSpec> = BTreeMap::new();
-    for (item_idx, (spec, selection)) in items.iter().enumerate() {
-        let item_seed = seed.map(|s| super::registry::child_seed(s, item_idx));
-        let picked = resolve_selection(selection, stakes, item_seed);
-        for idx in picked {
-            match out.remove(&idx) {
-                None => {
-                    out.insert(idx, spec.clone());
-                }
-                Some(existing) => {
-                    let composed = match existing {
-                        BehaviourSpec::Composite { children: mut kids } => {
-                            kids.push(spec.clone());
-                            BehaviourSpec::Composite { children: kids }
-                        }
-                        other => BehaviourSpec::Composite {
-                            children: vec![other, spec.clone()],
-                        },
-                    };
-                    out.insert(idx, composed);
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Resolve a list of `(payload, selection)` items to per-node `(index,
 /// payload)` assignments, payload-agnostic. Items are walked in declaration
 /// order; an item emits one `(index, payload.clone())` per node its selection
@@ -172,10 +117,8 @@ pub fn resolve_specs(
 /// [`child_seed`](super::registry::child_seed) so two `StakeRandom` items pick
 /// independent subsets.
 ///
-/// This is the generic core used by consumers whose per-node payload isn't a
-/// `BehaviourSpec` (e.g. sim-rs assigns a behaviour-tree config path).
-/// [`resolve_specs`] is the `BehaviourSpec`-specific variant that *composes*
-/// overlaps into [`BehaviourSpec::Composite`].
+/// The per-node payload is consumer-specific (e.g. sim-rs and net-cluster
+/// assign a behaviour-tree config path).
 pub fn resolve_assignments<T: Clone>(
     items: &[(T, BehaviourSelection)],
     stakes: &[u64],
@@ -378,136 +321,27 @@ mod tests {
             vec![(0, "a.toml"), (1, "a.toml"), (2, "a.toml"), (1, "b.toml"),]
         );
         // Collecting into a map gives last-wins: node 1 → b.toml.
-        let map: BTreeMap<usize, &str> = out.into_iter().collect();
+        let map: std::collections::BTreeMap<usize, &str> = out.into_iter().collect();
         assert_eq!(map.get(&1), Some(&"b.toml"));
         assert_eq!(map.get(&0), Some(&"a.toml"));
     }
 
     #[test]
-    fn resolve_specs_empty_items_returns_empty() {
-        let out = resolve_specs(&[], &[1, 1, 1], None);
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn resolve_specs_disjoint_selections_produce_plain_specs() {
-        let items = vec![
-            (
-                BehaviourSpec::LazyVoter {
-                    reason: crate::leios::NoVoteReason::Declined,
-                },
-                BehaviourSelection::Nodes { indices: vec![0] },
-            ),
-            (
-                BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                BehaviourSelection::Nodes { indices: vec![1] },
-            ),
-        ];
-        let out = resolve_specs(&items, &[1, 1, 1], None);
-        assert!(matches!(out.get(&0), Some(BehaviourSpec::LazyVoter { .. })));
-        assert!(matches!(
-            out.get(&1),
-            Some(BehaviourSpec::RbHeaderEquivocator { ways: 2 })
-        ));
-        assert!(!out.contains_key(&2));
-    }
-
-    #[test]
-    fn resolve_specs_overlapping_selections_compose() {
-        let items = vec![
-            (
-                BehaviourSpec::LazyVoter {
-                    reason: crate::leios::NoVoteReason::Declined,
-                },
-                BehaviourSelection::All,
-            ),
-            (
-                BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                BehaviourSelection::Nodes { indices: vec![0] },
-            ),
-        ];
-        let out = resolve_specs(&items, &[1, 1, 1], None);
-        // Node 0: composed; nodes 1, 2: plain LazyVoter.
-        match out.get(&0) {
-            Some(BehaviourSpec::Composite { children }) => {
-                assert_eq!(children.len(), 2);
-                assert!(matches!(children[0], BehaviourSpec::LazyVoter { .. }));
-                assert!(matches!(
-                    children[1],
-                    BehaviourSpec::RbHeaderEquivocator { ways: 2 }
-                ));
-            }
-            other => panic!("expected Composite at node 0, got {:?}", other),
-        }
-        assert!(matches!(out.get(&1), Some(BehaviourSpec::LazyVoter { .. })));
-        assert!(matches!(out.get(&2), Some(BehaviourSpec::LazyVoter { .. })));
-    }
-
-    #[test]
-    fn resolve_specs_salts_seed_per_item_so_stake_random_items_are_independent() {
-        // Two StakeRandom items with the same count would otherwise see
-        // the same shuffle and pick the same nodes.  Per-item salting
-        // via child_seed should give independent subsets.
+    fn resolve_assignments_salts_seed_per_item_so_stake_random_items_are_independent() {
+        // Two StakeRandom items with the same count would otherwise see the same
+        // shuffle and pick the same nodes; per-item salting via child_seed gives
+        // independent subsets.
         let stakes = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
         let items = vec![
-            (
-                BehaviourSpec::LazyVoter {
-                    reason: crate::leios::NoVoteReason::Declined,
-                },
-                BehaviourSelection::StakeRandom { count: 3 },
-            ),
-            (
-                BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                BehaviourSelection::StakeRandom { count: 3 },
-            ),
+            ("a", BehaviourSelection::StakeRandom { count: 3 }),
+            ("b", BehaviourSelection::StakeRandom { count: 3 }),
         ];
-        let out = resolve_specs(&items, &stakes, Some(7));
-        let lazy: BTreeSet<usize> = out
-            .iter()
-            .filter_map(|(idx, spec)| match spec {
-                BehaviourSpec::LazyVoter { .. } => Some(*idx),
-                _ => None,
-            })
-            .collect();
-        let equiv: BTreeSet<usize> = out
-            .iter()
-            .filter_map(|(idx, spec)| match spec {
-                BehaviourSpec::RbHeaderEquivocator { .. } => Some(*idx),
-                _ => None,
-            })
-            .collect();
+        let out = resolve_assignments(&items, &stakes, Some(7));
+        let a: BTreeSet<usize> = out.iter().filter(|(_, p)| *p == "a").map(|(i, _)| *i).collect();
+        let b: BTreeSet<usize> = out.iter().filter(|(_, p)| *p == "b").map(|(i, _)| *i).collect();
         assert_ne!(
-            lazy, equiv,
+            a, b,
             "two StakeRandom items with same count should select different subsets"
         );
-    }
-
-    #[test]
-    fn resolve_specs_three_way_overlap_appends_to_existing_composite() {
-        // Three items, all selecting node 0 — composite should grow
-        // linearly, not nest.
-        let items = vec![
-            (
-                BehaviourSpec::LazyVoter {
-                    reason: crate::leios::NoVoteReason::Declined,
-                },
-                BehaviourSelection::Nodes { indices: vec![0] },
-            ),
-            (
-                BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                BehaviourSelection::Nodes { indices: vec![0] },
-            ),
-            (
-                BehaviourSpec::Honest,
-                BehaviourSelection::Nodes { indices: vec![0] },
-            ),
-        ];
-        let out = resolve_specs(&items, &[1], None);
-        match out.get(&0) {
-            Some(BehaviourSpec::Composite { children }) => {
-                assert_eq!(children.len(), 3);
-            }
-            other => panic!("expected Composite with 3 children, got {:?}", other),
-        }
     }
 }

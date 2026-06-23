@@ -1,106 +1,10 @@
-//! Behaviour registry — maps a serialisable spec to a concrete
-//! [`Behaviour`] instance.
-//!
-//! Each consumer (sim-rs, net-node) deserialises a [`BehaviourSpec`]
-//! from its config (TOML / JSON) and calls [`build`] to materialise
-//! the trait object.  Adding a new behaviour: append a variant to
-//! [`BehaviourSpec`] and a match arm in [`build`].
-//!
-//! `build` takes a `u64` seed alongside the spec — adversarial
-//! behaviours that make per-peer or per-slot random choices (e.g. peer
-//! partitioning for equivocation) seed their own deterministic RNG
-//! from it.  Behaviours that don't use randomness ignore the seed.
-//! Compositions hash `(seed, child_index)` to give each child its own
-//! distinct deterministic stream.
-//!
-//! [`Behaviour`]: super::Behaviour
+//! Action registry — the serialisable [`ActionSpec`] (leaf-action kind +
+//! params) the behaviour-tree engine deserialises from config, plus the
+//! deterministic seeding helpers ([`child_seed`], [`seed_from_node_id`]).
 
 use serde::{Deserialize, Serialize};
 
-use super::behaviours::{
-    DeepReorg, DropInboundPeers, EchoToSource, LazyVoter, LieAboutEbSize, RbHeaderEquivocator,
-    T22ThreatBehaviour,
-};
-use super::{Behaviour, CompositeBehaviour, HonestBehaviour};
 use crate::leios::NoVoteReason;
-
-/// Serialisable description of a node's behaviour.  Concrete behaviours
-/// add variants here; each variant carries its own parameters.  The
-/// `kind` field is the discriminant (`#[serde(tag = "kind")]`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum BehaviourSpec {
-    /// Default no-op.  Indistinguishable from no behaviour at all.
-    #[default]
-    Honest,
-    /// Compose multiple behaviours.  Hooks dispatch in declaration
-    /// order; first non-`Continue` wins.
-    Composite { children: Vec<BehaviourSpec> },
-    /// Praos-layer attack: every slot this node wins the RB lottery,
-    /// produce `ways` distinct Ranking Blocks sharing
-    /// `(slot, issuer)` and route each to a deterministic peer-id
-    /// subset (CIP-0164 RB-header equivocation).  `ways >= 2`
-    /// (1 degenerates to honest); the default is 2.  See
-    /// [`super::behaviours::RbHeaderEquivocator`].
-    #[serde(rename = "rb-header-equivocator")]
-    RbHeaderEquivocator {
-        #[serde(default = "default_equivocator_ways")]
-        ways: u8,
-    },
-    /// Never casts a vote — always overrides the CIP-0164 voting
-    /// predicate to abstain with `reason`.  Defaults to `Declined` so
-    /// the abstention is visible in telemetry as policy abstention,
-    /// not an honest predicate failure.
-    #[serde(rename = "lazy-voter")]
-    LazyVoter {
-        #[serde(default = "default_lazy_reason")]
-        reason: NoVoteReason,
-    },
-    /// T22 threat prototype. Filters EB/TX processing using deterministic
-    /// checksum threshold policy.
-    #[serde(rename = "t22")]
-    T22 {
-        vote_threshold: u8,
-        non_voting_threshold: u8,
-        hide_eb_tx_received: bool,
-    },
-    /// Producer-side chain chaos: every `every_slots` slots, roll this
-    /// node's adopted chain back `depth` blocks and fork, so downstream
-    /// followers must recover from a deep rollback that orphans their
-    /// adopted tip.  See [`super::behaviours::DeepReorg`].
-    #[serde(rename = "deep-reorg")]
-    DeepReorg { every_slots: u64, depth: u64 },
-    /// Server-side chaos: each slot, with `probability`, reset all
-    /// accepted (inbound) peer connections so the remote reconnects and
-    /// re-intersects.  Mimics a relay that RSTs inbound peers — the
-    /// reconnect-handover trigger.  Compose with [`Self::DeepReorg`] so
-    /// the reconnect lands on a reorged chain.  See
-    /// [`super::behaviours::DropInboundPeers`].
-    #[serde(rename = "drop-inbound-peers")]
-    DropInboundPeers { probability: f64 },
-    /// Adversarial LeiosNotify: mutate the `eb_size` field on every
-    /// outbound `MsgLeiosBlockOffer` via the linear transform
-    /// `(eb_size * scale_num / scale_den) + offset`.  The original bug
-    /// shape (size-zero) is `scale_num = 0, scale_den = 1, offset = 0`.
-    /// Identity (no-op) is `scale_num = 1, scale_den = 1, offset = 0`.
-    /// See [`super::behaviours::LieAboutEbSize`].
-    #[serde(rename = "lie-about-eb-size")]
-    LieAboutEbSize {
-        #[serde(default = "default_lie_scale")]
-        scale_num: u32,
-        #[serde(default = "default_lie_scale")]
-        scale_den: u32,
-        #[serde(default)]
-        offset: i32,
-    },
-    /// Adversarial LeiosNotify: open the no-echo gate so EB / EB-tx
-    /// offers fetched from a peer are reflected back to that same peer.
-    /// Compose with [`Self::LieAboutEbSize`] to reproduce the original
-    /// duplex-follower bug for regression testing.  See
-    /// [`super::behaviours::EchoToSource`].
-    #[serde(rename = "echo-to-source")]
-    EchoToSource,
-}
 
 /// Serialisable description of a behaviour-tree **leaf action** — the
 /// action-kind discriminant plus its parameters. This is the action registry
@@ -109,39 +13,32 @@ pub enum BehaviourSpec {
 /// [`build_action`](super::tree::actions::build_action) materialises the
 /// matching [`LeafAction`](super::tree::actions::LeafAction).
 ///
-/// It is the `BehaviourSpec` minus `Honest`/`Composite` — those are expressed
-/// by the tree structure itself (`Action(honest)` / `Join`/`Sequence`), not by
-/// a leaf. It lives here, alongside [`BehaviourSpec`], during the migration; the
-/// hook-trait `BehaviourSpec` is removed in a later phase.
+/// Composition (honest fallback, AND/OR) is expressed by the tree structure
+/// itself (`Action(honest)` / `Join` / `Sequence`), so there is no `Honest` or
+/// `Composite` leaf variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ActionSpec {
-    /// See [`BehaviourSpec::RbHeaderEquivocator`].
     #[serde(rename = "rb-header-equivocator")]
     RbHeaderEquivocator {
         #[serde(default = "default_equivocator_ways")]
         ways: u8,
     },
-    /// See [`BehaviourSpec::LazyVoter`].
     #[serde(rename = "lazy-voter")]
     LazyVoter {
         #[serde(default = "default_lazy_reason")]
         reason: NoVoteReason,
     },
-    /// See [`BehaviourSpec::T22`].
     #[serde(rename = "t22")]
     T22 {
         vote_threshold: u8,
         non_voting_threshold: u8,
         hide_eb_tx_received: bool,
     },
-    /// See [`BehaviourSpec::DeepReorg`].
     #[serde(rename = "deep-reorg")]
     DeepReorg { every_slots: u64, depth: u64 },
-    /// See [`BehaviourSpec::DropInboundPeers`].
     #[serde(rename = "drop-inbound-peers")]
     DropInboundPeers { probability: f64 },
-    /// See [`BehaviourSpec::LieAboutEbSize`].
     #[serde(rename = "lie-about-eb-size")]
     LieAboutEbSize {
         #[serde(default = "default_lie_scale")]
@@ -151,7 +48,6 @@ pub enum ActionSpec {
         #[serde(default)]
         offset: i32,
     },
-    /// See [`BehaviourSpec::EchoToSource`].
     #[serde(rename = "echo-to-source")]
     EchoToSource,
 }
@@ -166,69 +62,6 @@ fn default_equivocator_ways() -> u8 {
 
 fn default_lie_scale() -> u32 {
     1
-}
-
-/// Materialise a [`BehaviourSpec`] into a shared
-/// [`BehaviourHandle`](super::BehaviourHandle) — a single trait object
-/// wrapped in `Arc<Mutex<Box<_>>>` and ready to install on multiple
-/// states.  Caller clones the handle for each holder; later
-/// `swap_handle` replaces the inner trait object atomically so every
-/// holder observes the new behaviour.
-pub fn build_handle(spec: &BehaviourSpec, seed: u64) -> super::BehaviourHandle {
-    std::sync::Arc::new(std::sync::Mutex::new(build(spec, seed)))
-}
-
-/// Replace the trait object inside an existing
-/// [`BehaviourHandle`](super::BehaviourHandle).  Used at runtime to
-/// swap the live behaviour without invalidating any of the Arc clones
-/// already distributed to the wrappers.
-pub fn swap_handle(handle: &super::BehaviourHandle, spec: &BehaviourSpec, seed: u64) {
-    *handle.lock().expect("behaviour mutex poisoned") = build(spec, seed);
-}
-
-/// Materialise a [`BehaviourSpec`] into a boxed trait object.
-///
-/// `seed` is the deterministic seed for behaviours that make random
-/// choices (peer partitioning, lottery skipping, …).  Pass a per-node
-/// value — e.g. a hash of the node identifier, or a config-supplied
-/// integer.  Behaviours that don't need randomness ignore it.
-pub fn build(spec: &BehaviourSpec, seed: u64) -> Box<dyn Behaviour> {
-    match spec {
-        BehaviourSpec::Honest => Box::new(HonestBehaviour),
-        BehaviourSpec::Composite { children } => {
-            let kids: Vec<Box<dyn Behaviour>> = children
-                .iter()
-                .enumerate()
-                .map(|(i, c)| build(c, child_seed(seed, i)))
-                .collect();
-            Box::new(CompositeBehaviour::new(kids))
-        }
-        BehaviourSpec::RbHeaderEquivocator { ways } => {
-            Box::new(RbHeaderEquivocator::new(*ways, seed))
-        }
-        BehaviourSpec::LazyVoter { reason } => Box::new(LazyVoter { reason: *reason }),
-        BehaviourSpec::T22 {
-            vote_threshold,
-            non_voting_threshold,
-            hide_eb_tx_received,
-        } => Box::new(T22ThreatBehaviour::new(
-            *vote_threshold,
-            *non_voting_threshold,
-            *hide_eb_tx_received,
-        )),
-        BehaviourSpec::DeepReorg { every_slots, depth } => {
-            Box::new(DeepReorg::new(*every_slots, *depth))
-        }
-        BehaviourSpec::DropInboundPeers { probability } => {
-            Box::new(DropInboundPeers::new(seed, *probability))
-        }
-        BehaviourSpec::LieAboutEbSize {
-            scale_num,
-            scale_den,
-            offset,
-        } => Box::new(LieAboutEbSize::new(*scale_num, *scale_den, *offset)),
-        BehaviourSpec::EchoToSource => Box::new(EchoToSource),
-    }
 }
 
 /// Mix `seed` with `child_index` to give each composite child a
@@ -260,59 +93,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn honest_round_trips() {
-        let spec = BehaviourSpec::Honest;
+    fn action_spec_round_trips() {
+        let spec = ActionSpec::RbHeaderEquivocator { ways: 2 };
         let json = serde_json::to_string(&spec).unwrap();
-        let back: BehaviourSpec = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, BehaviourSpec::Honest));
-    }
-
-    #[test]
-    fn composite_round_trips() {
-        let spec = BehaviourSpec::Composite {
-            children: vec![
-                BehaviourSpec::Honest,
-                BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                BehaviourSpec::T22 {
-                    vote_threshold: 42,
-                    non_voting_threshold: 99,
-                    hide_eb_tx_received: false,
-                },
-            ],
-        };
-        let json = serde_json::to_string(&spec).unwrap();
-        let back: BehaviourSpec = serde_json::from_str(&json).unwrap();
-        match back {
-            BehaviourSpec::Composite { children } => {
-                assert_eq!(children.len(), 3);
-                assert!(matches!(children[0], BehaviourSpec::Honest));
-                assert!(matches!(
-                    children[1],
-                    BehaviourSpec::RbHeaderEquivocator { ways: 2 }
-                ));
-                assert!(matches!(
-                    children[2],
-                    BehaviourSpec::T22 {
-                        vote_threshold: 42,
-                        non_voting_threshold: 99,
-                        hide_eb_tx_received: false
-                    }
-                ));
-            }
-            _ => panic!("expected Composite"),
-        }
-    }
-
-    #[test]
-    fn build_honest_has_name_honest() {
-        let b = build(&BehaviourSpec::Honest, 0);
-        assert_eq!(b.name(), "honest");
-    }
-
-    #[test]
-    fn build_composite_has_name_composite() {
-        let b = build(&BehaviourSpec::Composite { children: vec![] }, 0);
-        assert_eq!(b.name(), "composite");
+        let back: ActionSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ActionSpec::RbHeaderEquivocator { ways: 2 });
     }
 
     #[test]

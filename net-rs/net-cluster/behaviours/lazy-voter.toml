@@ -1,0 +1,11 @@
+# lazy-voter: abstain from every CIP-0164 vote (sets leios.vote =
+# Abstain(declined)). Assigned to the selected nodes via the cluster config's
+# behaviour_selection.
+[run]
+name = "lazy-voter"
+seed = 0
+root = "lazy"
+
+[behaviours.lazy]
+type = "Action"
+spec = { kind = "lazy-voter", reason = "declined" }

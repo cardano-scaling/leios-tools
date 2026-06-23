@@ -1762,7 +1762,7 @@ impl NodeBehaviours {
 #[cfg(test)]
 mod consensus_behaviour_tests {
     use super::*;
-    use shared_consensus::behaviour::{BehaviourSelection, BehaviourSpec};
+    use shared_consensus::behaviour::BehaviourSelection;
 
     fn node(id: usize, name: &str, stake: u64) -> NodeConfiguration {
         NodeConfiguration {

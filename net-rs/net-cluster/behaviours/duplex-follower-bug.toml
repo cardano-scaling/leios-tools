@@ -1,0 +1,21 @@
+# duplex-follower bug: a size-zero EB offer reflected back to its source.
+# Composes the two merged Leios actions under a Join (both always-Running, so
+# both contribute every tick): echo-to-source opens the no-echo gate and
+# lie-about-eb-size(0,1,0) rewrites the advertised eb_size to 0. They write
+# distinct LeiosControl fields, so order doesn't matter.
+[run]
+name = "duplex-follower-bug"
+seed = 0
+root = "root"
+
+[behaviours.root]
+type = "Join"
+children = ["echo", "lie"]
+
+[behaviours.echo]
+type = "Action"
+spec = { kind = "echo-to-source" }
+
+[behaviours.lie]
+type = "Action"
+spec = { kind = "lie-about-eb-size", scale_num = 0, scale_den = 1, offset = 0 }

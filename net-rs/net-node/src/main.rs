@@ -86,23 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
     };
 
-    // Materialise the per-node behaviour handle once and share clones
-    // with the coordinator (for the per-peer outbound transform path)
-    // and the consensus state machines (for reactive + decision hooks).
-    let behaviour_seed = config
-        .seed
-        .unwrap_or_else(|| shared_consensus::behaviour::seed_from_node_id(&config.node_id));
-    let behaviour_spec = config
-        .behaviour
-        .clone()
-        .unwrap_or(shared_consensus::behaviour::BehaviourSpec::Honest);
-    info!(
-        ?behaviour_spec,
-        behaviour_seed, "materialising per-node behaviour"
-    );
-    let behaviour_handle =
-        shared_consensus::behaviour::build_handle(&behaviour_spec, behaviour_seed);
-
     // Behaviour-tree runtime: ticked once per slot to produce the control
     // signal the consensus actuators read. An invalid config refuses startup
     // (US1 scenario 5). `None` runs an implicit honest tree.
@@ -123,11 +106,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => bt_runtime::BtRuntime::honest(),
     };
 
+    // The per-peer send actuators read the published control-signal snapshot
+    // and the shared equivocation-variant store from the BT runtime.
+    let outbound_controls = net_core::peer::server_handlers::OutboundControls {
+        control: bt_runtime.subscribe(),
+        variants: bt_runtime.variants(),
+    };
     let mut handle = network::start(
         &config,
         Some(tx_body_resolver),
         Some(peer_rtt_observer),
-        Some(behaviour_handle.clone()),
+        Some(outbound_controls),
     )
     .await?;
     let commands = handle.commands.clone();
@@ -184,8 +173,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         dyn_rx.clone(),
         rtt_cache,
         config.fetch_policy,
-        behaviour_handle.clone(),
-        behaviour_spec.clone(),
     );
 
     // Transaction validator (validates received txs before mempool entry).
@@ -400,22 +387,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             .await;
                     }
 
-                    // For Equivocate{ways}: build the variants and
-                    // hand them to the behaviour BEFORE
-                    // `register_self_produced` fires the ChainStore
-                    // subscription.  Otherwise serve_chainsync wakes
-                    // and reads the primary while the behaviour's
-                    // variant map is still empty, so transform_outbound
-                    // returns Send and the substitution is missed.
+                    // For Equivocate{ways}: build the variants and record them
+                    // in the shared variant store BEFORE `register_self_produced`
+                    // fires the ChainStore subscription. Otherwise serve_chainsync
+                    // wakes and reads the primary while the store is still empty,
+                    // so the per-peer RB-header actuator finds no variant and
+                    // sends the primary unchanged.
                     if let RbProductionStrategy::Equivocate { ways } = strategy {
-                        use shared_consensus::behaviour::RbVariantInput;
-                        let mut variant_records: Vec<RbVariantInput> =
+                        use shared_consensus::behaviour::tree::RbVariant;
+                        let mut variant_records: Vec<RbVariant> =
                             Vec::with_capacity(ways as usize);
                         let primary_hash = match &produced.point {
                             net_core::types::Point::Specific { hash, .. } => *hash,
                             net_core::types::Point::Origin => [0u8; 32],
                         };
-                        variant_records.push(RbVariantInput {
+                        variant_records.push(RbVariant {
                             hash: primary_hash,
                             header: produced.header.raw.clone(),
                             body: produced.body.raw.clone(),
@@ -442,18 +428,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 slot,
                                 size_bytes: extra.body.raw.len(),
                             }).await;
-                            variant_records.push(RbVariantInput {
+                            variant_records.push(RbVariant {
                                 hash: extra_hash,
                                 header: extra.header.raw.clone(),
                                 body: extra.body.raw.clone(),
                             });
                         }
-                        {
-                            let mut guard = behaviour_handle
-                                .lock()
-                                .expect("behaviour mutex poisoned");
-                            guard.record_rb_variants(slot, &variant_records);
-                        }
+                        // Record in the shared variant store BEFORE
+                        // register_self_produced fires the ChainStore
+                        // subscription, so the per-peer send actuator finds
+                        // each peer's bucket variant.
+                        bt_runtime
+                            .variants()
+                            .lock()
+                            .expect("variants mutex poisoned")
+                            .record(slot, variant_records);
                     }
 
                     consensus
@@ -613,14 +602,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                                 let mut current = dyn_tx.borrow().clone();
                                 current.apply_update(&update);
                                 let _ = dyn_tx.send(current);
-                                // Behaviour swap is separate from the
-                                // watch-channel ambient config: it
-                                // mutates the live state machines.
-                                if let Some(spec) = &update.behaviour {
-                                    consensus.set_behaviour(spec, &mempool);
-                                } else if matches!(update.behaviour_reset, Some(true)) {
-                                    consensus.reset_behaviour(&mempool);
-                                }
+                                // Behaviour is now BT-driven from a static
+                                // config at spawn; runtime behaviour swap over
+                                // stdin is removed (a runtime BT-config control
+                                // surface is the deferred REST/US2 work).
                                 info!(node_id = %node_id, "dynamic config updated");
                             }
                             Err(e) => {

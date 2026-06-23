@@ -219,15 +219,6 @@ impl LeiosConsensus {
         self.state.set_eb_txs_policy(policy);
     }
 
-    /// Install a shared behaviour handle on the underlying state.  The
-    /// `Consensus` facade hands the same handle to every owned state
-    /// machine and the coordinator.
-    pub fn install_behaviour_handle(
-        &mut self,
-        handle: shared_consensus::behaviour::BehaviourHandle,
-    ) {
-        self.state.behaviour = handle;
-    }
 
     /// Mutable borrow of [`LeiosState`] for the few wrapper paths that
     /// need to drive the take/restore behaviour helpers (e.g.

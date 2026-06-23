@@ -1,0 +1,11 @@
+# rb-header-equivocator: produce `ways` RB variants per won slot and route a
+# distinct one to each peer bucket (CIP-0164 RB-header equivocation). Sets
+# praos.production = Equivocate{ways} + praos.outbound = EquivocateRouting.
+[run]
+name = "rb-equivocator"
+seed = 1234567
+root = "equivocate"
+
+[behaviours.equivocate]
+type = "Action"
+spec = { kind = "rb-header-equivocator", ways = 2 }

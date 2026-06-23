@@ -91,6 +91,12 @@ fn render_overlay(
     writeln!(s, "seed = {}", node.seed).ok();
     // On localhost all nodes share one IP; allow enough inbound connections.
     writeln!(s, "max_connections_per_ip = {num_nodes}").ok();
+    // Per-node behaviour-tree config (the `behaviour_tree` config key net-node
+    // reads): a path to a resolved BT TOML loaded at spawn. Written here among
+    // the top-level scalars so it isn't captured by a later `[section]` table.
+    if let Some(path) = &node.behaviour_tree {
+        writeln!(s, "behaviour_tree = \"{path}\"").ok();
+    }
     writeln!(s).ok();
     writeln!(s, "[production]").ok();
     writeln!(s, "stake = {}", node.stake).ok();
@@ -115,18 +121,6 @@ fn render_overlay(
     writeln!(s, "[[telemetry.stats_sinks]]").ok();
     writeln!(s, "type = \"http\"").ok();
     writeln!(s, "url = \"http://127.0.0.1:{aggregator_port}/stats\"").ok();
-
-    // Per-node behaviour spec.  Serialise via the toml crate to keep
-    // the TOML representation in sync with serde's view of
-    // `BehaviourSpec`; the spec is a tagged enum (`kind = "..."`) with
-    // optional per-variant fields, so handwritten TOML would silently
-    // miss new variants.
-    if let Some(spec) = &node.behaviour {
-        writeln!(s).ok();
-        let inner = toml::to_string(spec).unwrap_or_default();
-        writeln!(s, "[behaviour]").ok();
-        s.push_str(&inner);
-    }
 
     for peer in &node.peers {
         writeln!(s).ok();
@@ -189,7 +183,7 @@ mod tests {
             listen_port: 30000,
             stake: 500,
             seed: 42,
-            behaviour: None,
+            behaviour_tree: None,
             peers: vec![
                 PeerLink {
                     address: "127.0.0.1:30001".to_string(),
@@ -270,19 +264,37 @@ mod tests {
 
     #[test]
     fn test_render_overlay_with_behaviour() {
-        // A node with a behaviour spec should emit a `[behaviour]` table
-        // that round-trips through the toml parser.
+        // A node with a behaviour-tree config should emit a `behaviour_tree`
+        // key that round-trips through the toml parser.
         let mut node = sample_node();
-        node.behaviour =
-            Some(shared_consensus::behaviour::BehaviourSpec::RbHeaderEquivocator { ways: 2 });
+        node.behaviour_tree = Some("behaviours/rb-equivocator.toml".to_string());
         let toml_str = render_overlay(&node, 9100, 5, 1, 500, &[]);
         let parsed: toml::Value = toml::from_str(&toml_str).expect("generated TOML should parse");
         assert_eq!(
-            parsed["behaviour"]["kind"].as_str(),
-            Some("rb-header-equivocator"),
-            "behaviour table missing or malformed: {toml_str}"
+            parsed["behaviour_tree"].as_str(),
+            Some("behaviours/rb-equivocator.toml"),
+            "behaviour_tree key missing or malformed: {toml_str}"
         );
-        assert_eq!(parsed["behaviour"]["ways"].as_integer(), Some(2));
+    }
+
+    #[test]
+    fn bundled_behaviour_tree_configs_compile() {
+        // The sample BT configs shipped under net-cluster/behaviours/ must be
+        // self-contained and compile via the engine (catches schema drift).
+        use shared_consensus::behaviour::tree::BtConfig;
+        for (name, text) in [
+            ("honest", include_str!("../behaviours/honest.toml")),
+            ("lazy-voter", include_str!("../behaviours/lazy-voter.toml")),
+            ("rb-equivocator", include_str!("../behaviours/rb-equivocator.toml")),
+            ("t22", include_str!("../behaviours/t22.toml")),
+            (
+                "duplex-follower-bug",
+                include_str!("../behaviours/duplex-follower-bug.toml"),
+            ),
+        ] {
+            BtConfig::compile_str(text)
+                .unwrap_or_else(|e| panic!("behaviours/{name}.toml failed to compile: {e}"));
+        }
     }
 
     #[test]

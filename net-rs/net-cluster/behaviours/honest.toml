@@ -1,0 +1,9 @@
+# Honest behaviour-tree config: a single honest leaf, no perturbation.
+# (Equivalent to running with no --behaviour-tree at all.)
+[run]
+name = "honest"
+seed = 0
+root = "honest"
+
+[behaviours.honest]
+type = "HonestAction"

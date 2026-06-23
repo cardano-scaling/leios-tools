@@ -20,7 +20,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Not;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -28,7 +27,6 @@ use tracing::info;
 
 use crate::aggregation::QuorumFormed;
 use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy, VotePolicy};
-use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
 use crate::committee;
 use crate::config::CommitteeSelection;
 use crate::elections::{Elections, SlotEffect};
@@ -375,15 +373,6 @@ pub struct LeiosState {
     /// Live per-peer RTT lookup, consulted by every fetch policy.
     pub rtt: Box<dyn PeerRtt + Send + Sync>,
 
-    /// Pluggable behaviour — defaults to [`HonestBehaviour`].  Held
-    /// behind `Arc<Mutex<Box<dyn _>>>` so the I/O wrapper can hold a
-    /// shared handle for out-of-band hook calls (e.g. per-peer outbound
-    /// transforms) while this state machine still locks to invoke its
-    /// own hooks.  The inner `Box` is the swap point: replacing it under
-    /// the lock changes the live behaviour for every Arc holder at once
-    /// (used by runtime config updates).
-    pub behaviour: Arc<Mutex<Box<dyn Behaviour>>>,
-
     /// The control signal applied by the BT tick each slot (`apply_control`).
     /// The whole signal is stored (not just the Leios slice) so this state's
     /// actuators can read cross-domain fields — e.g. the t22 EB-processing
@@ -437,83 +426,15 @@ impl LeiosState {
             eb_policy,
             eb_txs_policy,
             rtt,
-            behaviour: Arc::new(Mutex::new(Box::new(HonestBehaviour))),
             control: ControlSignal::default(),
         }
     }
 
-    /// Replace the behaviour.  Use to install a non-honest variant at
-    /// startup or in response to a runtime config update.  Swaps the
-    /// trait object under the mutex; any other `Arc` clones of the
-    /// handle observe the new behaviour from their next hook call.
-    pub fn set_behaviour(&mut self, behaviour: Box<dyn Behaviour>) {
-        *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
-    }
-
-    /// Apply the per-slot [`ControlSignal`] produced by the BT tick, storing the
-    /// Leios-domain slice for the actuators in this state to read. Replaces the
-    /// hook-driven decision path; called once per slot by the I/O wrapper.
+    /// Apply the per-slot [`ControlSignal`] produced by the BT tick, storing it
+    /// for the actuators in this state to read (the vote policy and the t22
+    /// EB-processing filter). Called once per slot by the I/O wrapper.
     pub fn apply_control(&mut self, control: &ControlSignal) {
         self.control = control.clone();
-    }
-
-    /// Ask the installed behaviour what to do for this slot's
-    /// self-produced RB.  Honest nodes always get
-    /// [`crate::behaviour::RbProductionStrategy::Normal`]; adversarial
-    /// behaviours can return `Suppress` (drop the win silently) or
-    /// `Equivocate` (the wrapper should also emit a duplicate RB
-    /// carrying the same issuer + slot but a different body).
-    pub fn ask_rb_production_strategy(
-        &mut self,
-        praos: &crate::praos::PraosState,
-        slot: u64,
-    ) -> crate::behaviour::RbProductionStrategy {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.rb_production_strategy(self, praos, slot)
-    }
-
-    /// Consult the behaviour for a deliberate self-reorg this slot.
-    /// Returns the rollback depth the behaviour wants (see
-    /// [`crate::behaviour::behaviours::DeepReorg`]), or `None` for the
-    /// honest default.
-    pub fn ask_praos_reorg(&mut self, slot: u64) -> Option<u64> {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.praos_reorg(slot)
-    }
-
-    /// Consult the behaviour for whether to reset inbound peer
-    /// connections this slot (see
-    /// [`crate::behaviour::behaviours::DropInboundPeers`]).  `false` for
-    /// the honest default.
-    pub fn ask_drop_inbound_peers(&mut self, slot: u64) -> bool {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.drop_inbound_peers(slot)
-    }
-
-    /// Short name of the current behaviour, e.g. `"honest"`,
-    /// `"rb-header-equivocator"`.  Useful for telemetry and structured logs.
-    pub fn behaviour_name(&self) -> &'static str {
-        self.behaviour
-            .lock()
-            .expect("behaviour mutex poisoned")
-            .name()
-    }
-
-    /// Lock the behaviour, call the hook with `(&mut dyn Behaviour,
-    /// &LeiosState)`, and return the resulting outcome.  Cloning the
-    /// `Arc` to a local before locking breaks the borrow chain — the
-    /// guard borrows the local clone, not `self`, so the hook can
-    /// receive an immutable view of `self` alongside.
-    fn invoke_hook<F>(&mut self, hook: F) -> BehaviourOutcome<LeiosEffect>
-    where
-        F: FnOnce(&mut dyn Behaviour, &LeiosState) -> BehaviourOutcome<LeiosEffect>,
-    {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        hook(&mut **guard, self)
     }
 
     /// Update the chain-tip metadata used by the voting predicates.
@@ -583,15 +504,6 @@ impl LeiosState {
     /// TX-by-references mode.  Wrappers without a mempool surface yet
     /// can pass `&|_| true`; in that case the predicate is a no-op.
     pub fn on_slot(&mut self, slot: u64, tx_known: &dyn Fn(&TxId) -> bool) -> Vec<LeiosEffect> {
-        // Behaviour reactive hook.  Replace short-circuits the honest
-        // path; Append accumulates extras to splice in after the
-        // honest fx.
-        let appended: Vec<LeiosEffect> = match self.invoke_hook(|b, s| b.on_slot_leios(s, slot)) {
-            BehaviourOutcome::Continue => Vec::new(),
-            BehaviourOutcome::Replace(effects) => return effects,
-            BehaviourOutcome::Append(extra) => extra,
-        };
-
         let mut fx: Vec<LeiosEffect> = Vec::new();
         for eff in self.elections.on_slot(slot) {
             match eff {
@@ -724,7 +636,6 @@ impl LeiosState {
             self.elections.prune_below_slot(min_keep);
             self.candidates.prune_below_slot(min_keep);
         }
-        fx.extend(appended);
         fx
     }
 
@@ -1017,12 +928,6 @@ impl LeiosState {
     /// (e.g. a foreign voter from an external relay) carry no resolvable
     /// weight and are skipped; gossip re-serving is the I/O layer's job.
     pub fn on_votes_received(&mut self, votes: Vec<Vote>) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_votes_received(s, &votes)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         // Resolve each compact voter index to its node id (owned, so the
         // borrowed `ValidatedVote` views below can lend the bytes).
         let resolved: Vec<(String, Vote)> = votes
@@ -1046,9 +951,7 @@ impl LeiosState {
                 endorser_block_slot: v.slot,
             })
             .collect();
-        let mut fx = self.on_validated_votes(bodies);
-        fx.extend(appended);
-        fx
+        self.on_validated_votes(bodies)
     }
 
     /// EB transactions arrived; clear the per-slot in-flight gate so
@@ -2299,108 +2202,7 @@ mod tests {
         assert!(bitmap.is_empty());
     }
 
-    // -- Behaviour-hook integration ----------------------------------------
-
-    /// Stub behaviour that returns a configurable outcome on
-    /// `on_slot_leios` and counts its invocations.  Allows the test to
-    /// observe both the call count and the surrounding state at hook
-    /// time without leaking into the host state.
-    #[derive(Default)]
-    struct StubBehaviour {
-        slot_calls: u32,
-        slot_reply: Option<BehaviourOutcome<LeiosEffect>>,
-        vote_override: Option<NoVoteReason>,
-    }
-
-    impl crate::behaviour::Behaviour for StubBehaviour {
-        fn name(&self) -> &'static str {
-            "stub"
-        }
-        fn on_slot_leios(
-            &mut self,
-            _state: &LeiosState,
-            _slot: u64,
-        ) -> BehaviourOutcome<LeiosEffect> {
-            self.slot_calls += 1;
-            self.slot_reply
-                .clone()
-                .unwrap_or(BehaviourOutcome::Continue)
-        }
-        fn decide_vote(
-            &mut self,
-            _state: &LeiosState,
-            eb_hash: &[u8; 32],
-            eb_slot: u64,
-            _honest: &VoteDecision,
-        ) -> crate::behaviour::DecisionOutcome<VoteDecision> {
-            if let Some(r) = self.vote_override {
-                let _ = (eb_hash, eb_slot);
-                crate::behaviour::DecisionOutcome::Override(Err(r))
-            } else {
-                crate::behaviour::DecisionOutcome::Continue
-            }
-        }
-    }
-
-    #[test]
-    fn behaviour_continue_leaves_honest_flow_unchanged() {
-        // Golden: HonestBehaviour vs. no-op stub produces identical effects.
-        let mut honest = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        honest.elections.announce(10, h(1));
-        tip_for(&mut honest, 10, h(1));
-        let baseline = honest.on_slot(13, &tx_all);
-
-        let mut stubbed = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        stubbed.set_behaviour(Box::new(StubBehaviour::default()));
-        stubbed.elections.announce(10, h(1));
-        tip_for(&mut stubbed, 10, h(1));
-        let with_stub = stubbed.on_slot(13, &tx_all);
-
-        // Effects compare by Debug formatting — the inner variants don't
-        // all implement PartialEq.
-        assert_eq!(format!("{baseline:?}"), format!("{with_stub:?}"));
-    }
-
-    #[test]
-    fn behaviour_replace_short_circuits_honest_effects() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            slot_reply: Some(BehaviourOutcome::Replace(vec![])),
-            ..Default::default()
-        }));
-        state.elections.announce(10, h(1));
-        tip_for(&mut state, 10, h(1));
-        let fx = state.on_slot(13, &tx_all);
-        // EmitVote would normally fire — Replace([]) suppresses it.
-        assert!(fx.is_empty());
-        // The election was not marked voted because honest flow never ran.
-        assert!(!state.elections.voted(&h(1)));
-    }
-
-    #[test]
-    fn behaviour_append_adds_to_honest_effects() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            slot_reply: Some(BehaviourOutcome::Append(vec![LeiosEffect::EmitTelemetry(
-                LeiosTelemetryEvent::QuorumReached {
-                    eb_slot: 99,
-                    voted_weight: 1,
-                    voters: 1,
-                },
-            )])),
-            ..Default::default()
-        }));
-        state.elections.announce(10, h(1));
-        tip_for(&mut state, 10, h(1));
-        let fx = state.on_slot(13, &tx_all);
-        // Honest EmitVote plus the appended telemetry.
-        assert_eq!(fx.len(), 2);
-        assert!(matches!(fx[0], LeiosEffect::EmitVote { .. }));
-        assert!(matches!(
-            fx[1],
-            LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::QuorumReached { .. })
-        ));
-    }
+    // -- BT control-signal actuation ---------------------------------------
 
     #[test]
     fn control_vote_abstain_forces_no_vote() {
@@ -2422,13 +2224,5 @@ mod tests {
             }
             other => panic!("expected NoVote, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn behaviour_set_and_name_query() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        assert_eq!(state.behaviour_name(), "honest");
-        state.set_behaviour(Box::new(StubBehaviour::default()));
-        assert_eq!(state.behaviour_name(), "stub");
     }
 }

@@ -1,0 +1,12 @@
+# t22: filter EB/tx processing via a deterministic checksum threshold (sets
+# mempool.tx_filter = ChecksumThreshold). `vote`/`non_voting` are the
+# average-percentage thresholds for committee / non-committee nodes; with
+# `hide_eb_tx` the filter also covers eb-received processing.
+[run]
+name = "t22"
+seed = 0
+root = "t22"
+
+[behaviours.t22]
+type = "Action"
+spec = { kind = "t22", vote_threshold = 80, non_voting_threshold = 60, hide_eb_tx_received = false }

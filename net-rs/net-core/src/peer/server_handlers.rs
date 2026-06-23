@@ -8,9 +8,24 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use shared_consensus::behaviour::{BehaviourHandle, Outbound, OutboundDecision, OwnedOutbound};
+use shared_consensus::behaviour::actions::equivocation_bucket;
+use shared_consensus::behaviour::tree::control::OutboundControl;
+use shared_consensus::behaviour::tree::{ControlSignal, EquivocationVariants};
 
 use crate::types::{BlockBody, Point, Tip, WrappedHeader};
+
+/// Per-peer outbound actuator inputs read by the server handlers — the
+/// behaviour-tree replacement for the old `BehaviourHandle`.
+///
+/// `control` is the latest per-slot [`ControlSignal`] published by the node's
+/// BT runtime (read via `borrow()`); `variants` is the shared store of
+/// RB-header equivocation variants the producer recorded. Both are cheap to
+/// clone (a `watch::Receiver` + an `Arc`).
+#[derive(Clone)]
+pub struct OutboundControls {
+    pub control: tokio::sync::watch::Receiver<ControlSignal>,
+    pub variants: std::sync::Arc<std::sync::Mutex<EquivocationVariants>>,
+}
 
 use crate::mux::{CodecRecv, CodecSend};
 use crate::protocols::blockfetch::{BlockFetch, Message as BfMsg};
@@ -32,18 +47,17 @@ use crate::store::leios_store::LeiosStore;
 /// Responds to intersection queries and streams headers as the chain
 /// advances. Uses `ChainStore::subscribe()` to wake when new blocks arrive.
 ///
-/// When `behaviour` is `Some`, every `MsgRollForward` is filtered
-/// through
-/// [`Behaviour::transform_outbound`](shared_consensus::behaviour::Behaviour::transform_outbound)
-/// before going on the wire — the behaviour can substitute a different
-/// header for this `peer` (peer-split equivocation), suppress the send
-/// (partition / eclipse mute), or augment with extras.
+/// When `controls` is `Some`, every `MsgRollForward` is filtered through the
+/// BT control signal's `praos.outbound` before going on the wire — it can
+/// substitute a different header for this `peer` (peer-split equivocation via
+/// `EquivocateRouting` + the shared variant store) or suppress the send
+/// (`DropTo` partition / eclipse mute).
 pub async fn serve_chainsync(
     cs_send: CodecSend,
     cs_recv: CodecRecv,
     store: Arc<ChainStore>,
     peer: PeerId,
-    behaviour: Option<BehaviourHandle>,
+    controls: Option<OutboundControls>,
 ) {
     let mut runner = Runner::<ChainSync>::new(Role::Server, cs_send, cs_recv);
     let mut read_index: Option<usize> = None;
@@ -115,7 +129,7 @@ pub async fn serve_chainsync(
                             &block.point,
                             tip,
                             peer,
-                            behaviour.as_ref(),
+                            controls.as_ref(),
                         )
                         .await;
                     } else {
@@ -155,7 +169,7 @@ pub async fn serve_chainsync(
                                     &block.point,
                                     tip,
                                     peer,
-                                    behaviour.as_ref(),
+                                    controls.as_ref(),
                                 )
                                 .await;
                                 break;
@@ -170,25 +184,24 @@ pub async fn serve_chainsync(
     }
 }
 
-/// Apply the behaviour's per-peer outbound transform to one
-/// `MsgRollForward` and dispatch the resulting send(s).  Wraps the four
-/// [`OutboundDecision`] variants:
+/// Apply the BT control signal's per-peer outbound policy to one
+/// `MsgRollForward` and dispatch the resulting send.
 ///
-/// - `Send`: send the original header + tip.
-/// - `Drop`: emit nothing for this peer.
-/// - `Replace`: rebuild a `WrappedHeader` from the substituted bytes
-///   and re-derive the tip from its point; block number is borrowed
-///   from the original tip (variants live at the same chain position).
-/// - `Augment`: send the original then each extra in order.
+/// - `EquivocateRouting` at this block's slot: route the variant for this
+///   peer's deterministic bucket (rebuild a `WrappedHeader`, re-derive the
+///   tip); if the bucket maps to the primary or nothing is recorded, send the
+///   honest header.
+/// - `DropTo` including this peer: emit nothing (partition / mute).
+/// - otherwise: send the honest header + tip.
 async fn send_roll_forward(
     runner: &mut Runner<ChainSync>,
     header: WrappedHeader,
     block_point: &Point,
     tip: Tip,
     peer: PeerId,
-    behaviour: Option<&BehaviourHandle>,
+    controls: Option<&OutboundControls>,
 ) {
-    let Some(handle) = behaviour else {
+    let Some(controls) = controls else {
         let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
         return;
     };
@@ -197,100 +210,58 @@ async fn send_roll_forward(
         Point::Specific { slot, .. } => *slot,
         Point::Origin => 0,
     };
-    let decision = {
-        let mut guard = handle.lock().expect("behaviour mutex poisoned");
-        guard.transform_outbound(
-            peer,
-            Outbound::RbHeader {
-                slot,
-                header: &header.raw,
-            },
-        )
-    };
+    let outbound = controls.control.borrow().praos.outbound.clone();
+    let shared_peer = shared_consensus::peer::PeerId(peer.0);
 
-    match decision {
-        OutboundDecision::Send => {
-            let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
+    match outbound {
+        OutboundControl::EquivocateRouting {
+            slot: eslot,
+            ways,
+            seed,
+        } if eslot == slot => {
+            let bucket = equivocation_bucket(seed, ways, shared_peer);
+            let variant = {
+                let guard = controls.variants.lock().expect("variants mutex poisoned");
+                guard.variant_for(eslot, bucket).cloned()
+            };
+            match variant {
+                // Route a distinct variant to this peer's bucket.
+                Some(v) if v.header != header.raw => {
+                    let new_header = WrappedHeader::new(v.header);
+                    let new_tip = match new_header.point() {
+                        Some(p) => Tip {
+                            point: p,
+                            block_no: tip.block_no,
+                        },
+                        None => tip,
+                    };
+                    tracing::info!(
+                        peer = peer.0,
+                        slot,
+                        "behaviour: routed equivocation variant to peer"
+                    );
+                    let _ = runner
+                        .send(&CsMsg::MsgRollForward {
+                            header: new_header,
+                            tip: new_tip,
+                        })
+                        .await;
+                }
+                // Bucket maps to the primary, or nothing recorded: honest send.
+                _ => {
+                    let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
+                }
+            }
         }
-        OutboundDecision::Drop => {
+        OutboundControl::DropTo(ref peers) if peers.contains(&shared_peer) => {
             tracing::debug!(
                 peer = peer.0,
                 slot,
-                "behaviour dropped chainsync roll-forward"
+                "behaviour: dropped chainsync roll-forward (partition)"
             );
         }
-        OutboundDecision::Replace(OwnedOutbound::RbHeader {
-            slot: _,
-            header: new_bytes,
-        }) => {
-            let new_header = WrappedHeader::new(new_bytes);
-            let new_tip = match new_header.point() {
-                Some(p) => Tip {
-                    point: p,
-                    block_no: tip.block_no,
-                },
-                None => tip,
-            };
-            tracing::info!(
-                peer = peer.0,
-                slot,
-                "behaviour replaced chainsync roll-forward header for peer"
-            );
-            let _ = runner
-                .send(&CsMsg::MsgRollForward {
-                    header: new_header,
-                    tip: new_tip,
-                })
-                .await;
-        }
-        OutboundDecision::Replace(other) => {
-            // A behaviour returned a non-RB-header Replace from a
-            // ChainSync send (LeiosBlockOffer / LeiosBlockTxsOffer).
-            // Those belong on the LeiosNotify path; fall back to
-            // sending the honest RB header unchanged.
-            tracing::warn!(
-                peer = peer.0,
-                slot,
-                replaced = ?std::mem::discriminant(&other),
-                "behaviour returned non-RB-header Replace from ChainSync — \
-                 ignoring and sending honest header"
-            );
+        _ => {
             let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
-        }
-        OutboundDecision::Augment(extras) => {
-            let _ = runner
-                .send(&CsMsg::MsgRollForward {
-                    header: header.clone(),
-                    tip: tip.clone(),
-                })
-                .await;
-            for extra in extras {
-                let OwnedOutbound::RbHeader {
-                    slot: _,
-                    header: extra_bytes,
-                } = extra
-                else {
-                    tracing::warn!(
-                        peer = peer.0,
-                        "behaviour Augmented ChainSync with non-RB-header — ignoring"
-                    );
-                    continue;
-                };
-                let extra_header = WrappedHeader::new(extra_bytes);
-                let extra_tip = match extra_header.point() {
-                    Some(p) => Tip {
-                        point: p,
-                        block_no: tip.block_no,
-                    },
-                    None => tip.clone(),
-                };
-                let _ = runner
-                    .send(&CsMsg::MsgRollForward {
-                        header: extra_header,
-                        tip: extra_tip,
-                    })
-                    .await;
-            }
         }
     }
 }
@@ -308,7 +279,7 @@ pub async fn serve_blockfetch(
     bf_recv: CodecRecv,
     store: Arc<ChainStore>,
     peer: PeerId,
-    behaviour: Option<BehaviourHandle>,
+    controls: Option<OutboundControls>,
 ) {
     let mut runner = Runner::<BlockFetch>::new(Role::Server, bf_send, bf_recv);
     let mut first_recv = true;
@@ -349,7 +320,7 @@ pub async fn serve_blockfetch(
                             .await;
                     }
                     let _ = runner.send(&BfMsg::MsgBatchDone).await;
-                } else if let Some(body) = lookup_variant_body(behaviour.as_ref(), &from, &to) {
+                } else if let Some(body) = lookup_variant_body(controls.as_ref(), &from, &to) {
                     // Behaviour-side fallback: the requested header is
                     // a peer-split variant that never entered the local
                     // chain tree.
@@ -366,12 +337,12 @@ pub async fn serve_blockfetch(
     }
 }
 
-/// If the behaviour stashed a variant whose header hashes to `from`
-/// (and `from == to`, a single-block request), return its body wrapped
-/// in a `BlockBody`.  Used as a fallback when the local chain store
-/// has nothing for the requested range.
+/// If the variant store holds an equivocation variant whose header hashes to
+/// `from` (and `from == to`, a single-block request), return its body wrapped
+/// in a `BlockBody`.  Used as a fallback when the local chain store has nothing
+/// for the requested range (a peer-split variant never adopted locally).
 fn lookup_variant_body(
-    behaviour: Option<&BehaviourHandle>,
+    controls: Option<&OutboundControls>,
     from: &Point,
     to: &Point,
 ) -> Option<BlockBody> {
@@ -382,9 +353,9 @@ fn lookup_variant_body(
         Point::Specific { slot, hash } => (*slot, *hash),
         Point::Origin => return None,
     };
-    let handle = behaviour?;
-    let guard = handle.lock().expect("behaviour mutex poisoned");
-    let body_bytes = guard.find_variant_body(slot, &hash)?;
+    let controls = controls?;
+    let guard = controls.variants.lock().expect("variants mutex poisoned");
+    let body_bytes = guard.body_for(slot, &hash)?.to_vec();
     drop(guard);
     Some(BlockBody::new(body_bytes))
 }
@@ -764,13 +735,12 @@ fn notification_to_ln_msg(n: &crate::store::leios_store::LeiosNotification) -> L
 /// unchanged.  With a behaviour handle attached, two hooks fire per
 /// entry:
 ///
-/// - [`allow_echo_to_source`](shared_consensus::behaviour::Behaviour::allow_echo_to_source)
-///   gates the no-echo skip (`EchoToSource` opens it).
-/// - [`transform_outbound`](shared_consensus::behaviour::Behaviour::transform_outbound)
-///   can `Drop` the entry, `Replace` the wire fields (e.g. `LieAboutEbSize`
-///   mutates `eb_size`), or pass it through with `Send`.
+/// - `control.leios.echo_to_source` gates the no-echo skip (the
+///   `echo-to-source` action opens it).
+/// - `control.leios.offer_eb_size` rewrites the advertised `eb_size` (the
+///   `lie-about-eb-size` action) via `EbSizePolicy::apply`.
 ///
-/// `Augment` is not currently supported on this path — the function
+/// Per-entry `Augment` is not supported on this path — the function
 /// returns one `LnMsg` per `MsgLeiosNotificationRequestNext`; a
 /// behaviour returning `Augment` falls back to the original message
 /// with a warning.
@@ -779,7 +749,7 @@ pub async fn serve_leios_notify(
     ln_recv: CodecRecv,
     store: Arc<LeiosStore>,
     peer: PeerId,
-    behaviour: Option<&BehaviourHandle>,
+    controls: Option<&OutboundControls>,
 ) {
     let mut runner = Runner::<LeiosNotify>::new(Role::Server, ln_send, ln_recv);
     // `None` until the first MsgLeiosNotificationRequestNext arrives, at
@@ -840,7 +810,7 @@ pub async fn serve_leios_notify(
                     snapped
                 });
                 if let Some(response) =
-                    next_outbound_notification(&store, cursor, peer, &mut subscription, behaviour)
+                    next_outbound_notification(&store, cursor, peer, &mut subscription, controls)
                         .await
                 {
                     if runner.send(&response).await.is_err() {
@@ -879,48 +849,22 @@ async fn next_outbound_notification(
     read_index: &mut usize,
     peer: PeerId,
     subscription: &mut tokio::sync::watch::Receiver<u64>,
-    behaviour: Option<&BehaviourHandle>,
+    controls: Option<&OutboundControls>,
 ) -> Option<LnMsg> {
     use crate::store::leios_store::LeiosNotification;
     loop {
         let pending = store.notifications_after(read_index);
         for entry in &pending {
             *read_index += 1;
-            // Build the Outbound view (only for variants a behaviour
-            // can act on; Votes bypass the transform entirely for now).
-            // `source` presents the original received-from peer (first
-            // of the multi-source dedup set); current behaviours don't
-            // read it, but it keeps the honest Outbound semantics.
-            let source = entry.sources.first().copied();
-            let outbound = match &entry.notification {
-                LeiosNotification::BlockOffer { point, eb_size } => {
-                    Some(Outbound::LeiosBlockOffer {
-                        point,
-                        eb_size: *eb_size,
-                        source,
-                    })
-                }
-                LeiosNotification::BlockTxsOffer { point } => Some(Outbound::LeiosBlockTxsOffer {
-                    point,
-                    source,
-                }),
-                LeiosNotification::Votes { .. } => None,
-            };
 
             // No-echo gate.  Honest policy drops echoes (peer among the
-            // entry's sources); a behaviour can override via
-            // allow_echo_to_source (EchoToSource).
+            // entry's sources); `leios.echo_to_source` (the echo-to-source
+            // action) opens it.
             if entry.sources.contains(&peer) {
-                let allow = match (behaviour, outbound.as_ref()) {
-                    (Some(h), Some(ob)) => {
-                        let mut guard = h.lock().expect("behaviour mutex poisoned");
-                        guard.allow_echo_to_source(peer, ob)
-                    }
-                    // Votes have no Outbound variant yet — honest skip.
-                    // No behaviour attached — honest skip.
-                    _ => false,
-                };
-                if !allow {
+                let echo = controls
+                    .map(|c| c.control.borrow().leios.echo_to_source)
+                    .unwrap_or(false);
+                if !echo {
                     tracing::debug!(
                         peer = peer.0,
                         "leios_notify: skipping no-echo offer back to source"
@@ -932,37 +876,23 @@ async fn next_outbound_notification(
                     "leios_notify: behaviour opened echo-to-source gate"
                 );
             }
-            // Outbound transform.
-            let decision = match (behaviour, outbound) {
-                (Some(h), Some(ob)) => {
-                    let mut guard = h.lock().expect("behaviour mutex poisoned");
-                    guard.transform_outbound(peer, ob)
+
+            // Build the wire message, applying the `leios.offer_eb_size` rewrite
+            // policy (lie-about-eb-size) to block offers.
+            let msg = match &entry.notification {
+                LeiosNotification::BlockOffer { point, eb_size } => {
+                    let size = controls
+                        .map(|c| c.control.borrow().leios.offer_eb_size.apply(*eb_size))
+                        .unwrap_or(*eb_size);
+                    LnMsg::MsgLeiosBlockOffer {
+                        point: point.clone(),
+                        eb_size: size,
+                    }
                 }
-                _ => OutboundDecision::Send,
+                _ => notification_to_ln_msg(&entry.notification),
             };
 
-            let msg = match decision {
-                OutboundDecision::Send => notification_to_ln_msg(&entry.notification),
-                OutboundDecision::Drop => {
-                    tracing::debug!(
-                        peer = peer.0,
-                        "leios_notify: behaviour dropped outbound"
-                    );
-                    continue;
-                }
-                OutboundDecision::Replace(owned) => owned_outbound_to_ln_msg(owned)
-                    .unwrap_or_else(|| notification_to_ln_msg(&entry.notification)),
-                OutboundDecision::Augment(_) => {
-                    tracing::warn!(
-                        peer = peer.0,
-                        "leios_notify: behaviour returned Augment but this path only \
-                         sends one message per request — falling back to original"
-                    );
-                    notification_to_ln_msg(&entry.notification)
-                }
-            };
-
-            // Log the wire-level decision (post-transform).
+            // Log the wire-level decision (post-policy).
             let sources = SourceIds(&entry.sources);
             match &msg {
                 LnMsg::MsgLeiosBlockOffer { point, eb_size } => {
@@ -1019,22 +949,6 @@ async fn next_outbound_notification(
                 return Some(LnMsg::MsgLeiosVotes { votes: Vec::new() });
             }
         }
-    }
-}
-
-/// Convert an [`OwnedOutbound`] from a behaviour's `Replace` back into
-/// a wire `LnMsg`.  Returns `None` if the variant doesn't map onto a
-/// LeiosNotify message (e.g. `OwnedOutbound::RbHeader`), in which case
-/// the caller falls back to the original.
-fn owned_outbound_to_ln_msg(owned: OwnedOutbound) -> Option<LnMsg> {
-    match owned {
-        OwnedOutbound::LeiosBlockOffer { point, eb_size, .. } => {
-            Some(LnMsg::MsgLeiosBlockOffer { point, eb_size })
-        }
-        OwnedOutbound::LeiosBlockTxsOffer { point, .. } => {
-            Some(LnMsg::MsgLeiosBlockTxsOffer { point })
-        }
-        OwnedOutbound::RbHeader { .. } => None,
     }
 }
 
@@ -1120,6 +1034,22 @@ pub async fn serve_leios_fetch(
 mod tests {
     use super::*;
     use shared_consensus::mempool::{TxBody, TxId};
+
+    /// Build an `OutboundControls` carrying a fixed control signal (and an empty
+    /// variant store) for the outbound-actuator tests. The returned sender is
+    /// kept alive by the caller so `control.borrow()` keeps reading the value.
+    fn outbound_controls(
+        cs: ControlSignal,
+    ) -> (OutboundControls, tokio::sync::watch::Sender<ControlSignal>) {
+        let (tx, rx) = tokio::sync::watch::channel(cs);
+        (
+            OutboundControls {
+                control: rx,
+                variants: std::sync::Arc::new(std::sync::Mutex::new(EquivocationVariants::new())),
+            },
+            tx,
+        )
+    }
     use crate::bearer::mem::MemBearer;
     use crate::mux::scheduler::{RoundRobin, TrafficClass};
     use crate::mux::{Mux, MuxConfig, ProtocolConfig, MODE_INITIATOR, MODE_RESPONDER};
@@ -1706,10 +1636,6 @@ mod tests {
         // — the offer from `connected_peer` must now be delivered back
         // to `connected_peer`.  This is the reproduction path for the
         // dev-relay bug.
-        use shared_consensus::behaviour::behaviours::EchoToSource;
-        use shared_consensus::behaviour::build_handle;
-        use shared_consensus::behaviour::BehaviourSpec;
-
         let ln_proto = ProtocolConfig {
             id: leios_notify::PROTOCOL_ID,
             traffic_class: TrafficClass::Priority,
@@ -1723,11 +1649,11 @@ mod tests {
         let (store, _rx) = LeiosStore::new(100);
         let connected_peer = PeerId(7);
 
-        // Sanity: EchoToSource is a real behaviour, not a free pass —
-        // build it via the registry path so the spec round-trip also
-        // exercises the registry wiring.
-        let _ = EchoToSource;
-        let handle = build_handle(&BehaviourSpec::EchoToSource, 0);
+        // The echo-to-source control opens the no-echo gate (what the
+        // EchoToSource action sets).
+        let mut cs = ControlSignal::default();
+        cs.leios.echo_to_source = true;
+        let (controls, _tx) = outbound_controls(cs);
 
         let server_store = store.clone();
         let server_handle = tokio::spawn(async move {
@@ -1736,7 +1662,7 @@ mod tests {
                 server_recv,
                 server_store,
                 connected_peer,
-                Some(&handle),
+                Some(&controls),
             )
             .await
         });
@@ -1783,11 +1709,10 @@ mod tests {
 
     #[tokio::test]
     async fn lie_about_eb_size_behaviour_mutates_advertised_size() {
-        // LieAboutEbSize::zero() — the original bug shape.  The honest
+        // lie-about-eb-size zero — the original bug shape.  The honest
         // eb_size (the injected block's byte length) must be replaced
         // with 0 on the wire.
-        use shared_consensus::behaviour::build_handle;
-        use shared_consensus::behaviour::BehaviourSpec;
+        use shared_consensus::behaviour::tree::control::EbSizePolicy;
 
         let ln_proto = ProtocolConfig {
             id: leios_notify::PROTOCOL_ID,
@@ -1803,14 +1728,13 @@ mod tests {
         let connected_peer = PeerId(7);
         let other_peer = PeerId(9);
 
-        let handle = build_handle(
-            &BehaviourSpec::LieAboutEbSize {
-                scale_num: 0,
-                scale_den: 1,
-                offset: 0,
-            },
-            0,
-        );
+        let mut cs = ControlSignal::default();
+        cs.leios.offer_eb_size = EbSizePolicy::Linear {
+            scale_num: 0,
+            scale_den: 1,
+            offset: 0,
+        };
+        let (controls, _tx) = outbound_controls(cs);
 
         let server_store = store.clone();
         let server_handle = tokio::spawn(async move {
@@ -1819,7 +1743,7 @@ mod tests {
                 server_recv,
                 server_store,
                 connected_peer,
-                Some(&handle),
+                Some(&controls),
             )
             .await
         });
@@ -1871,8 +1795,7 @@ mod tests {
         // shifts up by 1.  Sanity check that the linear transform is
         // wired correctly end-to-end and that scale_den=1 doesn't
         // collapse to zero.
-        use shared_consensus::behaviour::build_handle;
-        use shared_consensus::behaviour::BehaviourSpec;
+        use shared_consensus::behaviour::tree::control::EbSizePolicy;
 
         let ln_proto = ProtocolConfig {
             id: leios_notify::PROTOCOL_ID,
@@ -1888,14 +1811,13 @@ mod tests {
         let connected_peer = PeerId(7);
         let other_peer = PeerId(9);
 
-        let handle = build_handle(
-            &BehaviourSpec::LieAboutEbSize {
-                scale_num: 1,
-                scale_den: 1,
-                offset: 1,
-            },
-            0,
-        );
+        let mut cs = ControlSignal::default();
+        cs.leios.offer_eb_size = EbSizePolicy::Linear {
+            scale_num: 1,
+            scale_den: 1,
+            offset: 1,
+        };
+        let (controls, _tx) = outbound_controls(cs);
 
         let server_store = store.clone();
         let server_handle = tokio::spawn(async move {
@@ -1904,7 +1826,7 @@ mod tests {
                 server_recv,
                 server_store,
                 connected_peer,
-                Some(&handle),
+                Some(&controls),
             )
             .await
         });
