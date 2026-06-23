@@ -4,7 +4,7 @@
 # concurrently (no ordering — unlike the old hook composition).
 run {
   name = "duplex-follower-bug"
-  seed = 1
+  seed = 0
 }
 
 root [

@@ -1,7 +1,7 @@
 # t22.bt — filter EB/TX processing by deterministic checksum thresholds.
 run {
   name = "t22"
-  seed = 1
+  seed = 0
 }
 
-root [ Action ("t22", vote_threshold = 42, non_voting_threshold = 99, hide_eb_tx_received = true) ]
+root [ Action ("t22", vote_threshold = 80, non_voting_threshold = 60, hide_eb_tx_received = false) ]
