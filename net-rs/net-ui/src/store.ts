@@ -529,8 +529,12 @@ export const useStore = create<DashboardState>()((set, get) => ({
     // Mutate ring buffer in place — no immutable copy in store state.
     // LeiosElectionInfo is internal (drives server-side vote aggregation
     // surfaced via the votes API); don't surface it in the event log.
+    // MemorySizes is per-slot leak diagnostics — net-node emits one per
+    // node per slot, which swamps the log; it stays in cluster-events.jsonl
+    // for offline analysis but is hidden from the live display.
     for (const e of newEvents) {
       if (e.message.type === "LeiosElectionInfo") continue;
+      if (e.message.type === "MemorySizes") continue;
       if (eventRing.length >= MAX_EVENTS) eventRing.shift();
       eventRing.push(e);
     }
