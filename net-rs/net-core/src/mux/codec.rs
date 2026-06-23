@@ -113,10 +113,13 @@ impl CodecRecv {
                         }
                         if wire_hex_enabled() {
                             let type_name = std::any::type_name::<T>();
-                            if type_name.contains("leios") {
+                            if type_name.contains("leios_notify")
+                                || type_name.contains("leios_fetch")
+                            {
+                                use std::fmt::Write as _;
                                 let mut hex = String::with_capacity(consumed * 2);
                                 for b in &self.buffer[..consumed] {
-                                    hex.push_str(&format!("{b:02x}"));
+                                    let _ = write!(hex, "{b:02x}");
                                 }
                                 eprintln!("WIRE_HEX recv {type_name} {consumed}B {hex}");
                             }
