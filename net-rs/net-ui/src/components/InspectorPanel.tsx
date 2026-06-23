@@ -242,13 +242,61 @@ function EdgeInspector({ from, to }: { from: number; to: number }) {
   );
 }
 
+function ExternalNodeInspector({ nodeId }: { nodeId: string }) {
+  const topology = useStore((s) => s.topology);
+  const ext = topology?.external_nodes?.find((e) => e.id === nodeId);
+  if (!ext) return null;
+
+  // Internal nodes that dial this relay.
+  const connectedFrom = (topology?.external_edges ?? [])
+    .filter((e) => e.to === nodeId)
+    .map((e) => topology?.nodes[e.from]?.node_id ?? `node-${e.from}`);
+
+  return (
+    <Box>
+      <Typography variant="subtitle2" sx={{ color: "#64b5f6" }} gutterBottom>
+        {ext.id}
+      </Typography>
+      <Chip
+        label="Blue team — external relay"
+        size="small"
+        sx={{ mb: 1, height: 18, fontSize: 10, bgcolor: "#0d47a1", color: "#fff" }}
+      />
+      <Typography variant="body2">Address: {ext.address}</Typography>
+      <Typography variant="body2" color="text.secondary" fontSize={11} sx={{ mt: 0.5 }}>
+        Not controlled by the cluster — no telemetry. Observed only through our
+        nodes' connections.
+      </Typography>
+      <Divider sx={{ my: 1 }} />
+      <Typography variant="caption" color="text.secondary">
+        Connected from ({connectedFrom.length})
+      </Typography>
+      {connectedFrom.map((id) => (
+        <Typography key={id} variant="body2" fontSize={11} sx={{ ml: 1 }}>
+          {id}
+        </Typography>
+      ))}
+    </Box>
+  );
+}
+
 export function InspectorPanel() {
   const selectedNodeId = useStore((s) => s.selectedNodeId);
   const selectedEdge = useStore((s) => s.selectedEdge);
+  const topology = useStore((s) => s.topology);
+
+  const isExternal =
+    selectedNodeId != null &&
+    (topology?.external_nodes ?? []).some((e) => e.id === selectedNodeId);
 
   return (
     <Box sx={{ p: 2, overflowY: "auto", height: "100%" }}>
-      {selectedNodeId && <NodeInspector nodeId={selectedNodeId} />}
+      {selectedNodeId &&
+        (isExternal ? (
+          <ExternalNodeInspector nodeId={selectedNodeId} />
+        ) : (
+          <NodeInspector nodeId={selectedNodeId} />
+        ))}
       {selectedEdge && (
         <EdgeInspector from={selectedEdge.from} to={selectedEdge.to} />
       )}

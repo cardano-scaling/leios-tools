@@ -5,6 +5,11 @@ use figment::Figment;
 use serde::{Deserialize, Serialize};
 
 /// External peer to inject into random cluster nodes.
+///
+/// Legacy config shape, retained for backward compatibility.  At load time
+/// each entry is normalised into an [`ExternalNodeConfig`] with a
+/// [`ExternalConnectSpec::Random`] connection (see [`normalize_external_peers`]),
+/// so the rest of the pipeline only ever reads `external_nodes`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExternalPeerConfig {
     /// Address of the external peer (e.g. "relay.example.com:3001").
@@ -17,6 +22,57 @@ pub struct ExternalPeerConfig {
 
 fn default_inject_count() -> usize {
     1
+}
+
+/// An external ("Blue team") node we connect to but do **not** spawn or
+/// control — e.g. a testnet relay.  Rendered on the topology graph with a
+/// distinct shape/colour and reports no telemetry of its own; we only ever
+/// observe it through our own nodes' connections.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExternalNodeConfig {
+    /// Stable id used for graph display (e.g. "relay-eu").  When omitted it
+    /// is synthesised as `ext-{i}` during topology generation.
+    #[serde(default)]
+    pub id: Option<String>,
+
+    /// Dial address ("host:port" or "ip:port").  Written verbatim into the
+    /// connecting internal node's `[[peers]]` so net-node dials it.
+    pub address: String,
+
+    /// Which of our internal nodes connect to this relay.
+    #[serde(default)]
+    pub connect: ExternalConnectSpec,
+
+    /// Simulated inbound delay (ms) for the connecting node's peer link.
+    /// Defaults to 0 — real relays have no simulated latency.
+    #[serde(default)]
+    pub inbound_delay_ms: u64,
+}
+
+/// Which internal nodes dial a given [`ExternalNodeConfig`].
+///
+/// Serialised as a tagged TOML table:
+///
+/// ```toml
+/// [external_nodes.connect]
+/// kind = "all"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ExternalConnectSpec {
+    /// Every internal node connects to the relay.
+    #[default]
+    All,
+    /// A hand-listed set of internal node indices connect.  Out-of-range
+    /// indices are ignored.
+    Nodes {
+        #[serde(default)]
+        indices: Vec<usize>,
+    },
+    /// `count` random internal nodes connect (deterministic for a given
+    /// [`ClusterConfig::seed`]).  Matches the legacy `external_peers`
+    /// `inject_into_nodes` behaviour.
+    Random { count: usize },
 }
 
 /// Subset of ClusterConfig controllable via the REST API.
@@ -204,9 +260,17 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub behaviour_selection: Option<BehaviourSelection>,
 
-    /// External peers injected into random nodes.
+    /// External peers injected into random nodes (legacy).  Normalised into
+    /// [`Self::external_nodes`] at load time; see [`normalize_external_peers`].
     #[serde(default)]
     pub external_peers: Vec<ExternalPeerConfig>,
+
+    /// External ("Blue team") nodes — connected-to but not spawned.  See
+    /// [`ExternalNodeConfig`].  These become graph nodes (distinct shape) and
+    /// their connecting internal nodes get a `[[peers]]` entry so net-node
+    /// dials them.
+    #[serde(default)]
+    pub external_nodes: Vec<ExternalNodeConfig>,
 }
 
 fn default_num_nodes() -> usize {
@@ -259,6 +323,7 @@ impl Default for ClusterConfig {
             behaviour: None,
             behaviour_selection: None,
             external_peers: Vec::new(),
+            external_nodes: Vec::new(),
             topology_source: TopologySource::default(),
             topology_random: RandomTopologyConfig::default(),
             topology_yaml: YamlTopologyConfig::default(),
@@ -410,7 +475,7 @@ pub fn load(
         figment = figment.merge(Toml::string(&toml_fragment));
     }
 
-    let config: ClusterConfig = figment.extract()?;
+    let mut config: ClusterConfig = figment.extract()?;
 
     // Mode-specific validation.  Only the selected mode's section is checked;
     // the other section is ignored even if populated.
@@ -433,7 +498,33 @@ pub fn load(
         }
     }
 
+    normalize_external_peers(&mut config);
+
     Ok(config)
+}
+
+/// Fold legacy `external_peers` entries into `external_nodes`.
+///
+/// Each `external_peers` entry becomes an [`ExternalNodeConfig`] whose
+/// connection is [`ExternalConnectSpec::Random`] with `count =
+/// inject_into_nodes` — preserving the historical "inject this relay into N
+/// random nodes" behaviour while giving it graph display for free.  After
+/// this runs, `external_peers` is emptied and downstream code (topology.rs)
+/// only ever reads `external_nodes`.
+pub fn normalize_external_peers(config: &mut ClusterConfig) {
+    if config.external_peers.is_empty() {
+        return;
+    }
+    for ep in std::mem::take(&mut config.external_peers) {
+        config.external_nodes.push(ExternalNodeConfig {
+            id: None,
+            address: ep.address,
+            connect: ExternalConnectSpec::Random {
+                count: ep.inject_into_nodes,
+            },
+            inbound_delay_ms: 0,
+        });
+    }
 }
 
 /// Read node-level config defaults from the base net-node config file.
@@ -500,6 +591,74 @@ fn set_override_to_toml(s: &str) -> Result<String, Box<dyn std::error::Error + S
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn legacy_external_peers_normalised_to_external_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+base_config = "mainnet.toml"
+
+[[external_peers]]
+address = "relay.example.com:3001"
+inject_into_nodes = 3
+"#
+        )
+        .unwrap();
+
+        let config = load(path.to_str().unwrap(), &[]).unwrap();
+        // external_peers is drained; the relay now lives in external_nodes
+        // as a Random{count} connection.
+        assert!(config.external_peers.is_empty());
+        assert_eq!(config.external_nodes.len(), 1);
+        let ext = &config.external_nodes[0];
+        assert_eq!(ext.address, "relay.example.com:3001");
+        assert!(matches!(
+            ext.connect,
+            ExternalConnectSpec::Random { count: 3 }
+        ));
+    }
+
+    #[test]
+    fn external_nodes_parse_with_connect_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ext.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"
+base_config = "mainnet.toml"
+
+[[external_nodes]]
+id = "relay-eu"
+address = "1.2.3.4:3001"
+[external_nodes.connect]
+kind = "all"
+
+[[external_nodes]]
+address = "5.6.7.8:3001"
+[external_nodes.connect]
+kind = "nodes"
+indices = [0, 2]
+"#
+        )
+        .unwrap();
+
+        let config = load(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(config.external_nodes.len(), 2);
+        assert_eq!(config.external_nodes[0].id.as_deref(), Some("relay-eu"));
+        assert!(matches!(
+            config.external_nodes[0].connect,
+            ExternalConnectSpec::All
+        ));
+        assert!(matches!(
+            &config.external_nodes[1].connect,
+            ExternalConnectSpec::Nodes { indices } if indices == &[0, 2]
+        ));
+    }
 
     #[test]
     fn test_default_config() {

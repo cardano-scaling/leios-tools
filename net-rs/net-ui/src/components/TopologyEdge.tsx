@@ -11,6 +11,7 @@ interface TopologyEdgeData {
   selected: boolean;
   flash?: "connected" | "disconnected" | null;
   status?: "connected" | "disconnected" | null;
+  external?: boolean;
 }
 
 type Props = EdgeProps & { data: TopologyEdgeData };
@@ -33,11 +34,13 @@ function TopologyEdgeInner({
   const selected = data?.selected ?? false;
   const flash = data?.flash ?? null;
   const status = data?.status ?? null;
+  const external = data?.external ?? false;
 
   // Flash takes priority (event animation), then selection, then
   // steady-state status, then default.  Connected edges render
   // light green; disconnected edges render pink; unknown (no
-  // events yet) stays gray.  Width is bumped only during flashes.
+  // events yet) stays gray — except external (Blue-team) edges, which
+  // default to blue so a relay link is visible before any connect event.
   const stroke =
     flash === "connected"
       ? "#4caf50"
@@ -49,7 +52,9 @@ function TopologyEdgeInner({
             ? "#f48fb1"
             : status === "connected"
               ? "#a5d6a7"
-              : "#555";
+              : external
+                ? "#1976d2"
+                : "#555";
   const strokeWidth = flash ? 3 : selected ? 2 : 1;
 
   return (
@@ -60,6 +65,9 @@ function TopologyEdgeInner({
         style={{
           stroke,
           strokeWidth,
+          // Dash external (relay) edges so they read distinctly from
+          // internal links even when carrying live connect status.
+          ...(external ? { strokeDasharray: "6 4" } : {}),
         }}
       />
       <EdgeLabelRenderer>

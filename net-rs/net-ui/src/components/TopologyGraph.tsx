@@ -11,9 +11,10 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useStore } from "@/store";
 import { TopologyNode } from "./TopologyNode";
+import { ExternalNode } from "./ExternalNode";
 import { TopologyEdge } from "./TopologyEdge";
 
-const nodeTypes = { topologyNode: TopologyNode };
+const nodeTypes = { topologyNode: TopologyNode, externalNode: ExternalNode };
 const edgeTypes = { topologyEdge: TopologyEdge };
 
 export function TopologyGraph() {
@@ -29,7 +30,7 @@ export function TopologyGraph() {
 
   const nodes: Node[] = useMemo(() => {
     if (!topology) return [];
-    return topology.nodes.map((n) => ({
+    const internal: Node[] = topology.nodes.map((n) => ({
       id: n.node_id,
       position: nodePositions[n.node_id] ?? { x: 0, y: 0 },
       type: "topologyNode",
@@ -40,11 +41,23 @@ export function TopologyGraph() {
         selected: selectedNodeId === n.node_id,
       },
     }));
+    // External ("Blue team") relays render as a distinct node type.
+    const external: Node[] = (topology.external_nodes ?? []).map((e) => ({
+      id: e.id,
+      position: nodePositions[e.id] ?? { x: 0, y: 0 },
+      type: "externalNode",
+      data: {
+        label: e.id,
+        address: e.address,
+        selected: selectedNodeId === e.id,
+      },
+    }));
+    return [...internal, ...external];
   }, [topology, nodePositions, selectedNodeId]);
 
   const edges: Edge[] = useMemo(() => {
     if (!topology) return [];
-    return topology.edges.map((e) => {
+    const internal: Edge[] = topology.edges.map((e) => {
       const sourceId = topology.nodes[e.from]?.node_id ?? "";
       const targetId = topology.nodes[e.to]?.node_id ?? "";
       const lo = Math.min(e.from, e.to);
@@ -67,6 +80,30 @@ export function TopologyGraph() {
         },
       };
     });
+    // External edges span nodes → external_nodes. Their flash/status key
+    // (`ext-${from}-${to}`) matches what the store computes from
+    // PeerConnected/Disconnected events to the relay address.
+    const external: Edge[] = (topology.external_edges ?? []).map((e) => {
+      const sourceId = topology.nodes[e.from]?.node_id ?? "";
+      const key = `ext-${e.from}-${e.to}`;
+      const seq = edgeFlash[key];
+      const flash = seq && seq.length > 0 ? seq[0] : null;
+      const status = edgeStatus[key] ?? null;
+      return {
+        id: key,
+        source: sourceId,
+        target: e.to,
+        type: "topologyEdge",
+        data: {
+          latency_ms: e.latency_ms,
+          selected: false,
+          flash,
+          status,
+          external: true,
+        },
+      };
+    });
+    return [...internal, ...external];
   }, [topology, selectedEdge, edgeFlash, edgeStatus]);
 
   const onNodesChange = useCallback(
@@ -89,6 +126,9 @@ export function TopologyGraph() {
 
   const onEdgeClick: EdgeMouseHandler = useCallback(
     (_event, edge) => {
+      // External edges have ids like `ext-0-relay-eu` (non-numeric target);
+      // they aren't selectable through the numeric internal-edge path.
+      if (edge.id.startsWith("ext-")) return;
       const parts = edge.id.split("-");
       const from = Number(parts[0]);
       const to = Number(parts[1]);

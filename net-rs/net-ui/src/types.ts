@@ -16,9 +16,27 @@ export interface Edge {
   latency_ms: number;
 }
 
+// External ("Blue team") node — a relay we connect to but do not control.
+// Mirrors net-cluster ExternalNode. Has no telemetry of its own.
+export interface ExternalNode {
+  id: string;
+  address: string;
+}
+
+// Edge from an internal node (`from` indexes into Topology.nodes) to an
+// external node (`to` matches ExternalNode.id). Mirrors net-cluster ExternalEdge.
+export interface ExternalEdge {
+  from: number;
+  to: string;
+  latency_ms: number;
+}
+
 export interface Topology {
   nodes: NodeTopology[];
   edges: Edge[];
+  // Omitted by the server when empty (skip_serializing_if).
+  external_nodes?: ExternalNode[];
+  external_edges?: ExternalEdge[];
 }
 
 export interface PeerStatsEntry {

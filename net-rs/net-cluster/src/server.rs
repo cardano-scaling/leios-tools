@@ -655,6 +655,8 @@ mod tests {
                 nodes: Vec::new(),
                 edges: Vec::new(),
                 total_stake: 0,
+                external_nodes: Vec::new(),
+                external_edges: Vec::new(),
             }),
             event_window,
             event_broadcast,
