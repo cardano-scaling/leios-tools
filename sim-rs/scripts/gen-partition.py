@@ -164,6 +164,12 @@ def main():
     if not from_names or (not args.isolate and not to_names):
         sys.exit(f"error: empty side (from={len(from_names)}, to={len(to_names)}); "
                  f"check --from/--to against the topology's country codes")
+    # With --isolate the "other" side is the complement of --from.  If --from
+    # already covers every node the complement is empty: the cut has nothing to
+    # sever, so the overlay would be a silent no-op.  Fail loudly instead.
+    if args.isolate and len(from_names) >= len(meta):
+        sys.exit(f"error: --isolate --from {args.from_group} matches all "
+                 f"{len(meta)} nodes; the complement is empty (no-op partition)")
 
     text = emit_yaml(args, from_names, to_names)
     if args.out:
