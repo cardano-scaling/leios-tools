@@ -85,6 +85,8 @@ export function TopologyGraph() {
     // PeerConnected/Disconnected events to the relay address.
     const external: Edge[] = (topology.external_edges ?? []).map((e) => {
       const sourceId = topology.nodes[e.from]?.node_id ?? "";
+      const relayAddress =
+        topology.external_nodes?.find((n) => n.id === e.to)?.address;
       const key = `ext-${e.from}-${e.to}`;
       const seq = edgeFlash[key];
       const flash = seq && seq.length > 0 ? seq[0] : null;
@@ -100,6 +102,7 @@ export function TopologyGraph() {
           flash,
           status,
           external: true,
+          relayAddress,
         },
       };
     });

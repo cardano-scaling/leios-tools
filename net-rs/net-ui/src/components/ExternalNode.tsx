@@ -55,15 +55,6 @@ function ExternalNodeInner({ data }: Props) {
         </Typography>
         <Typography
           variant="caption"
-          fontSize={8}
-          color="#90caf9"
-          display="block"
-          lineHeight={1.1}
-        >
-          external
-        </Typography>
-        <Typography
-          variant="caption"
           fontSize={7}
           color="text.secondary"
           display="block"
