@@ -188,15 +188,25 @@ async fn send_roll_forward(
     peer: PeerId,
     behaviour: Option<&BehaviourHandle>,
 ) {
+    let slot = match block_point {
+        Point::Specific { slot, .. } => *slot,
+        Point::Origin => 0,
+    };
+    // Per-forward trace (header length + leading bytes, incl. the era tag).
+    // At debug! — this is a hot path under ChainSync pipelining.
+    tracing::debug!(
+        peer = peer.0,
+        slot,
+        header_bytes = header.raw.len(),
+        head = ?&header.raw[..header.raw.len().min(2)],
+        "chainsync: forwarding MsgRollForward to downstream"
+    );
+
     let Some(handle) = behaviour else {
         let _ = runner.send(&CsMsg::MsgRollForward { header, tip }).await;
         return;
     };
 
-    let slot = match block_point {
-        Point::Specific { slot, .. } => *slot,
-        Point::Origin => 0,
-    };
     let decision = {
         let mut guard = handle.lock().expect("behaviour mutex poisoned");
         guard.transform_outbound(
@@ -1232,6 +1242,47 @@ mod tests {
         }
 
         // Clean up.
+        let _ = chainsync::done(&mut client).await;
+        server_handle.await.ok();
+        mux_a.abort();
+        mux_b.abort();
+    }
+
+    #[tokio::test]
+    async fn chainsync_server_forwards_stored_header_verbatim() {
+        // #18: serve_chainsync forwards the header stored in the chain
+        // byte-for-byte. The stored header here is the authentic wire form
+        // (era tag 7); a body-reconstructed copy would carry era tag 8.
+        let cs_proto = ProtocolConfig {
+            id: chainsync::PROTOCOL_ID,
+            traffic_class: TrafficClass::Priority,
+            ingress_limit: chainsync::INGRESS_LIMIT,
+            egress_queue_size: 16,
+        };
+        let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
+            mux_pair_for_protocol(&cs_proto);
+
+        let (store, _rx) = ChainStore::new(100);
+        // [era_tag=7, #6.24(h'AABB')] — valid CBOR, era tag at byte 1.
+        let authentic = WrappedHeader::opaque(vec![0x82, 0x07, 0xD8, 0x18, 0x42, 0xAA, 0xBB]);
+        store.append_block(make_point(1), authentic.clone(), make_body(1, 50), 1);
+
+        let server_handle =
+            tokio::spawn(serve_chainsync(server_send, server_recv, store, PeerId(0), None));
+
+        let mut client = Runner::<ChainSync>::new(Role::Client, client_send, client_recv);
+        let _ = chainsync::find_intersection(&mut client, vec![Point::Origin])
+            .await
+            .unwrap()
+            .unwrap();
+        match chainsync::request_next(&mut client).await.unwrap() {
+            chainsync::ChainSyncEvent::RollForward { header, .. } => {
+                assert_eq!(header.raw, authentic.raw, "header forwarded verbatim");
+                assert_eq!(header.raw[1], 0x07, "era tag 7 preserved, not body-derived 8");
+            }
+            other => panic!("expected RollForward, got {other:?}"),
+        }
+
         let _ = chainsync::done(&mut client).await;
         server_handle.await.ok();
         mux_a.abort();
