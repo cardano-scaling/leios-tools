@@ -167,6 +167,16 @@ export type BehaviourSpec =
   | { kind: "honest" }
   | { kind: "lazy-voter"; reason?: NoVoteReason }
   | { kind: "rb-header-equivocator"; ways: number }
+  | { kind: "lie-about-eb-size"; scale_num: number; scale_den: number; offset: number }
+  | { kind: "echo-to-source" }
+  | {
+      kind: "t22";
+      vote_threshold: number;
+      non_voting_threshold: number;
+      hide_eb_tx_received: boolean;
+    }
+  | { kind: "deep-reorg"; every_slots: number; depth: number }
+  | { kind: "drop-inbound-peers"; probability: number }
   | { kind: "composite"; children: BehaviourSpec[] };
 
 // Mirrors net-cluster's BehaviourSelection enum (same serde tag layout).
