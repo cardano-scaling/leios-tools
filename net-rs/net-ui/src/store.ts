@@ -91,8 +91,10 @@ export interface DashboardState {
   // Cluster control
   clusterConfig: ClusterControlConfig | null;
   restarting: boolean;
+  updating: boolean;
   loadConfig: () => Promise<void>;
   restartCluster: (config: ClusterControlConfig) => Promise<void>;
+  updateNodeConfig: (nodeConfig: Record<string, unknown>) => Promise<void>;
 
   // Voting panel visibility
   votingPanelVisible: boolean;
@@ -162,7 +164,6 @@ export const useStore = create<DashboardState>()((set, get) => ({
       let totalBandwidth = 0;
       let totalMessages = 0;
       let totalBlocks = 0;
-      let curSlot = 0;
       const curNodeCum: Record<string, { bandwidth: number; messages: number; blocks: number }> = {};
 
       for (const snap of Object.values(stats)) {
@@ -181,7 +182,6 @@ export const useStore = create<DashboardState>()((set, get) => ({
             snap.blocks_produced + snap.blocks_received + snap.txs_generated,
           blocks: snap.blocks_produced,
         };
-        curSlot = snap.slot;
       }
 
       // Count distinct chain tips (forks)
@@ -273,6 +273,7 @@ export const useStore = create<DashboardState>()((set, get) => ({
           if (votes) {
             return topoNodes.slice(0, MAX_NODES_VOTING_PANEL).map((n) => {
               const idx = nodeIds[n.node_id];
+              if (idx === undefined) return "NoEvent" as const;
               const status = votes[idx];
               if (status === '.') return "NoEvent" as const;
               if (status === '1') return "VoteCast" as const;

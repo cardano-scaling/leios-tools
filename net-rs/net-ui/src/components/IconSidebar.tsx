@@ -9,7 +9,7 @@ function ClusterIcon({ active }: { active: boolean }) {
     return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
   });
   // degree-2: each node connects to its two neighbors
-  const edges = pts.map((_, i) => [i, (i + 1) % 5]);
+  const edges = pts.map((_, i): [number, number] => [i, (i + 1) % 5]);
 
   const color = active ? "#90caf9" : "#aaa";
 
@@ -18,8 +18,8 @@ function ClusterIcon({ active }: { active: boolean }) {
       {edges.map(([a, b], i) => (
         <line
           key={i}
-          x1={pts[a].x} y1={pts[a].y}
-          x2={pts[b].x} y2={pts[b].y}
+          x1={pts[a]!.x} y1={pts[a]!.y}
+          x2={pts[b]!.x} y2={pts[b]!.y}
           stroke={color} strokeWidth={1.2} opacity={0.6}
         />
       ))}
@@ -48,7 +48,7 @@ function ChainTreeIcon({ active }: { active: boolean }) {
   const mainY = 5;
   const forkY = 14;
   // Columns — fork shares col 2 (where the middle block's child goes)
-  const xs = [1, 8.5, 16];
+  const xs = [1, 8.5, 16] as const;
   const midY = mainY + bh / 2;
   const forkMidY = forkY + bh / 2;
   return (

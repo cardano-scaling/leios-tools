@@ -301,7 +301,8 @@ export function ChainTreeView({
           .map((b) => {
             const bx = b.col * COL_W + PAD_LEFT;
             const by = b.row * ROW_H + PAD_TOP;
-            const nodes = tipCounts[b.entry.hash];
+            // Guaranteed present by the `.filter(... !== undefined)` above.
+            const nodes = tipCounts[b.entry.hash]!;
             const label = String(nodes.length);
             const padX = 4;
             const padY = 2;
