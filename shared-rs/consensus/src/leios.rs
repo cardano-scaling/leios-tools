@@ -20,14 +20,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Not;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tracing::info;
 
 use crate::aggregation::QuorumFormed;
-use crate::behaviour::{Behaviour, BehaviourOutcome, HonestBehaviour};
+use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy, VotePolicy};
 use crate::committee;
 use crate::config::CommitteeSelection;
 use crate::elections::{Elections, SlotEffect};
@@ -374,14 +373,11 @@ pub struct LeiosState {
     /// Live per-peer RTT lookup, consulted by every fetch policy.
     pub rtt: Box<dyn PeerRtt + Send + Sync>,
 
-    /// Pluggable behaviour — defaults to [`HonestBehaviour`].  Held
-    /// behind `Arc<Mutex<Box<dyn _>>>` so the I/O wrapper can hold a
-    /// shared handle for out-of-band hook calls (e.g. per-peer outbound
-    /// transforms) while this state machine still locks to invoke its
-    /// own hooks.  The inner `Box` is the swap point: replacing it under
-    /// the lock changes the live behaviour for every Arc holder at once
-    /// (used by runtime config updates).
-    pub behaviour: Arc<Mutex<Box<dyn Behaviour>>>,
+    /// The control signal applied by the BT tick each slot (`apply_control`).
+    /// The whole signal is stored (not just the Leios slice) so this state's
+    /// actuators can read cross-domain fields — e.g. the t22 EB-processing
+    /// filter reads `control.mempool.tx_filter`. Honest by default.
+    pub control: ControlSignal,
 }
 
 impl LeiosState {
@@ -430,75 +426,15 @@ impl LeiosState {
             eb_policy,
             eb_txs_policy,
             rtt,
-            behaviour: Arc::new(Mutex::new(Box::new(HonestBehaviour))),
+            control: ControlSignal::default(),
         }
     }
 
-    /// Replace the behaviour.  Use to install a non-honest variant at
-    /// startup or in response to a runtime config update.  Swaps the
-    /// trait object under the mutex; any other `Arc` clones of the
-    /// handle observe the new behaviour from their next hook call.
-    pub fn set_behaviour(&mut self, behaviour: Box<dyn Behaviour>) {
-        *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
-    }
-
-    /// Ask the installed behaviour what to do for this slot's
-    /// self-produced RB.  Honest nodes always get
-    /// [`crate::behaviour::RbProductionStrategy::Normal`]; adversarial
-    /// behaviours can return `Suppress` (drop the win silently) or
-    /// `Equivocate` (the wrapper should also emit a duplicate RB
-    /// carrying the same issuer + slot but a different body).
-    pub fn ask_rb_production_strategy(
-        &mut self,
-        praos: &crate::praos::PraosState,
-        slot: u64,
-    ) -> crate::behaviour::RbProductionStrategy {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.rb_production_strategy(self, praos, slot)
-    }
-
-    /// Consult the behaviour for a deliberate self-reorg this slot.
-    /// Returns the rollback depth the behaviour wants (see
-    /// [`crate::behaviour::behaviours::DeepReorg`]), or `None` for the
-    /// honest default.
-    pub fn ask_praos_reorg(&mut self, slot: u64) -> Option<u64> {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.praos_reorg(slot)
-    }
-
-    /// Consult the behaviour for whether to reset inbound peer
-    /// connections this slot (see
-    /// [`crate::behaviour::behaviours::DropInboundPeers`]).  `false` for
-    /// the honest default.
-    pub fn ask_drop_inbound_peers(&mut self, slot: u64) -> bool {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        guard.drop_inbound_peers(slot)
-    }
-
-    /// Short name of the current behaviour, e.g. `"honest"`,
-    /// `"rb-header-equivocator"`.  Useful for telemetry and structured logs.
-    pub fn behaviour_name(&self) -> &'static str {
-        self.behaviour
-            .lock()
-            .expect("behaviour mutex poisoned")
-            .name()
-    }
-
-    /// Lock the behaviour, call the hook with `(&mut dyn Behaviour,
-    /// &LeiosState)`, and return the resulting outcome.  Cloning the
-    /// `Arc` to a local before locking breaks the borrow chain — the
-    /// guard borrows the local clone, not `self`, so the hook can
-    /// receive an immutable view of `self` alongside.
-    fn invoke_hook<F>(&mut self, hook: F) -> BehaviourOutcome<LeiosEffect>
-    where
-        F: FnOnce(&mut dyn Behaviour, &LeiosState) -> BehaviourOutcome<LeiosEffect>,
-    {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        hook(&mut **guard, self)
+    /// Apply the per-slot [`ControlSignal`] produced by the BT tick, storing it
+    /// for the actuators in this state to read (the vote policy and the t22
+    /// EB-processing filter). Called once per slot by the I/O wrapper.
+    pub fn apply_control(&mut self, control: &ControlSignal) {
+        self.control = control.clone();
     }
 
     /// Update the chain-tip metadata used by the voting predicates.
@@ -568,15 +504,6 @@ impl LeiosState {
     /// TX-by-references mode.  Wrappers without a mempool surface yet
     /// can pass `&|_| true`; in that case the predicate is a no-op.
     pub fn on_slot(&mut self, slot: u64, tx_known: &dyn Fn(&TxId) -> bool) -> Vec<LeiosEffect> {
-        // Behaviour reactive hook.  Replace short-circuits the honest
-        // path; Append accumulates extras to splice in after the
-        // honest fx.
-        let appended: Vec<LeiosEffect> = match self.invoke_hook(|b, s| b.on_slot_leios(s, slot)) {
-            BehaviourOutcome::Continue => Vec::new(),
-            BehaviourOutcome::Replace(effects) => return effects,
-            BehaviourOutcome::Append(extra) => extra,
-        };
-
         let mut fx: Vec<LeiosEffect> = Vec::new();
         for eff in self.elections.on_slot(slot) {
             match eff {
@@ -599,13 +526,13 @@ impl LeiosState {
                         continue;
                     }
                     let honest_vote = self.decide_vote(&eb_hash, eb_slot, eb_seen_slot, tx_known);
-                    // Decision hook: behaviours can override the honest
-                    // predicate result (lazy voter, wrong-EB voter).
-                    let arc = self.behaviour.clone();
-                    let mut guard = arc.lock().expect("behaviour mutex poisoned");
-                    let decision = guard.decide_vote(self, &eb_hash, eb_slot, &honest_vote);
-                    drop(guard);
-                    let resolved = decision.resolve(honest_vote);
+                    // Vote actuator: the BT control signal may override the
+                    // honest predicate with a policy abstention (e.g. the
+                    // lazy-voter action sets `leios.vote = Abstain(reason)`).
+                    let resolved = match &self.control.leios.vote {
+                        VotePolicy::Honest => honest_vote,
+                        VotePolicy::Abstain(reason) => Err(*reason),
+                    };
                     match resolved {
                         Ok((emit_pv, npv_signature)) if emit_pv || npv_signature.is_some() => {
                             info!(
@@ -709,7 +636,6 @@ impl LeiosState {
             self.elections.prune_below_slot(min_keep);
             self.candidates.prune_below_slot(min_keep);
         }
-        fx.extend(appended);
         fx
     }
 
@@ -826,22 +752,66 @@ impl LeiosState {
     /// against the current candidate set and emits one
     /// `FetchLeiosBlock` carrying the chosen peers.  Idempotent: a
     /// repeat offer from the same peer is silently absorbed.
+    /// Deterministic per-(EB, node) checksum percentile in `0..100`, used by
+    /// the t22 EB-processing filter. Ported verbatim from the old t22 hook so
+    /// behaviour is identical.
+    fn eb_checksum_pct(&self, point: &Point) -> u8 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        if let Point::Specific { hash, .. } = point {
+            hash.hash(&mut hasher);
+        }
+        self.node_id.hash(&mut hasher);
+        (hasher.finish() % 100) as u8
+    }
+
+    /// EB-processing actuator (t22): whether to process this EB offer/manifest
+    /// under the control signal's tx-filter policy. Honest (`None`) processes
+    /// everything; `ChecksumThreshold` processes when the checksum percentile
+    /// is below the seat-dependent threshold.
+    fn should_process_eb(&self, point: &Point) -> bool {
+        match &self.control.mempool.tx_filter {
+            TxFilterPolicy::None => true,
+            TxFilterPolicy::ChecksumThreshold {
+                vote, non_voting, ..
+            } => {
+                let threshold = if self.voting_config.persistent_seats > 0 {
+                    *vote
+                } else {
+                    *non_voting
+                };
+                self.eb_checksum_pct(point) < threshold
+            }
+        }
+    }
+
+    /// Whether a received EB's manifest processing is hidden (t22 with
+    /// `hide_eb_tx`): only when the policy sets the flag and the EB is filtered.
+    fn should_hide_eb_received(&self, point: &Point) -> bool {
+        match &self.control.mempool.tx_filter {
+            TxFilterPolicy::ChecksumThreshold {
+                hide_eb_tx: true, ..
+            } => !self.should_process_eb(point),
+            _ => false,
+        }
+    }
+
     pub fn on_eb_offered(&mut self, point: Point, peer: PeerId, now: Instant) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_offered(s, &point, peer)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22): the control signal's checksum-threshold
+        // policy may drop processing of this EB offer.
+        if !self.should_process_eb(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, peer = peer.0, "t22: filtered EB offer (checksum-threshold)");
+            return Vec::new();
+        }
         self.evict_stale_in_flight(now);
         self.candidates.note_eb_offered(point.clone(), peer);
         if self.in_flight.contains_key(&point) {
-            return appended;
+            return Vec::new();
         }
         let candidates = self.candidates.eb_candidates(&point);
         let peers = self.eb_policy.pick(&point, &candidates, self.rtt.as_ref());
         if peers.is_empty() {
-            return appended;
+            return Vec::new();
         }
         self.in_flight.insert(point.clone(), now);
         info!(
@@ -850,9 +820,7 @@ impl LeiosState {
             peer_count = peers.len(),
             "fetching leios block"
         );
-        let mut fx = vec![LeiosEffect::FetchLeiosBlock { point, peers }];
-        fx.extend(appended);
-        fx
+        vec![LeiosEffect::FetchLeiosBlock { point, peers }]
     }
 
     /// A peer offered EB transactions.  Caller has already computed the
@@ -867,16 +835,15 @@ impl LeiosState {
         bitmap: BTreeMap<u16, u64>,
         now: Instant,
     ) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_txs_offered(s, &point, peer, &bitmap)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22): drop tx-offer processing for a filtered EB.
+        if !self.should_process_eb(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, peer = peer.0, "t22: filtered EB-txs offer (checksum-threshold)");
+            return Vec::new();
+        }
         self.evict_stale_in_flight(now);
         let slot = match &point {
             Point::Specific { slot, .. } => *slot,
-            _ => return appended,
+            _ => return Vec::new(),
         };
         self.candidates.note_eb_txs_offered(point.clone(), peer);
         // Empty bitmap means the consumer has nothing to fetch (either
@@ -885,7 +852,7 @@ impl LeiosState {
         // indices). Don't engage the per-slot gate or emit a fetch; wait
         // for the next offer once the manifest lands.
         if bitmap.is_empty() {
-            return appended;
+            return Vec::new();
         }
         // Per-slot gate keeps multiple offers from triggering parallel
         // fetches; the synthetic hash distinguishes the gate from an
@@ -895,14 +862,14 @@ impl LeiosState {
             hash: [0xFE; 32],
         };
         if self.in_flight.contains_key(&gate_key) {
-            return appended;
+            return Vec::new();
         }
         let candidates = self.candidates.eb_txs_candidates(&point);
         let peers = self
             .eb_txs_policy
             .pick(&point, &bitmap, &candidates, self.rtt.as_ref());
         if peers.is_empty() {
-            return appended;
+            return Vec::new();
         }
         self.in_flight.insert(gate_key, now);
         if let Point::Specific { slot, hash } = &point {
@@ -917,13 +884,11 @@ impl LeiosState {
             peer_count = peers.len(),
             "fetching leios block txs"
         );
-        let mut fx = vec![LeiosEffect::FetchLeiosBlockTxs {
+        vec![LeiosEffect::FetchLeiosBlockTxs {
             point,
             bitmap,
             peers,
-        }];
-        fx.extend(appended);
-        fx
+        }]
     }
 
     /// An EB body arrived.  `manifest_hashes` is the decoded tx-hash
@@ -936,13 +901,12 @@ impl LeiosState {
         point: Point,
         manifest_hashes: Option<Vec<TxId>>,
     ) -> Vec<LeiosEffect> {
-        let hashes_for_hook: &[TxId] = manifest_hashes.as_deref().unwrap_or(&[]);
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_eb_received(s, &point, hashes_for_hook)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
+        // EB-processing filter (t22 with `hide_eb_tx`): drop manifest + validate
+        // processing for a filtered EB.
+        if self.should_hide_eb_received(&point) {
+            tracing::debug!(node_id = %self.node_id, %point, "t22: filtered EB-received processing (hide_eb_tx)");
+            return Vec::new();
+        }
         self.in_flight.remove(&point);
         let mut fx = Vec::new();
         if let (Some(hashes), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
@@ -954,7 +918,6 @@ impl LeiosState {
             });
         }
         fx.push(LeiosEffect::ValidateEb { point });
-        fx.extend(appended);
         fx
     }
 
@@ -968,12 +931,6 @@ impl LeiosState {
     /// (e.g. a foreign voter from an external relay) carry no resolvable
     /// weight and are skipped; gossip re-serving is the I/O layer's job.
     pub fn on_votes_received(&mut self, votes: Vec<Vote>) -> Vec<LeiosEffect> {
-        let appended: Vec<LeiosEffect> =
-            match self.invoke_hook(|b, s| b.on_votes_received(s, &votes)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         // Resolve each compact voter index to its node id (owned, so the
         // borrowed `ValidatedVote` views below can lend the bytes).
         let resolved: Vec<(String, Vote)> = votes
@@ -997,9 +954,7 @@ impl LeiosState {
                 endorser_block_slot: v.slot,
             })
             .collect();
-        let mut fx = self.on_validated_votes(bodies);
-        fx.extend(appended);
-        fx
+        self.on_validated_votes(bodies)
     }
 
     /// EB transactions arrived; clear the per-slot in-flight gate so
@@ -1363,6 +1318,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn apply_control_stores_leios_domain_slice() {
+        use crate::behaviour::tree::control::{ControlSignal, VotePolicy};
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
+        assert_eq!(state.control.leios.vote, VotePolicy::Honest);
+        let mut cs = ControlSignal::default();
+        cs.leios.vote = VotePolicy::Abstain(NoVoteReason::Declined);
+        cs.leios.echo_to_source = true;
+        state.apply_control(&cs);
+        assert_eq!(
+            state.control.leios.vote,
+            VotePolicy::Abstain(NoVoteReason::Declined)
+        );
+        assert!(state.control.leios.echo_to_source);
+    }
+
     fn elections_for(node_id: &str) -> Elections {
         use crate::elections::ElectionsConfig;
         Elections::new(ElectionsConfig {
@@ -1610,6 +1581,69 @@ mod tests {
     #[test]
     fn on_eb_received_validate_only_when_no_manifest() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
+        let fx = state.on_eb_received(None, point(10, 1), None);
+        assert_eq!(fx.len(), 1);
+        assert!(matches!(fx[0], LeiosEffect::ValidateEb { .. }));
+    }
+
+    // -- t22 EB-processing filter actuator (control.mempool.tx_filter) --------
+
+    fn with_tx_filter(state: &mut LeiosState, vote: u8, non_voting: u8, hide_eb_tx: bool) {
+        use crate::behaviour::tree::control::{ControlSignal, TxFilterPolicy};
+        let mut cs = ControlSignal::default();
+        cs.mempool.tx_filter = TxFilterPolicy::ChecksumThreshold {
+            vote,
+            non_voting,
+            hide_eb_tx,
+        };
+        state.apply_control(&cs);
+    }
+
+    #[test]
+    fn tx_filter_threshold_100_processes_eb_offer() {
+        // checksum percentile is always < 100, so threshold 100 always processes.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 100, 100, false);
+        let fx = state.on_eb_offered(point(10, 1), PeerId(1), Instant::now());
+        assert_eq!(fx.len(), 1);
+        assert!(matches!(fx[0], LeiosEffect::FetchLeiosBlock { .. }));
+    }
+
+    #[test]
+    fn tx_filter_threshold_0_drops_eb_offer() {
+        // checksum percentile is always >= 0, so threshold 0 never processes —
+        // the offer is dropped despite the honest path having a candidate peer.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
+        let fx = state.on_eb_offered(point(10, 1), PeerId(1), Instant::now());
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_threshold_0_drops_eb_txs_offer() {
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
+        let mut bitmap = BTreeMap::new();
+        bitmap.insert(0u16, 1u64);
+        let fx = state.on_eb_txs_offered(point(10, 1), PeerId(1), bitmap, Instant::now());
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_hide_eb_tx_drops_received_processing() {
+        // hide_eb_tx + filtered (threshold 0) => on_eb_received produces nothing.
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, true);
+        let fx = state.on_eb_received(None, point(10, 1), Some(vec![tx_id(0xA0)]));
+        assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn tx_filter_without_hide_still_processes_received() {
+        // Without hide_eb_tx, on_eb_received is unaffected by the filter
+        // (the filter only gates offer/txs-offer fetching, not validation).
+        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
+        with_tx_filter(&mut state, 0, 0, false);
         let fx = state.on_eb_received(None, point(10, 1), None);
         assert_eq!(fx.len(), 1);
         assert!(matches!(fx[0], LeiosEffect::ValidateEb { .. }));
@@ -2171,121 +2205,21 @@ mod tests {
         assert!(bitmap.is_empty());
     }
 
-    // -- Behaviour-hook integration ----------------------------------------
-
-    /// Stub behaviour that returns a configurable outcome on
-    /// `on_slot_leios` and counts its invocations.  Allows the test to
-    /// observe both the call count and the surrounding state at hook
-    /// time without leaking into the host state.
-    #[derive(Default)]
-    struct StubBehaviour {
-        slot_calls: u32,
-        slot_reply: Option<BehaviourOutcome<LeiosEffect>>,
-        vote_override: Option<NoVoteReason>,
-    }
-
-    impl crate::behaviour::Behaviour for StubBehaviour {
-        fn name(&self) -> &'static str {
-            "stub"
-        }
-        fn on_slot_leios(
-            &mut self,
-            _state: &LeiosState,
-            _slot: u64,
-        ) -> BehaviourOutcome<LeiosEffect> {
-            self.slot_calls += 1;
-            self.slot_reply
-                .clone()
-                .unwrap_or(BehaviourOutcome::Continue)
-        }
-        fn decide_vote(
-            &mut self,
-            _state: &LeiosState,
-            eb_hash: &[u8; 32],
-            eb_slot: u64,
-            _honest: &VoteDecision,
-        ) -> crate::behaviour::DecisionOutcome<VoteDecision> {
-            if let Some(r) = self.vote_override {
-                let _ = (eb_hash, eb_slot);
-                crate::behaviour::DecisionOutcome::Override(Err(r))
-            } else {
-                crate::behaviour::DecisionOutcome::Continue
-            }
-        }
-    }
+    // -- BT control-signal actuation ---------------------------------------
 
     #[test]
-    fn behaviour_continue_leaves_honest_flow_unchanged() {
-        // Golden: HonestBehaviour vs. no-op stub produces identical effects.
-        let mut honest = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        honest.elections.announce(10, h(1));
-        tip_for(&mut honest, 10, h(1));
-        let baseline = honest.on_slot(13, &tx_all);
-
-        let mut stubbed = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        stubbed.set_behaviour(Box::new(StubBehaviour::default()));
-        stubbed.elections.announce(10, h(1));
-        tip_for(&mut stubbed, 10, h(1));
-        let with_stub = stubbed.on_slot(13, &tx_all);
-
-        // Effects compare by Debug formatting — the inner variants don't
-        // all implement PartialEq.
-        assert_eq!(format!("{baseline:?}"), format!("{with_stub:?}"));
-    }
-
-    #[test]
-    fn behaviour_replace_short_circuits_honest_effects() {
+    fn control_vote_abstain_forces_no_vote() {
+        // The BT control signal's vote-abstain policy (lazy-voter) overrides
+        // the honest predicate, exactly as the old decide_vote hook did.
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            slot_reply: Some(BehaviourOutcome::Replace(vec![])),
-            ..Default::default()
-        }));
-        state.elections.announce(10, h(1));
-        tip_for(&mut state, 10, h(1));
-        let fx = state.on_slot(13, &tx_all);
-        // EmitVote would normally fire — Replace([]) suppresses it.
-        assert!(fx.is_empty());
-        // The election was not marked voted because honest flow never ran.
-        assert!(!state.elections.voted(&h(1)));
-    }
-
-    #[test]
-    fn behaviour_append_adds_to_honest_effects() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            slot_reply: Some(BehaviourOutcome::Append(vec![LeiosEffect::EmitTelemetry(
-                LeiosTelemetryEvent::QuorumReached {
-                    eb_slot: 99,
-                    voted_weight: 1,
-                    voters: 1,
-                },
-            )])),
-            ..Default::default()
-        }));
-        state.elections.announce(10, h(1));
-        tip_for(&mut state, 10, h(1));
-        let fx = state.on_slot(13, &tx_all);
-        // Honest EmitVote plus the appended telemetry.
-        assert_eq!(fx.len(), 2);
-        assert!(matches!(fx[0], LeiosEffect::EmitVote { .. }));
-        assert!(matches!(
-            fx[1],
-            LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::QuorumReached { .. })
-        ));
-    }
-
-    #[test]
-    fn behaviour_decide_vote_override_forces_abstain() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        state.set_behaviour(Box::new(StubBehaviour {
-            vote_override: Some(NoVoteReason::WrongEB),
-            ..Default::default()
-        }));
+        let mut cs = ControlSignal::default();
+        cs.leios.vote = VotePolicy::Abstain(NoVoteReason::WrongEB);
+        state.apply_control(&cs);
         state.elections.announce(10, h(1));
         tip_for(&mut state, 10, h(1));
         let fx = state.on_slot(13, &tx_all);
         // Despite the seated PV that honest would have emitted, the
-        // override forced NoVote { WrongEB }.
+        // abstain policy forced NoVote { WrongEB }.
         assert_eq!(fx.len(), 1);
         match &fx[0] {
             LeiosEffect::NoVote { reason, .. } => {
@@ -2293,13 +2227,5 @@ mod tests {
             }
             other => panic!("expected NoVote, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn behaviour_set_and_name_query() {
-        let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
-        assert_eq!(state.behaviour_name(), "honest");
-        state.set_behaviour(Box::new(StubBehaviour::default()));
-        assert_eq!(state.behaviour_name(), "stub");
     }
 }

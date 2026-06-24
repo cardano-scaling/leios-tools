@@ -331,7 +331,8 @@ root [ Selector[ "attack", "honest" ] ]
 
 `ControlSignal` each drives: lazy-voter → `leios.vote = Abstain`; rb-header-equivocator →
 `praos.production = Equivocate` + `praos.outbound = EquivocateRouting`; deep-reorg →
-`praos.reorg_depth`; drop-inbound-peers → `praos.drop_inbound`; t22 → `mempool.tx_filter`.
+`praos.reorg_depth`; drop-inbound-peers → `praos.drop_inbound`; t22 → `mempool.tx_filter`;
+lie-about-eb-size → `leios.offer_eb_size`; echo-to-source → `leios.echo_to_source`.
 
 **Internal gating stays in the action.** deep-reorg (periodic) and drop-inbound-peers
 (stochastic) self-gate deterministically from `(seed, slot)` — they are *not* `Condition`s
@@ -341,6 +342,19 @@ because the grammar (§3) has no modulo or randomness. The BT does coarse gating
 **Composition.** The old `Composite` becomes a `Join` (run all): deep-reorg and
 drop-inbound-peers write distinct `ControlSignal` fields, so they compose without conflict.
 Use `Sequence`/`Selector` when you want AND/OR ordering instead of concurrency.
+
+The duplex-follower bug — a size-zero EB offer reflected back to its source — composes the
+two merged Leios actions:
+
+```text
+root [ Join[ "echo-to-source",
+             Action("lie-about-eb-size", scale_num = 0, scale_den = 1, offset = 0) ] ]
+```
+
+They write distinct `LeiosControl` fields (`echo_to_source` and `offer_eb_size`), so both
+take effect with no ordering. This is the case the old hook composition handled awkwardly
+(first-non-`Continue`-wins meant the size mutation only ran if the echo gate fired); as
+independent fields under a `Join`, the awkwardness disappears.
 
 ### Concrete TOML
 

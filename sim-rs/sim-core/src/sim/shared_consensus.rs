@@ -59,16 +59,33 @@
 //! | `PraosState` `k`              | `2160` | sim doesn't model security parameter           |
 //! | Fetch policies (RB/EB/EB-txs) | YAML `fetch-policy.{block,eb,eb-txs}` (default `lowest-rtt` everywhere, matching `LeiosState::new`).  RTT oracle is `UniformRtt(0)` — sim drives fetches via its own `Message` enum.  Votes are delivered inline, no fetch policy |
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use rand_chacha::ChaChaRng;
 use tokio::sync::mpsc;
 
+use crate::{
+    clock::{Clock, Timestamp},
+    config::{NodeConfiguration, NodeId, RelayStrategy, SimConfiguration},
+    events::EventTracker,
+    model::{
+        BlockId, Endorsement, EndorserBlockId, LinearEndorserBlock, LinearRankingBlock,
+        LinearRankingBlockHeader, NoVoteReason as SimNoVoteReason, Transaction, TransactionId,
+        TransactionLostReason, Vote, VoteId, VoteKind,
+    },
+    rng::{DrawSite, Rng},
+    sim::{
+        linear_wire::{CpuTask, Message, TimedEvent},
+        NodeImpl,
+    },
+};
+use shared_consensus::behaviour::tree::actions::HonestAction;
+use shared_consensus::behaviour::tree::{
+    Behaviour, BehaviourKind, BehaviourTree, BtConfig, DynamicEnv, NativeChainState, TickCtx,
+};
+use shared_consensus::mempool::TxBody;
 use shared_consensus::{
+    committee,
     config::{CommitteeSelection, StakeEntry},
     elections::{Elections, ElectionsConfig},
     leios::{
@@ -81,23 +98,6 @@ use shared_consensus::{
     praos::{ParsedHeaderInfo, PraosEffect, PraosState},
     production::BodyPath,
     types::Point,
-    committee,
-};
-use shared_consensus::mempool::TxBody;
-use crate::{
-    clock::{Clock, Timestamp},
-    config::{NodeConfiguration, NodeId, RelayStrategy, SimConfiguration},
-    events::EventTracker,
-    model::{
-        BlockId, Endorsement, EndorserBlockId, LinearEndorserBlock, LinearRankingBlock,
-        LinearRankingBlockHeader, NoVoteReason as SimNoVoteReason, Transaction, TransactionId,
-        TransactionLostReason, Vote, VoteId, VoteKind,
-    },
-    rng::{DrawSite, Rng},
-    sim::{
-        NodeImpl,
-        linear_wire::{CpuTask, Message, TimedEvent},
-    },
 };
 
 /// Stake registry derived from the sim config. Every node builds an
@@ -123,10 +123,7 @@ fn build_stake_registry(sim_config: &SimConfiguration) -> Vec<StakeEntry> {
 /// | `diffuse_window` | `linear-diffuse-stage-length-slots` (CIP-0164 L_diff)     |
 /// | `dedup_window` | `linear-tx-max-age-slots` minus the others (with a floor)   |
 fn derive_pipeline(sim_config: &SimConfiguration) -> PipelineConfig {
-    let delta_hdr = sim_config
-        .header_diffusion_time
-        .as_secs_f64()
-        .ceil() as u64;
+    let delta_hdr = sim_config.header_diffusion_time.as_secs_f64().ceil() as u64;
     let vote_window = sim_config.linear_vote_stage_length;
     let diffuse_window = sim_config.linear_diffuse_stage_length;
     // Dedup window is "how long after CertEligible the cert can still be
@@ -348,14 +345,13 @@ pub struct SharedConsensus {
     /// every blocked EB can re-check coverage and release if complete.
     missing_tx_index: BTreeMap<TransactionId, std::collections::BTreeSet<EndorserBlockId>>,
 
-    /// Shared per-node behaviour handle.  The same `Arc<Mutex<…>>` is
-    /// installed on `leios`, `praos`, and `mempool` above so stateful
-    /// behaviours observe events from every layer through one instance.
-    /// Stored here for clarity and to anchor the Arc beyond the three
-    /// state-machine holders.  The sim never swaps the inner trait
-    /// object after construction (see module docs).
-    #[allow(dead_code)]
-    behaviour_handle: shared_consensus::behaviour::BehaviourHandle,
+    /// Resolved env the behaviour-tree conditions read (from the assigned
+    /// BT config's `[env]`).
+    bt_env: DynamicEnv,
+    /// The per-node behaviour tree, ticked once per slot to produce the
+    /// `ControlSignal` applied to `leios`/`praos`/`mempool`. Replaces the old
+    /// `Behaviour` hook handle (broadcast-only sim needs no outbound actuators).
+    bt_tree: BehaviourTree,
 }
 
 enum VoteState {
@@ -502,26 +498,31 @@ impl NodeImpl for SharedConsensus {
         // pruning depth comfortably beyond any sim run length.
         let mut praos = PraosState::new(config.name.clone(), 2160);
         praos.set_fetch_policy(fp.block.into_block_policy());
-        let mut mempool = MempoolState::new(sim_config.mempool_size_bytes as usize);
+        let mempool = MempoolState::new(sim_config.mempool_size_bytes as usize);
         let node_names = sim_config_nodes_to_names(&sim_config);
 
-        // Per-node behaviour install.  Look up the resolved spec
-        // (resolve_specs ran once at SimConfiguration::build) and
-        // share a single handle across leios/praos/mempool — stateful
-        // behaviours like RbHeaderEquivocator carry per-peer state
-        // that has to be visible from every layer.
-        let behaviour_spec = sim_config
-            .consensus_behaviour_specs
-            .get(&config.id)
-            .cloned()
-            .unwrap_or_default();
-        let behaviour_seed =
-            shared_consensus::behaviour::seed_from_node_id(&config.name);
-        let behaviour_handle =
-            shared_consensus::behaviour::build_handle(&behaviour_spec, behaviour_seed);
-        leios.behaviour = behaviour_handle.clone();
-        praos.behaviour = behaviour_handle.clone();
-        mempool.behaviour = behaviour_handle.clone();
+        // Per-node behaviour tree.  Look up the assigned self-contained BT
+        // config text (resolved once at SimConfiguration::build) and compile
+        // it; a node with no assignment runs an implicit honest tree. The
+        // tree is ticked each slot to produce the `ControlSignal` applied to
+        // leios/praos/mempool — replacing the old hook handle.
+        let (bt_env, bt_tree) = match sim_config.behaviour_tree_configs.get(&config.id) {
+            Some(text) => match BtConfig::parse(text) {
+                Ok(cfg) => {
+                    let env = DynamicEnv(cfg.env.clone());
+                    // Validated at config-build time, so compile cannot fail here.
+                    let tree = cfg
+                        .compile()
+                        .expect("behaviour tree validated at config build");
+                    (env, tree)
+                }
+                Err(e) => panic!("behaviour tree for {}: {e}", config.name),
+            },
+            None => {
+                let root = Behaviour::new("honest", BehaviourKind::Action(Box::new(HonestAction)));
+                (DynamicEnv::new(), BehaviourTree::new("honest", 0, root))
+            }
+        };
 
         Self {
             id: config.id,
@@ -551,7 +552,8 @@ impl NodeImpl for SharedConsensus {
             noted_no_vote: std::collections::BTreeSet::new(),
             eb_pending_txs: BTreeMap::new(),
             missing_tx_index: BTreeMap::new(),
-            behaviour_handle,
+            bt_env,
+            bt_tree,
         }
     }
 
@@ -573,12 +575,31 @@ impl NodeImpl for SharedConsensus {
         if slot.is_multiple_of(100) {
             self.prune_chain_state(slot);
         }
-        if self.sim_config.log_memory_stats
-            && slot.is_multiple_of(60)
-            && self.id.to_inner() == 0
-        {
+        if self.sim_config.log_memory_stats && slot.is_multiple_of(60) && self.id.to_inner() == 0 {
             self.log_memory_stats(slot);
         }
+        // Tick the behaviour tree for this slot and apply the resulting
+        // control signal to the consensus state machines, before any
+        // event processing. The Leios vote policy and the t22 EB-processing
+        // filter read it from the state; sim-rs is broadcast-only so the
+        // outbound (equivocation/echo/eb-size) fields are not actuated here.
+        // TODO: thread real current_epoch + mempool tx count; the configured
+        // attacks (lazy-voter, t22) read only current_slot.
+        let chain_state = NativeChainState {
+            current_slot: slot,
+            current_epoch: 0,
+            mempool_tx_count: 0,
+        };
+        let bt_seed = self.bt_tree.seed();
+        let (_status, control) = self.bt_tree.tick(&TickCtx {
+            env: &self.bt_env,
+            state: &chain_state,
+            seed: bt_seed,
+        });
+        self.leios.apply_control(&control);
+        self.praos.apply_control(&control);
+        self.mempool.apply_control(&control);
+
         // Drive Leios election lifecycle.  `tx_known` mirrors
         // `local_has_tx`: a body counts as held if it's in the
         // mempool (free ∪ EB-pinned) or cached in `tx_arcs` (e.g.,
@@ -618,7 +639,9 @@ impl NodeImpl for SharedConsensus {
         // linear_leios's `generate_tx → propagate_tx → mempool` shape.
         // CpuTask scheduling for validation happens for *peer-sent*
         // txs only, in `handle_message::Tx`.
-        let fx = self.mempool.admit_validated(id, TxBody::new_with_vec(Vec::new()), tx.bytes as u32);
+        let fx =
+            self.mempool
+                .admit_validated(id, TxBody::new_with_vec(Vec::new()), tx.bytes as u32);
         self.apply_mempool_effects(&mut out, fx);
         // Announce to every consumer. linear_leios announces only to
         // consumers (downstream peers); we mirror that here.
@@ -686,9 +709,7 @@ impl NodeImpl for SharedConsensus {
             Message::EBTxs(id, txs) => {
                 self.receive_eb_txs(&mut out, from, id, txs);
             }
-            Message::AnnounceVotes(_)
-            | Message::RequestVotes(_)
-            | Message::Votes(_) => {
+            Message::AnnounceVotes(_) | Message::RequestVotes(_) | Message::Votes(_) => {
                 // shared-consensus adapter emits per-vote, never bundles — every
                 // node in a sim run uses the same adapter, so the
                 // bundle variants can't reach this handler.
@@ -822,7 +843,11 @@ impl SharedConsensus {
         let endorsement = self.try_build_endorsement();
         if let Some(endorsement) = endorsement.as_ref() {
             let eb_arc = match self.ebs.get(&endorsement.eb) {
-                Some(EbState::Received { eb, validated: true, .. }) => Some(eb.clone()),
+                Some(EbState::Received {
+                    eb,
+                    validated: true,
+                    ..
+                }) => Some(eb.clone()),
                 _ => None,
             };
             if let Some(eb) = eb_arc {
@@ -942,9 +967,13 @@ impl SharedConsensus {
         let point = block_id_to_point(rb_id);
         self.praos.note_header_first_seen(hash, self.current_slot);
         let tx_count = rb.transactions.len() as u32;
-        let fx = self
-            .praos
-            .register_self_produced(point, Vec::new(), Vec::new(), Some(parsed), tx_count);
+        let fx = self.praos.register_self_produced(
+            point,
+            Vec::new(),
+            Vec::new(),
+            Some(parsed),
+            tx_count,
+        );
         self.dispatch_praos_effects(out, fx);
         for peer in &self.consumers {
             out.send_to(*peer, Message::AnnounceRBHeader(rb_id));
@@ -979,12 +1008,7 @@ impl SharedConsensus {
         }
     }
 
-    fn receive_announce_rb_header(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: BlockId,
-    ) {
+    fn receive_announce_rb_header(&mut self, out: &mut EventResult, from: NodeId, id: BlockId) {
         let should_request = match self.rbs.get(&id) {
             None => true,
             Some(RbState::HeaderPending) => {
@@ -998,12 +1022,7 @@ impl SharedConsensus {
         }
     }
 
-    fn receive_request_rb_header(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: BlockId,
-    ) {
+    fn receive_request_rb_header(&mut self, out: &mut EventResult, from: NodeId, id: BlockId) {
         let Some(state) = self.rbs.get(&id) else {
             return;
         };
@@ -1092,12 +1111,14 @@ impl SharedConsensus {
 
     fn receive_announce_rb(&mut self, out: &mut EventResult, from: NodeId, id: BlockId) {
         let (header, header_seen) = match self.rbs.get(&id) {
-            Some(RbState::Pending { header, header_seen }) => {
-                (header.clone(), *header_seen)
-            }
-            Some(RbState::Requested { header, header_seen })
-                if self.sim_config.relay_strategy == RelayStrategy::RequestFromAll =>
-            {
+            Some(RbState::Pending {
+                header,
+                header_seen,
+            }) => (header.clone(), *header_seen),
+            Some(RbState::Requested {
+                header,
+                header_seen,
+            }) if self.sim_config.relay_strategy == RelayStrategy::RequestFromAll => {
                 (header.clone(), *header_seen)
             }
             _ => return,
@@ -1119,12 +1140,7 @@ impl SharedConsensus {
         }
     }
 
-    fn receive_announce_eb(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: EndorserBlockId,
-    ) {
+    fn receive_announce_eb(&mut self, out: &mut EventResult, from: NodeId, id: EndorserBlockId) {
         self.eb_announcers.entry(id).or_default().push(from);
         let should_request = match self.ebs.get(&id) {
             None => true,
@@ -1142,12 +1158,7 @@ impl SharedConsensus {
         }
     }
 
-    fn receive_request_eb(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: EndorserBlockId,
-    ) {
+    fn receive_request_eb(&mut self, out: &mut EventResult, from: NodeId, id: EndorserBlockId) {
         if let Some(EbState::Received { eb, .. }) = self.ebs.get(&id) {
             self.tracker.track_linear_eb_sent(eb, self.id, from);
             out.send_to(from, Message::EB(eb.clone()));
@@ -1273,10 +1284,7 @@ impl SharedConsensus {
         // whether the chain had already endorsed this EB so we can
         // fire the deferred apply CpuTask.
         let eb_hash = synthesize_eb_hash(eb_id);
-        let was_endorsed_unvalidated = self
-            .leios
-            .endorsed_unvalidated_ebs
-            .contains_key(&eb_hash);
+        let was_endorsed_unvalidated = self.leios.endorsed_unvalidated_ebs.contains_key(&eb_hash);
         self.ebs.insert(eb_id, entry);
         // Manifest was registered at header-validation time (see
         // `record_eb_manifest_in_leios`); this is the validate-side
@@ -1301,12 +1309,7 @@ impl SharedConsensus {
         let _ = out;
     }
 
-    fn receive_announce_vote(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: VoteId,
-    ) {
+    fn receive_announce_vote(&mut self, out: &mut EventResult, from: NodeId, id: VoteId) {
         let should_request = match self.votes.get(&id) {
             None => true,
             Some(VoteState::Requested) => {
@@ -1320,12 +1323,7 @@ impl SharedConsensus {
         }
     }
 
-    fn receive_request_vote(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        id: VoteId,
-    ) {
+    fn receive_request_vote(&mut self, out: &mut EventResult, from: NodeId, id: VoteId) {
         if let Some(VoteState::Received { vote }) = self.votes.get(&id) {
             self.tracker.track_vote_sent(vote, self.id, from);
             out.send_to(from, Message::Vote(vote.clone()));
@@ -1348,12 +1346,7 @@ impl SharedConsensus {
         }
     }
 
-    fn finish_validating_vote(
-        &mut self,
-        out: &mut EventResult,
-        from: NodeId,
-        vote: Arc<Vote>,
-    ) {
+    fn finish_validating_vote(&mut self, out: &mut EventResult, from: NodeId, vote: Arc<Vote>) {
         let id = vote.id;
         if matches!(self.votes.get(&id), Some(VoteState::Received { .. })) {
             return;
@@ -1474,8 +1467,7 @@ impl SharedConsensus {
             + pipeline.vote_window
             + pipeline.diffuse_window
             + pipeline.dedup_window;
-        let chain_cutoff =
-            current_slot.saturating_sub(chain_window.saturating_mul(5).max(50));
+        let chain_cutoff = current_slot.saturating_sub(chain_window.saturating_mul(5).max(50));
         self.rbs.retain(|id, _| id.slot >= chain_cutoff);
         self.ebs.retain(|id, _| id.slot >= chain_cutoff);
         self.eb_announcers.retain(|id, _| id.slot >= chain_cutoff);
@@ -1490,8 +1482,7 @@ impl SharedConsensus {
         });
         // `eb_hash_to_id` is keyed by hash; drop entries whose
         // corresponding EndorserBlockId is below the cutoff.
-        self.eb_hash_to_id
-            .retain(|_, id| id.slot >= chain_cutoff);
+        self.eb_hash_to_id.retain(|_, id| id.slot >= chain_cutoff);
         // `noted_no_vote` is keyed by `(hash, reason)`; drop entries
         // whose hash no longer maps to a live EB.
         let live_hashes: std::collections::BTreeSet<[u8; 32]> =
@@ -1503,21 +1494,16 @@ impl SharedConsensus {
         // linear_leios's `prune_old_txs`: keep anything still in the
         // mempool (it might still be included in a future EB), age
         // out the rest by `linear-tx-max-age-slots` (default 23).
-        let tx_max_age = self
-            .sim_config
-            .linear_tx_max_age_slots
-            .unwrap_or(100);
+        let tx_max_age = self.sim_config.linear_tx_max_age_slots.unwrap_or(100);
         let tx_cutoff = current_slot.saturating_sub(tx_max_age);
         let mempool_ids: std::collections::BTreeSet<TxId> =
             self.mempool.current_tx_ids().into_iter().collect();
-        self.tx_seen_slot.retain(|id, seen| {
-            *seen >= tx_cutoff || mempool_ids.contains(id)
-        });
+        self.tx_seen_slot
+            .retain(|id, seen| *seen >= tx_cutoff || mempool_ids.contains(id));
         let live_txs: std::collections::BTreeSet<TxId> =
             self.tx_seen_slot.keys().cloned().collect();
         self.tx_arcs.retain(|id, _| live_txs.contains(id));
-        self.announced_or_known
-            .retain(|id| live_txs.contains(id));
+        self.announced_or_known.retain(|id| live_txs.contains(id));
         self.pending_from.retain(|id, _| live_txs.contains(id));
     }
 
@@ -1556,26 +1542,16 @@ impl SharedConsensus {
             })
             .sum();
         let eb_announcers_count = self.eb_announcers.len();
-        let eb_announcers_peers: usize = self
-            .eb_announcers
-            .values()
-            .map(|v| v.len())
-            .sum();
+        let eb_announcers_peers: usize = self.eb_announcers.values().map(|v| v.len()).sum();
         let eb_hash_to_id = self.eb_hash_to_id.len();
         let votes_count = self.votes.len();
         let votes_by_eb_count = self.votes_by_eb.len();
-        let votes_by_eb_voters: usize =
-            self.votes_by_eb.values().map(|m| m.len()).sum();
+        let votes_by_eb_voters: usize = self.votes_by_eb.values().map(|m| m.len()).sum();
         let noted_no_vote = self.noted_no_vote.len();
 
         // -- LeiosState owned state -------------------------------------
         let eb_tx_hashes_count = self.leios.eb_tx_hashes.len();
-        let eb_tx_hashes_refs: usize = self
-            .leios
-            .eb_tx_hashes
-            .values()
-            .map(|(_, v)| v.len())
-            .sum();
+        let eb_tx_hashes_refs: usize = self.leios.eb_tx_hashes.values().map(|(_, v)| v.len()).sum();
         let pending_eb_tx_fetches = self.leios.pending_eb_tx_fetches.len();
         let leios_in_flight = self.leios.in_flight.len();
         let elections_count = self.leios.elections.count();
@@ -1584,20 +1560,12 @@ impl SharedConsensus {
         let mempool_txs = self.mempool.txs.len();
         let mempool_bytes = self.mempool.total_bytes;
         let mempool_peer_advertised = self.mempool.peer_advertised.len();
-        let mempool_peer_advertised_total: usize = self
-            .mempool
-            .peer_advertised
-            .values()
-            .map(|s| s.len())
-            .sum();
+        let mempool_peer_advertised_total: usize =
+            self.mempool.peer_advertised.values().map(|s| s.len()).sum();
         let mempool_pending_validation = self.mempool.pending_validation.len();
         let mempool_eb_manifests = self.mempool.eb_manifests.len();
-        let mempool_eb_manifests_refs: usize = self
-            .mempool
-            .eb_manifests
-            .values()
-            .map(|v| v.len())
-            .sum();
+        let mempool_eb_manifests_refs: usize =
+            self.mempool.eb_manifests.values().map(|v| v.len()).sum();
         let mempool_eb_pinned = self.mempool.eb_pinned.len();
 
         // -- Rough byte estimates ---------------------------------------
@@ -1613,8 +1581,8 @@ impl SharedConsensus {
         let votes_by_eb_bytes = votes_by_eb_count * 64 + votes_by_eb_voters * 32;
         let noted_no_vote_bytes = noted_no_vote * 48;
         let eb_tx_hashes_bytes = eb_tx_hashes_count * 64 + eb_tx_hashes_refs * 32;
-        let mempool_overhead_bytes = mempool_peer_advertised_total * 32
-            + mempool_eb_manifests_refs * 32;
+        let mempool_overhead_bytes =
+            mempool_peer_advertised_total * 32 + mempool_eb_manifests_refs * 32;
 
         let node_total = tx_arcs_bytes
             + announced_bytes
@@ -1658,27 +1626,48 @@ impl SharedConsensus {
              \x20 Process RSS: {:.0} MB",
             slot,
             num_nodes,
-            tx_arcs, tx_arcs_bytes as f64 / 1e6,
-            announced, announced_bytes as f64 / 1e6,
-            tx_seen, tx_seen_bytes as f64 / 1e6,
-            pending_from, pending_from_bytes as f64 / 1e6,
-            rbs, rbs_bytes as f64 / 1e6,
-            ebs, ebs_bytes as f64 / 1e6, ebs_tx_refs,
-            eb_announcers_count, eb_announcers_bytes as f64 / 1e6, eb_announcers_peers,
-            eb_hash_to_id, eb_hash_bytes as f64 / 1e6,
-            votes_count, votes_bytes as f64 / 1e6,
-            votes_by_eb_count, votes_by_eb_bytes as f64 / 1e6, votes_by_eb_voters,
-            noted_no_vote, noted_no_vote_bytes as f64 / 1e6,
-            eb_tx_hashes_count, eb_tx_hashes_bytes as f64 / 1e6, eb_tx_hashes_refs,
+            tx_arcs,
+            tx_arcs_bytes as f64 / 1e6,
+            announced,
+            announced_bytes as f64 / 1e6,
+            tx_seen,
+            tx_seen_bytes as f64 / 1e6,
+            pending_from,
+            pending_from_bytes as f64 / 1e6,
+            rbs,
+            rbs_bytes as f64 / 1e6,
+            ebs,
+            ebs_bytes as f64 / 1e6,
+            ebs_tx_refs,
+            eb_announcers_count,
+            eb_announcers_bytes as f64 / 1e6,
+            eb_announcers_peers,
+            eb_hash_to_id,
+            eb_hash_bytes as f64 / 1e6,
+            votes_count,
+            votes_bytes as f64 / 1e6,
+            votes_by_eb_count,
+            votes_by_eb_bytes as f64 / 1e6,
+            votes_by_eb_voters,
+            noted_no_vote,
+            noted_no_vote_bytes as f64 / 1e6,
+            eb_tx_hashes_count,
+            eb_tx_hashes_bytes as f64 / 1e6,
+            eb_tx_hashes_refs,
             pending_eb_tx_fetches,
             leios_in_flight,
             elections_count,
-            mempool_txs, mempool_bytes as f64 / 1e6,
-            mempool_peer_advertised, mempool_peer_advertised_total,
+            mempool_txs,
+            mempool_bytes as f64 / 1e6,
+            mempool_peer_advertised,
+            mempool_peer_advertised_total,
             mempool_pending_validation,
-            mempool_eb_manifests, mempool_eb_manifests_refs,
+            mempool_eb_manifests,
+            mempool_eb_manifests_refs,
             mempool_eb_pinned,
-            node_total as f64 / 1e6, num_nodes, all_nodes_mb,
+            node_total as f64 / 1e6,
+            num_nodes,
+            all_nodes_mb,
             rss_mb,
         );
     }
@@ -1763,11 +1752,7 @@ impl SharedConsensus {
     /// same value.  Does NOT call `on_validated_eb`; that fires from
     /// [`Self::record_eb_validated_in_leios`] once the EB closure has
     /// been fully validated locally.
-    fn record_eb_manifest_in_leios(
-        &mut self,
-        eb_id: EndorserBlockId,
-        eb: &LinearEndorserBlock,
-    ) {
+    fn record_eb_manifest_in_leios(&mut self, eb_id: EndorserBlockId, eb: &LinearEndorserBlock) {
         let eb_hash = synthesize_eb_hash(eb_id);
         self.eb_hash_to_id.insert(eb_hash, eb_id);
         let point = shared_consensus::types::Point::Specific {
@@ -1887,18 +1872,15 @@ impl SharedConsensus {
             // mempool-resident.  `admit_validated` would emit
             // `AlreadyKnown` and short-circuit, but skipping here
             // avoids the redundant CpuTask schedule.
-            if self.mempool.has_tx(&key)
-                || self.announced_or_known.contains(&key)
-            {
+            if self.mempool.has_tx(&key) || self.announced_or_known.contains(&key) {
                 continue;
             }
-            self.tracker.track_transaction_received(tx.id, from, self.id);
+            self.tracker
+                .track_transaction_received(tx.id, from, self.id);
             self.tx_arcs.insert(key.clone(), tx.clone());
             self.announced_or_known.insert(key.clone());
             self.pending_from.insert(key.clone(), from);
-            self.tx_seen_slot
-                .entry(key)
-                .or_insert(self.current_slot);
+            self.tx_seen_slot.entry(key).or_insert(self.current_slot);
             out.schedule_cpu_task(CpuTask::TransactionValidated(from, tx));
         }
     }
@@ -1945,9 +1927,9 @@ impl SharedConsensus {
             tx_count: rb.transactions.len() as u32,
             ..Default::default()
         };
-        let fx = self
-            .praos
-            .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
+        let fx =
+            self.praos
+                .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
         self.dispatch_praos_effects(out, fx);
     }
 
@@ -1964,11 +1946,7 @@ impl SharedConsensus {
         self.dispatch_praos_effects(out, fx);
         // Drop tx_arcs entries that are now on-chain so the mempool
         // accounting doesn't carry phantom references.
-        let ids_on_chain: Vec<TxId> = rb
-            .transactions
-            .iter()
-            .map(|tx| tx_id_for(tx.id))
-            .collect();
+        let ids_on_chain: Vec<TxId> = rb.transactions.iter().map(|tx| tx_id_for(tx.id)).collect();
         self.mempool.on_block_applied(&ids_on_chain);
         for id in &ids_on_chain {
             self.tx_arcs.remove(id);
@@ -1982,7 +1960,11 @@ impl SharedConsensus {
         if let Some(endorsement) = rb.endorsement.as_ref() {
             let eb_id = endorsement.eb;
             let eb_arc = match self.ebs.get(&eb_id) {
-                Some(EbState::Received { eb, validated: true, .. }) => Some(eb.clone()),
+                Some(EbState::Received {
+                    eb,
+                    validated: true,
+                    ..
+                }) => Some(eb.clone()),
                 _ => None,
             };
             if let Some(eb) = eb_arc {
@@ -2062,9 +2044,7 @@ impl SharedConsensus {
                         // fold into `MissingEB` (semantic neighbour:
                         // we don't have the validated body yet).
                         NoVoteReason::EBValidating => SimNoVoteReason::MissingEB,
-                        NoVoteReason::EquivocatingRB => {
-                            SimNoVoteReason::EquivocatingRB
-                        }
+                        NoVoteReason::EquivocatingRB => SimNoVoteReason::EquivocatingRB,
                         NoVoteReason::Declined => SimNoVoteReason::Declined,
                     };
                     // shared-consensus re-fires NoVote per slot per EB on
@@ -2080,9 +2060,7 @@ impl SharedConsensus {
                 }
                 LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::QuorumReached { .. })
                 | LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::ElectionExpired { .. })
-                | LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::LeiosElectionInfo {
-                    ..
-                }) => {
+                | LeiosEffect::EmitTelemetry(LeiosTelemetryEvent::LeiosElectionInfo { .. }) => {
                     // No 1:1 sim telemetry; sim's stat aggregator
                     // derives equivalent signals from `votes_by_eb`
                     // counts on the receive path.
@@ -2189,19 +2167,14 @@ impl SharedConsensus {
                         continue;
                     };
                     let sim_reason = match reason {
-                        TxRejectReason::QueueFull => {
-                            Some(TransactionLostReason::PeerBacklogFull)
-                        }
-                        TxRejectReason::EbClosurePruned => {
-                            Some(TransactionLostReason::EBExpired)
-                        }
+                        TxRejectReason::QueueFull => Some(TransactionLostReason::PeerBacklogFull),
+                        TxRejectReason::EbClosurePruned => Some(TransactionLostReason::EBExpired),
                         // `AlreadyKnown` is dedup, not loss — skip. A
                         // `ValidationFailed` outcome doesn't surface in
                         // sim today; the wrapper that introduced it
                         // (shared-consensus) would only emit it if we called
                         // `on_tx_validation_failed`, which we never do.
-                        TxRejectReason::AlreadyKnown
-                        | TxRejectReason::ValidationFailed(_) => None,
+                        TxRejectReason::AlreadyKnown | TxRejectReason::ValidationFailed(_) => None,
                     };
                     if let Some(reason) = sim_reason {
                         self.tracker.track_transaction_lost(orig_id, reason);

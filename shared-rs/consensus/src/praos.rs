@@ -14,7 +14,6 @@
 //! bytes.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -316,12 +315,10 @@ pub struct PraosState {
     /// fetch decision.
     pub rtt: Box<dyn PeerRtt + Send + Sync>,
 
-    /// Pluggable behaviour; see [`crate::behaviour`].  Shared with the
-    /// I/O wrapper as an `Arc<Mutex<Box<dyn _>>>` so out-of-band callers
-    /// (e.g. per-peer outbound transforms) can lock the same behaviour
-    /// instance.  Swapping the inner `Box` under the lock changes the
-    /// live behaviour for every Arc holder.
-    pub behaviour: Arc<Mutex<Box<dyn crate::behaviour::Behaviour>>>,
+    /// The full control signal applied by the BT tick each slot
+    /// (`apply_control`). Honest by default; actuators read it instead of
+    /// calling behaviour hooks.
+    pub control: crate::behaviour::tree::control::ControlSignal,
 }
 
 impl PraosState {
@@ -371,38 +368,15 @@ impl PraosState {
             equivocating_rb_slots: BTreeSet::new(),
             block_policy,
             rtt,
-            behaviour: Arc::new(Mutex::new(Box::new(crate::behaviour::HonestBehaviour))),
+            control: crate::behaviour::tree::control::ControlSignal::default(),
         }
     }
 
-    /// Replace the behaviour.  Swaps the trait object under the mutex;
-    /// other Arc holders observe the new behaviour from their next hook
-    /// call.
-    pub fn set_behaviour(&mut self, behaviour: Box<dyn crate::behaviour::Behaviour>) {
-        *self.behaviour.lock().expect("behaviour mutex poisoned") = behaviour;
-    }
-
-    /// Short name of the current behaviour.
-    pub fn behaviour_name(&self) -> &'static str {
-        self.behaviour
-            .lock()
-            .expect("behaviour mutex poisoned")
-            .name()
-    }
-
-    /// Lock the behaviour and call the hook with `(&mut dyn Behaviour,
-    /// &PraosState)`.  The Arc clone breaks the borrow chain so the
-    /// hook can see an immutable view of `self`.
-    fn invoke_hook<F>(&mut self, hook: F) -> crate::behaviour::BehaviourOutcome<PraosEffect>
-    where
-        F: FnOnce(
-            &mut dyn crate::behaviour::Behaviour,
-            &PraosState,
-        ) -> crate::behaviour::BehaviourOutcome<PraosEffect>,
-    {
-        let arc = self.behaviour.clone();
-        let mut guard = arc.lock().expect("behaviour mutex poisoned");
-        hook(&mut **guard, self)
+    /// Apply the per-slot [`ControlSignal`](crate::behaviour::tree::control::ControlSignal)
+    /// produced by the BT tick, storing it for the actuators to read. Called
+    /// once per slot by the I/O wrapper.
+    pub fn apply_control(&mut self, control: &crate::behaviour::tree::control::ControlSignal) {
+        self.control = control.clone();
     }
 
     /// Replace the block-fetch policy.
@@ -812,14 +786,6 @@ impl PraosState {
         header_issuer: &[u8],
         now: Instant,
     ) -> Vec<PraosEffect> {
-        use crate::behaviour::BehaviourOutcome;
-        let tip_clone = tip_point.clone();
-        let appended: Vec<PraosEffect> =
-            match self.invoke_hook(|b, s| b.on_tip_advanced(s, peer_id, &tip_clone)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         // CIP-0164 RB-header equivocation: detect as soon as a second
         // distinct header hash arrives at the same `(slot, issuer)` via
         // the ChainSync announce path, without waiting for the body
@@ -838,7 +804,6 @@ impl PraosState {
         );
         let mut fx = Vec::new();
         self.evaluate_and_fetch_internal(now, &mut fx);
-        fx.extend(appended);
         fx
     }
 
@@ -857,18 +822,10 @@ impl PraosState {
         parsed_header: Option<ParsedHeaderInfo>,
         parsed_body: ParsedBodyInfo,
     ) -> Vec<PraosEffect> {
-        use crate::behaviour::BehaviourOutcome;
-        let appended: Vec<PraosEffect> =
-            match self.invoke_hook(|b, s| b.on_block_received(s, &point)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         let mut fx = Vec::new();
         let hash = match &point {
             Point::Specific { hash, .. } => *hash,
             _ => {
-                fx.extend(appended);
                 return fx;
             }
         };
@@ -877,7 +834,6 @@ impl PraosState {
             || self.validated.contains(&hash)
             || self.in_flight_validation.contains(&hash)
         {
-            fx.extend(appended);
             return fx;
         }
         let header_was_parsed = parsed_header.is_some();
@@ -989,7 +945,6 @@ impl PraosState {
             "block received and cached"
         );
         self.try_switch_and_execute_internal(hash, &mut fx);
-        fx.extend(appended);
         fx
     }
 
@@ -1059,17 +1014,9 @@ impl PraosState {
     /// A peer disconnected; drop its fragment and re-run selection in
     /// case its absence frees up a different peer.
     pub fn on_peer_disconnected(&mut self, peer_id: PeerId, now: Instant) -> Vec<PraosEffect> {
-        use crate::behaviour::BehaviourOutcome;
-        let appended: Vec<PraosEffect> =
-            match self.invoke_hook(|b, s| b.on_peer_disconnected(s, peer_id)) {
-                BehaviourOutcome::Continue => Vec::new(),
-                BehaviourOutcome::Replace(effects) => return effects,
-                BehaviourOutcome::Append(extra) => extra,
-            };
         self.record_peer_disconnected(peer_id);
         let mut fx = Vec::new();
         self.evaluate_and_fetch_internal(now, &mut fx);
-        fx.extend(appended);
         fx
     }
 
@@ -2201,6 +2148,20 @@ pub struct LeiosCertSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_control_stores_praos_domain_slice() {
+        use crate::behaviour::tree::control::ControlSignal;
+        let mut s = PraosState::new("test".to_string(), 100);
+        assert_eq!(s.control.praos.reorg_depth, None);
+        assert!(!s.control.praos.drop_inbound);
+        let mut cs = ControlSignal::default();
+        cs.praos.reorg_depth = Some(7);
+        cs.praos.drop_inbound = true;
+        s.apply_control(&cs);
+        assert_eq!(s.control.praos.reorg_depth, Some(7));
+        assert!(s.control.praos.drop_inbound);
+    }
 
     fn h(seed: u8) -> [u8; 32] {
         [seed; 32]
