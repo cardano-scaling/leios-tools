@@ -892,6 +892,12 @@ async fn next_outbound_notification(
     behaviour: Option<&BehaviourHandle>,
 ) -> Option<LnMsg> {
     use crate::store::leios_store::LeiosNotification;
+    // Answer the peer within this window even when nothing is deliverable.
+    // The deadline is absolute across the loop: `subscription.changed()`
+    // wakes on unrelated store activity (votes/offers for other peers) and
+    // must not reset it, or a busy store starves the keepalive entirely.
+    const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(50);
+    let keepalive_deadline = tokio::time::Instant::now() + KEEPALIVE_INTERVAL;
     loop {
         let pending = store.notifications_after(read_index);
         for entry in &pending {
@@ -1004,24 +1010,18 @@ async fn next_outbound_notification(
             }
             return Some(msg);
         }
-        // Drained without finding a deliverable entry — wait for new
-        // injects, but send an empty MsgLeiosVotes as a keepalive
-        // before any protocol-level StBusy timer can expire.  Note this
-        // is *necessary but not sufficient*: the dev relay also
-        // enforces a hard 60s hot-dwell wall (peer-selection policy,
-        // not protocol-state) that demotes us regardless of wire
-        // activity.  The keepalive only ensures we don't get killed by
-        // a protocol-state timeout in addition to the dwell-policy
-        // demote.  Replace with the dedicated "No offer" message once
-        // the network team adds it to the protocol.
-        const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(50);
+        // Drained without a deliverable entry. Wait for new injects, but
+        // answer the peer's outstanding request with an empty MsgLeiosVotes
+        // once the keepalive deadline passes, so its LeiosNotify protocol
+        // timer can't expire while we have nothing to offer. (Replace with
+        // the dedicated "No offer" message once the protocol gains one.)
         tokio::select! {
             result = subscription.changed() => {
                 if result.is_err() {
                     return None;
                 }
             }
-            _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+            _ = tokio::time::sleep_until(keepalive_deadline) => {
                 tracing::info!(
                     peer = peer.0,
                     "leios_notify: sending empty-votes keepalive"
@@ -1425,6 +1425,50 @@ mod tests {
         server_handle.await.ok();
         mux_a.abort();
         mux_b.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn leios_notify_keepalive_fires_despite_subscription_churn() {
+        // Regression: the empty-votes keepalive must fire on its absolute
+        // ~50s deadline even when the store-wide subscription is woken
+        // constantly by activity for OTHER peers. Previously the 50s sleep
+        // was restarted on every wake, so a busy store starved it and the
+        // relay tore down our LeiosNotify at its ~60s protocol timeout.
+        let (store, _rx) = LeiosStore::new(100);
+        let mut sub = store.subscribe();
+
+        // Churn: inject offers sourced from peer 0 (no-echo-skipped for it)
+        // every 1s — bumping the subscription far faster than the keepalive.
+        let churn_store = store.clone();
+        let churn = tokio::spawn(async move {
+            for slot in 0..120u64 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                churn_store.inject_block(
+                    Point::Specific {
+                        slot,
+                        hash: [slot as u8; 32],
+                    },
+                    vec![1, 2, 3],
+                    Some(PeerId(0)),
+                );
+            }
+        });
+
+        // Nothing is ever deliverable to peer 0, yet the keepalive must
+        // arrive within ~50s despite the constant churn.
+        let mut idx = 0usize;
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(55),
+            next_outbound_notification(&store, &mut idx, PeerId(0), &mut sub, None),
+        )
+        .await;
+        churn.abort();
+        match res {
+            Ok(Some(LnMsg::MsgLeiosVotes { votes })) => {
+                assert!(votes.is_empty(), "keepalive must be empty votes");
+            }
+            other => panic!("expected empty-votes keepalive within 50s, got {other:?}"),
+        }
     }
 
     #[tokio::test]
