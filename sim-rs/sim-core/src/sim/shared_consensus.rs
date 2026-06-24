@@ -2162,7 +2162,7 @@ impl SharedConsensus {
                         .tx_arcs
                         .get(&tx_id)
                         .map(|tx| tx.id)
-                        .or_else(|| sim_id_from_bytes(&tx_id.get_bytes()))
+                        .or_else(|| sim_id_from_bytes(tx_id.get_bytes()))
                     else {
                         continue;
                     };

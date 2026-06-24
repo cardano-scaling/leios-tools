@@ -58,7 +58,7 @@ pub struct TxId(Arc<[u8; 32]>);
 impl TxId {
     /// Copies slice bytes into the inner array.
     pub fn new_with_slice(bytes: &[u8; 32]) -> Self {
-        Self(Arc::new(bytes.clone()))
+        Self(Arc::new(*bytes))
     }
 
     /// Moves array to inner one.
@@ -98,6 +98,10 @@ impl TxBody {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Blake2b-256 over arbitrary bytes. Matches the tx-id derivation used

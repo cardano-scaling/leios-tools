@@ -528,6 +528,7 @@ mod tests {
     /// fields.  This matches the layout sent by the public Leios dev
     /// relay (leios-prototype) and a later CIP-0164 draft; we accept it
     /// liberally via CBOR type dispatch.
+    #[allow(clippy::too_many_arguments)]
     fn build_test_header_eb_tuple(
         era: u8,
         block_number: u64,
