@@ -49,7 +49,19 @@ npm run dev
 
 # Build for production:
 npm run build
+
+# Serve the production build (use this for long-running monitoring):
+npm run preview
 ```
+
+> **Long-running sessions: use `npm run build && npm run preview`, not `npm run dev`.**
+> React's development build emits a User-Timing `performance.measure()` entry
+> per component per commit, which the browser never evicts. Because this UI
+> streams stats and events continuously, that buffer grows without bound
+> (~1000 entries/s, multiple GB of heap after a few hours). The production
+> build strips this instrumentation. As a belt-and-suspenders measure,
+> `main.tsx` periodically clears the User-Timing buffer in dev mode, but the
+> production preview is the right tool for unattended monitoring.
 
 ## Dependencies
 
