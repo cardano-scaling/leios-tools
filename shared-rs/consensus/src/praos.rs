@@ -905,6 +905,17 @@ impl PraosState {
                     Vec::new(),
                 ),
             };
+        // CIP-0164 certification is signalled two ways: the RB header's
+        // `certified_eb` bit, or an `eb_certificate` in the block body. The
+        // Leios dev-relay (their bug, 2026-06) leaves the header bit unset but
+        // still includes the body certificate — either a real cert or the
+        // `array(0)` "pending" placeholder. Treat the body slot as
+        // authoritative too, so certification is reflected in the chain tree
+        // (UI `*`) and fed to on-chain EB endorsement tracking
+        // (`parent_announced_eb_for_cert`).
+        let certified_eb = certified_eb
+            || parsed_body.eb_certificate.is_some()
+            || parsed_body.eb_certificate_pending;
         // CIP-0164 RB-header equivocation tracking — must run on
         // every distinct header observed (before any dedup that
         // would short-circuit the path).  Honored across both
@@ -2805,6 +2816,63 @@ mod tests {
         assert!(fx.is_empty());
         assert!(s.chain_tree.block_number(&h(1)).is_none());
         assert!(s.block_cache.contains_key(&h(1)));
+    }
+
+    #[test]
+    fn body_pending_cert_marks_certified_without_header_bit() {
+        // Relay bug: header leaves `certified_eb` false, but the body carries
+        // the `array(0)` "pending" eb_certificate placeholder. We must still
+        // treat the block as certifying its parent's announced EB.
+        let mut s = fresh();
+        let body = ParsedBodyInfo {
+            eb_certificate_pending: true,
+            ..ParsedBodyInfo::default()
+        };
+        s.on_block_received(
+            pt(100, 1),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(5, 100, None)),
+            body,
+        );
+        assert!(
+            s.block_cache.get(&h(1)).unwrap().certified_eb,
+            "pending body cert should set certified_eb"
+        );
+    }
+
+    #[test]
+    fn body_real_cert_marks_certified_without_header_bit() {
+        let mut s = fresh();
+        let body = ParsedBodyInfo {
+            eb_certificate: Some(LeiosCertSummary {
+                eb_slot: 99,
+                eb_hash: [7u8; 32],
+            }),
+            ..ParsedBodyInfo::default()
+        };
+        s.on_block_received(
+            pt(100, 1),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(5, 100, None)),
+            body,
+        );
+        assert!(s.block_cache.get(&h(1)).unwrap().certified_eb);
+    }
+
+    #[test]
+    fn no_cert_signal_stays_uncertified() {
+        // Neither header bit nor body cert → not certified (regression guard).
+        let mut s = fresh();
+        s.on_block_received(
+            pt(100, 1),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(5, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+        assert!(!s.block_cache.get(&h(1)).unwrap().certified_eb);
     }
 
     // -- Chain selection (pure) ------------------------------------------

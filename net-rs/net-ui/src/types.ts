@@ -16,9 +16,27 @@ export interface Edge {
   latency_ms: number;
 }
 
+// External ("Blue team") node — a relay we connect to but do not control.
+// Mirrors net-cluster ExternalNode. Has no telemetry of its own.
+export interface ExternalNode {
+  id: string;
+  address: string;
+}
+
+// Edge from an internal node (`from` indexes into Topology.nodes) to an
+// external node (`to` matches ExternalNode.id). Mirrors net-cluster ExternalEdge.
+export interface ExternalEdge {
+  from: number;
+  to: string;
+  latency_ms: number;
+}
+
 export interface Topology {
   nodes: NodeTopology[];
   edges: Edge[];
+  // Omitted by the server when empty (skip_serializing_if).
+  external_nodes?: ExternalNode[];
+  external_edges?: ExternalEdge[];
 }
 
 export interface PeerStatsEntry {
@@ -149,6 +167,16 @@ export type BehaviourSpec =
   | { kind: "honest" }
   | { kind: "lazy-voter"; reason?: NoVoteReason }
   | { kind: "rb-header-equivocator"; ways: number }
+  | { kind: "lie-about-eb-size"; scale_num: number; scale_den: number; offset: number }
+  | { kind: "echo-to-source" }
+  | {
+      kind: "t22";
+      vote_threshold: number;
+      non_voting_threshold: number;
+      hide_eb_tx_received: boolean;
+    }
+  | { kind: "deep-reorg"; every_slots: number; depth: number }
+  | { kind: "drop-inbound-peers"; probability: number }
   | { kind: "composite"; children: BehaviourSpec[] };
 
 // Mirrors net-cluster's BehaviourSelection enum (same serde tag layout).

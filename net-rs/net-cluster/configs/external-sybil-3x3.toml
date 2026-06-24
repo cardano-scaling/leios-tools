@@ -1,0 +1,43 @@
+# Use case 3 — three Sybil nodes against three dev relays.
+#
+# Three of our nodes (Red team), each attached to all three dev relays
+# (Blue team). degree = 0 leaves our nodes isolated from each other (no
+# internal interconnect) — set degree >= 1 for a connected Sybil mesh when
+# building toward coordinated MITM / partition attacks.
+#
+#   cargo run -p net-cluster -- \
+#     --config net-cluster/configs/external-sybil-3x3.toml \
+#     --net-node-bin target/debug/net-node
+#
+# net-ui: three red circles (no edges between them), each fanning out to
+# three blue diamond relays — nine external edges total.
+
+base_config = "net-node/configs/leios-dev.toml"
+base_port = 30000
+seed = 1
+aggregator_port = 9100
+stats_interval_secs = 5
+
+rb_generation_probability = 0.0
+
+[topology_random]
+num_nodes = 3
+degree = 0            # isolated Sybils; degree >= 1 to interconnect them
+
+[[external_nodes]]
+id = "relay-us"
+address = "3.131.54.190:3001"
+[external_nodes.connect]
+kind = "all"
+
+[[external_nodes]]
+id = "relay-eu-ie"
+address = "34.251.133.12:3001"
+[external_nodes.connect]
+kind = "all"
+
+[[external_nodes]]
+id = "relay-eu-de"
+address = "52.29.179.71:3001"
+[external_nodes.connect]
+kind = "all"

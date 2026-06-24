@@ -415,13 +415,29 @@ fn log_cluster_config_summary(config: &config::ClusterConfig) {
             );
         }
     }
+
+    // Likely-misconfiguration guard: connecting to external relays with the
+    // mainnet base config almost certainly carries the wrong network magic
+    // (mainnet 764824073 vs the Leios dev net's 164), so every handshake to
+    // the relay would fail.  Warn rather than fail — the operator may have a
+    // mainnet-magic relay deliberately.
+    if !config.external_nodes.is_empty() && config.base_config.ends_with("mainnet.toml") {
+        tracing::warn!(
+            "external_nodes are set but base_config is {}; the dev testnet uses \
+             network_magic=164 — set base_config = \"net-node/configs/leios-dev.toml\" \
+             unless your relays really speak mainnet",
+            config.base_config,
+        );
+    }
 }
 
 fn log_topology(topo: &topology::Topology) {
     tracing::info!(
-        "generated topology: {} nodes, {} edges",
+        "generated topology: {} nodes, {} edges, {} external nodes, {} external edges",
         topo.nodes.len(),
-        topo.edges.len()
+        topo.edges.len(),
+        topo.external_nodes.len(),
+        topo.external_edges.len(),
     );
     for node in &topo.nodes {
         tracing::info!(
@@ -431,6 +447,9 @@ fn log_topology(topo: &topology::Topology) {
             node.stake,
             node.peers.len()
         );
+    }
+    for ext in &topo.external_nodes {
+        tracing::info!("  external {} @ {} (Blue team)", ext.id, ext.address);
     }
 }
 

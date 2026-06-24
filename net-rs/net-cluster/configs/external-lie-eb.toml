@@ -1,0 +1,38 @@
+# Use case 2 — single adversary against the Leios dev testnet.
+#
+# One of our nodes (Red team) attaches to the dev relay and runs the
+# LieAboutEbSize behaviour, reporting eb_size = 0 in its outbound EB offers.
+# Mirrors the manual net-node/configs/follow-dev-relay-lie-eb-zero.toml run,
+# but driven through net-cluster + net-ui.
+#
+#   cargo run -p net-cluster -- \
+#     --config net-cluster/configs/external-lie-eb.toml \
+#     --net-node-bin target/debug/net-node
+
+base_config = "net-node/configs/leios-dev.toml"
+base_port = 30000
+seed = 1
+aggregator_port = 9100
+stats_interval_secs = 5
+
+rb_generation_probability = 0.0
+
+[topology_random]
+num_nodes = 1
+degree = 0
+
+# Adversarial behaviour, attached to our one node.
+[behaviour]
+kind = "lie-about-eb-size"
+scale_num = 0
+scale_den = 1
+offset = 0
+
+[behaviour_selection]
+kind = "all"
+
+[[external_nodes]]
+id = "dev-relay"
+address = "leios-node.play.dev.cardano.org:3001"
+[external_nodes.connect]
+kind = "all"

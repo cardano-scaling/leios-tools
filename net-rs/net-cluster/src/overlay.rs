@@ -304,6 +304,8 @@ mod tests {
             nodes: vec![sample_node()],
             edges: Vec::new(),
             total_stake: 500,
+            external_nodes: Vec::new(),
+            external_edges: Vec::new(),
         };
         let dir = tempfile::tempdir().unwrap();
         let overlays = generate_overlays(&topo, dir.path(), 9100, 5, &HashMap::new()).unwrap();

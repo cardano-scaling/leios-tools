@@ -21,7 +21,7 @@ use std::path::Path;
 use rand::prelude::*;
 use serde::Serialize;
 
-use crate::config::{BehaviourSelection, ClusterConfig};
+use crate::config::{BehaviourSelection, ClusterConfig, ExternalConnectSpec, ExternalNodeConfig};
 use crate::raw_topology::{self, RawTopology};
 
 /// A peer link from one node to another.
@@ -64,6 +64,30 @@ pub struct Edge {
     pub latency_ms: u64,
 }
 
+/// An external ("Blue team") node — a peer we connect to but do not spawn.
+/// Lives in [`Topology::external_nodes`], separate from the spawned
+/// [`Topology::nodes`], so the cluster never tries to launch a child process
+/// for a relay.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalNode {
+    /// Stable display id (e.g. "relay-eu" or synthesised "ext-0").
+    pub id: String,
+    /// Dial address the connecting internal nodes use.
+    pub address: String,
+}
+
+/// An edge from one of our internal nodes to an external node.
+///
+/// `from` indexes into [`Topology::nodes`]; `to` is an
+/// [`ExternalNode::id`] (a string, since the two collections have separate
+/// index spaces).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalEdge {
+    pub from: usize,
+    pub to: String,
+    pub latency_ms: u64,
+}
+
 /// Complete cluster topology.
 #[derive(Debug, Clone, Serialize)]
 pub struct Topology {
@@ -84,6 +108,14 @@ pub struct Topology {
     /// per-node win probability saturates and every node produces a
     /// block every slot.
     pub total_stake: u64,
+    /// External ("Blue team") nodes — relays we connect to but don't spawn.
+    /// Empty for ordinary local clusters; populated from
+    /// [`ClusterConfig::external_nodes`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_nodes: Vec<ExternalNode>,
+    /// Edges from internal nodes to [`Self::external_nodes`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_edges: Vec<ExternalEdge>,
 }
 
 /// Generate a random cluster topology from the given config.
@@ -146,21 +178,12 @@ pub fn generate_random(config: &ClusterConfig, total_stake: u64) -> Topology {
         });
     }
 
-    // Step 5: Inject external peers.
-    for ext in &config.external_peers {
-        let count = ext.inject_into_nodes.min(n);
-        let chosen: Vec<usize> = (0..n)
-            .collect::<Vec<_>>()
-            .partial_shuffle(&mut rng, count)
-            .0
-            .to_vec();
-        for &i in &chosen {
-            nodes[i].peers.push(PeerLink {
-                address: ext.address.clone(),
-                inbound_delay_ms: 0,
-            });
-        }
-    }
+    // Step 5: Inject external ("Blue team") nodes.  This pushes peer links
+    // onto the chosen internal nodes and records graph nodes/edges; the
+    // shared `rng` (already advanced by `build_random_graph`) keeps existing
+    // seeds' output stable.
+    let (external_nodes, external_edges) =
+        inject_external_nodes(&config.external_nodes, &mut nodes, &mut rng);
 
     // `distribute_stake` is sum-preserving so this equals the input
     // `total_stake`; recomputing keeps the invariant local.
@@ -169,7 +192,69 @@ pub fn generate_random(config: &ClusterConfig, total_stake: u64) -> Topology {
         nodes,
         edges,
         total_stake: cluster_total_stake,
+        external_nodes,
+        external_edges,
     }
+}
+
+/// Resolve external-node configs into graph entries and per-node peer links.
+///
+/// For each [`ExternalNodeConfig`] this picks the internal nodes that should
+/// connect (per [`ExternalConnectSpec`]), pushes a [`PeerLink`] onto each so
+/// the spawned net-node dials the relay, and records an [`ExternalEdge`].
+/// Returns the `(external_nodes, external_edges)` collections for the
+/// [`Topology`].  The caller supplies the (already-seeded) `rng` so
+/// determinism is tied to the surrounding topology generation.
+fn inject_external_nodes(
+    external: &[ExternalNodeConfig],
+    nodes: &mut [NodeTopology],
+    rng: &mut StdRng,
+) -> (Vec<ExternalNode>, Vec<ExternalEdge>) {
+    let n = nodes.len();
+    let mut ext_nodes = Vec::with_capacity(external.len());
+    let mut ext_edges = Vec::new();
+
+    for (i, ext) in external.iter().enumerate() {
+        let id = ext.id.clone().unwrap_or_else(|| format!("ext-{i}"));
+
+        let targets: Vec<usize> = match &ext.connect {
+            ExternalConnectSpec::All => (0..n).collect(),
+            ExternalConnectSpec::Nodes { indices } => {
+                // Dedup while preserving order: duplicate indices would push
+                // duplicate peer links (repeat dials to the same relay) and
+                // duplicate external edges in the UI.
+                let mut seen = std::collections::HashSet::new();
+                indices
+                    .iter()
+                    .copied()
+                    .filter(|&j| j < n && seen.insert(j))
+                    .collect()
+            }
+            ExternalConnectSpec::Random { count } => {
+                let mut all: Vec<usize> = (0..n).collect();
+                all.partial_shuffle(rng, (*count).min(n)).0.to_vec()
+            }
+        };
+
+        for &j in &targets {
+            nodes[j].peers.push(PeerLink {
+                address: ext.address.clone(),
+                inbound_delay_ms: ext.inbound_delay_ms,
+            });
+            ext_edges.push(ExternalEdge {
+                from: j,
+                to: id.clone(),
+                latency_ms: ext.inbound_delay_ms,
+            });
+        }
+
+        ext_nodes.push(ExternalNode {
+            id,
+            address: ext.address.clone(),
+        });
+    }
+
+    (ext_nodes, ext_edges)
 }
 
 /// Load a cluster topology from a v3/v4-style YAML file.
@@ -343,34 +428,22 @@ fn build_from_raw(
         );
     }
 
-    // ---- Pass 3: inject external peers ------------------------------------
+    // ---- Pass 3: inject external ("Blue team") nodes ----------------------
     // Same shape as the random path, but the RNG is seeded fresh here:
     // unlike the random path there's no prior `build_random_graph` to
     // advance the RNG, so we derive the YAML-mode seed by offsetting
     // `config.seed` (or falling back to entropy).  Determinism for YAML
     // mode is therefore tied to `config.seed`, not to any graph-gen
     // history.
-    let n = nodes.len();
-    if !config.external_peers.is_empty() {
+    let (external_nodes, external_edges) = if config.external_nodes.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
         let mut rng = match config.seed {
             Some(s) => StdRng::seed_from_u64(s.wrapping_add(0xEA70_BEEF)),
             None => StdRng::from_entropy(),
         };
-        for ext in &config.external_peers {
-            let count = ext.inject_into_nodes.min(n);
-            let chosen: Vec<usize> = (0..n)
-                .collect::<Vec<_>>()
-                .partial_shuffle(&mut rng, count)
-                .0
-                .to_vec();
-            for &i in &chosen {
-                nodes[i].peers.push(PeerLink {
-                    address: ext.address.clone(),
-                    inbound_delay_ms: 0,
-                });
-            }
-        }
-    }
+        inject_external_nodes(&config.external_nodes, &mut nodes, &mut rng)
+    };
 
     // Sum of the loaded per-node stakes — overwrites the base config's
     // `total_stake`.  Critical for YAML mode where the YAML carries real
@@ -381,6 +454,8 @@ fn build_from_raw(
         nodes,
         edges,
         total_stake,
+        external_nodes,
+        external_edges,
     })
 }
 
@@ -419,21 +494,27 @@ fn build_random_graph(
         }
     }
 
-    // Ensure connectivity: find connected components and bridge them.
-    let components = find_components(n, &adj);
-    if components.len() > 1 {
-        for pair in components.windows(2) {
-            let a = pair[0][0];
-            let b = pair[1][0];
-            if !adj[a].contains(&b) {
-                let latency = rng.gen_range(min_latency_ms..=max_latency_ms);
-                adj[a].insert(b);
-                adj[b].insert(a);
-                edges.push(Edge {
-                    from: a,
-                    to: b,
-                    latency_ms: latency,
-                });
+    // Ensure connectivity: find connected components and bridge them.  Only
+    // when the operator asked for a connected graph (`degree > 0`).
+    // `degree == 0` means "no internal links" — e.g. independent Sybils each
+    // attached only to external relays — so skip bridging entirely and leave
+    // the nodes isolated.
+    if degree > 0 {
+        let components = find_components(n, &adj);
+        if components.len() > 1 {
+            for pair in components.windows(2) {
+                let a = pair[0][0];
+                let b = pair[1][0];
+                if !adj[a].contains(&b) {
+                    let latency = rng.gen_range(min_latency_ms..=max_latency_ms);
+                    adj[a].insert(b);
+                    adj[b].insert(a);
+                    edges.push(Edge {
+                        from: a,
+                        to: b,
+                        latency_ms: latency,
+                    });
+                }
             }
         }
     }
@@ -911,13 +992,16 @@ mod tests {
 
     #[test]
     fn test_external_peers() {
+        // Legacy `external_peers` are normalised into `external_nodes` by
+        // `config::load`; this test exercises the normalised shape directly
+        // (a Random{count} connection).
         let mut config = test_config(5, 2);
-        config
-            .external_peers
-            .push(crate::config::ExternalPeerConfig {
-                address: "relay.example.com:3001".to_string(),
-                inject_into_nodes: 2,
-            });
+        config.external_nodes.push(ExternalNodeConfig {
+            id: None,
+            address: "relay.example.com:3001".to_string(),
+            connect: ExternalConnectSpec::Random { count: 2 },
+            inbound_delay_ms: 0,
+        });
         let topo = generate_random(&config, 5000);
         let count = topo
             .nodes
@@ -929,6 +1013,103 @@ mod tests {
             })
             .count();
         assert_eq!(count, 2);
+        // The relay also surfaces as a graph node + 2 external edges.
+        assert_eq!(topo.external_nodes.len(), 1);
+        assert_eq!(topo.external_edges.len(), 2);
+    }
+
+    #[test]
+    fn external_nodes_all_connects_every_internal() {
+        let mut config = test_config(4, 2);
+        config.external_nodes.push(ExternalNodeConfig {
+            id: Some("relay-eu".to_string()),
+            address: "relay.example.com:3001".to_string(),
+            connect: ExternalConnectSpec::All,
+            inbound_delay_ms: 0,
+        });
+        let topo = generate_random(&config, 4000);
+        // Every internal node dials the relay; one external edge each.
+        assert!(topo.nodes.iter().all(|n| n
+            .peers
+            .iter()
+            .any(|p| p.address == "relay.example.com:3001")));
+        assert_eq!(topo.external_edges.len(), 4);
+        assert!(topo.external_edges.iter().all(|e| e.to == "relay-eu"));
+        // The internal node count is untouched by external injection — this
+        // guards the spawn invariant (one child process per `nodes` entry).
+        assert_eq!(topo.nodes.len(), 4);
+    }
+
+    #[test]
+    fn external_nodes_explicit_indices() {
+        let mut config = test_config(4, 2);
+        config.external_nodes.push(ExternalNodeConfig {
+            id: Some("relay".to_string()),
+            address: "r:3001".to_string(),
+            connect: ExternalConnectSpec::Nodes {
+                indices: vec![0, 2, 99],
+            }, // 99 is out of range and ignored
+            inbound_delay_ms: 0,
+        });
+        let topo = generate_random(&config, 4000);
+        let froms: std::collections::BTreeSet<usize> =
+            topo.external_edges.iter().map(|e| e.from).collect();
+        assert_eq!(froms, [0, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn external_nodes_random_is_deterministic_for_seed() {
+        let mk = || {
+            let mut config = test_config(6, 2); // test_config seeds 42
+            config.external_nodes.push(ExternalNodeConfig {
+                id: None,
+                address: "r:3001".to_string(),
+                connect: ExternalConnectSpec::Random { count: 3 },
+                inbound_delay_ms: 0,
+            });
+            let topo = generate_random(&config, 6000);
+            topo.external_edges
+                .iter()
+                .map(|e| e.from)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(mk(), mk());
+        assert_eq!(mk().len(), 3);
+    }
+
+    #[test]
+    fn external_edges_reference_valid_ids_and_nodes() {
+        let mut config = test_config(3, 2);
+        for (i, addr) in ["a:1", "b:2"].iter().enumerate() {
+            config.external_nodes.push(ExternalNodeConfig {
+                id: if i == 0 {
+                    Some("named".to_string())
+                } else {
+                    None
+                },
+                address: addr.to_string(),
+                connect: ExternalConnectSpec::All,
+                inbound_delay_ms: 0,
+            });
+        }
+        let topo = generate_random(&config, 3000);
+        let ids: std::collections::BTreeSet<&str> =
+            topo.external_nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains("named"));
+        assert!(ids.contains("ext-1")); // synthesised id for the second
+        for e in &topo.external_edges {
+            assert!(e.from < topo.nodes.len());
+            assert!(ids.contains(e.to.as_str()));
+        }
+    }
+
+    #[test]
+    fn degree_zero_produces_no_internal_edges() {
+        // Isolated Sybils: degree 0 must NOT force-bridge the graph.
+        let config = test_config(3, 0);
+        let topo = generate_random(&config, 3000);
+        assert!(topo.edges.is_empty());
+        assert!(topo.nodes.iter().all(|n| n.peers.is_empty()));
     }
 
     /// Helper: rebuild adjacency from topology edges.
@@ -1105,12 +1286,12 @@ nodes:
     #[test]
     fn yaml_external_peers_still_injected() {
         let mut config = yaml_test_config();
-        config
-            .external_peers
-            .push(crate::config::ExternalPeerConfig {
-                address: "relay.example.com:3001".to_string(),
-                inject_into_nodes: 2,
-            });
+        config.external_nodes.push(ExternalNodeConfig {
+            id: None,
+            address: "relay.example.com:3001".to_string(),
+            connect: ExternalConnectSpec::Random { count: 2 },
+            inbound_delay_ms: 0,
+        });
         let raw = parse_yaml_fixture();
         let topo = build_from_raw(&config, raw, None).unwrap();
         let count = topo
@@ -1123,6 +1304,8 @@ nodes:
             })
             .count();
         assert_eq!(count, 2);
+        assert_eq!(topo.external_nodes.len(), 1);
+        assert_eq!(topo.external_edges.len(), 2);
     }
 
     #[test]
