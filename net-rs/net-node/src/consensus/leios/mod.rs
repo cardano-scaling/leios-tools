@@ -234,7 +234,7 @@ impl LeiosConsensus {
         // a receiver has merged via `LeiosFetch BlockTxs`.  Snapshot
         // upfront so we don't hold the mempool lock across the call.
         let known = self.mempool.lock().unwrap().all_known_tx_ids();
-        let tx_known = |id: &TxId| known.contains(&id);
+        let tx_known = |id: &TxId| known.contains(id);
         let mut fx = self.state.on_slot(slot, &tx_known);
         fx.push(LeiosEffect::EmitTelemetry(
             LeiosTelemetryEvent::LeiosElectionInfo {
@@ -1144,7 +1144,7 @@ mod tests {
         let _ = next_record_cmd(&mut rx).await;
         let _ = next_fetch_cmd(&mut rx).await;
 
-        let outcome = leios.match_eb_tx_response(&eb_point, &[body1.clone()]);
+        let outcome = leios.match_eb_tx_response(&eb_point, std::slice::from_ref(&body1));
         assert_eq!(outcome.matched_bodies, vec![body1]);
         assert_eq!(outcome.requested, 3);
         let remaining: Vec<u32> = bitmap_helpers::iter_indices(&outcome.remaining_bitmap).collect();

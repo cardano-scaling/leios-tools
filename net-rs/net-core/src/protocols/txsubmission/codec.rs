@@ -35,7 +35,7 @@ fn encode_tx_id<W: minicbor::encode::Write>(
     e: &mut Encoder<W>,
     _ctx: &mut (),
 ) -> Result<(), EncodeError<W::Error>> {
-    e.bytes(&tx_id.get_bytes())?;
+    e.bytes(tx_id.get_bytes())?;
     Ok(())
 }
 

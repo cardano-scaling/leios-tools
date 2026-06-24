@@ -184,6 +184,9 @@ impl ProcessManager {
     /// pipe are silently skipped.  Used by the runtime attack-trigger
     /// path, where the orchestrator targets a specific subset of nodes
     /// rather than broadcasting.
+    // Currently uncalled — reserved infrastructure for the subset-targeted
+    // attack-trigger path; kept deliberately rather than removed.
+    #[allow(dead_code)]
     pub async fn send_config_update_to(&mut self, indices: &[usize], json: &serde_json::Value) {
         let mut line = serde_json::to_string(json).unwrap_or_default();
         line.push('\n');
