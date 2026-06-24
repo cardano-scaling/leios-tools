@@ -19,6 +19,11 @@ stats_interval_secs = 1
 rb_generation_probability = 0.05
 tx_rate = 1.0
 
+# Behaviour-tree config installed on the selected nodes via --behaviour-tree.
+# Top-level key (not under a [section]); path relative to the net-rs CWD. The
+# t22 thresholds live in the referenced BT config's action spec.
+behaviour_tree = "net-cluster/behaviours/t22.toml"
+
 topology_source = "random"
 
 [topology_random]
@@ -28,19 +33,6 @@ min_latency_ms = 5
 max_latency_ms = 100
 stake_distribution = "mainnet-shaped"
 
-[behaviour]
-kind = "t22"
-# Threshold (average percentage, 0-100) of the committee nodes, which
-# take offered eb messages. EB messages for the remaining nodes will be dropped.
-vote_threshold = 80
-
-# Threshold (average percentage, 0-100) of the non-committee nodes
-# (non-voting nodes in Leios), which take offered eb messages.
-non_voting_threshold = 60
-
-# `True` means that disruptions touch not only eb-offered/eb-txs-offered,
-# but also eb-received/eb-txs-received (in other words, true means more disruptions).
-hide_eb_tx_received = false
-
+# Which nodes run the t22 behaviour_tree above.
 [behaviour_selection]
 kind = "all"

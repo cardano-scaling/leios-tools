@@ -1,0 +1,2 @@
+# lazy-voter — abstain from every CIP-0164 vote.
+Action "lazy-voter" ("lazy-voter", reason = "declined")

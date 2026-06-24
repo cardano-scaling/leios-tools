@@ -1,0 +1,39 @@
+[run]
+name = "long-range-fork-attack"
+seed = 1234567
+root = "long-range-fork"
+
+[env]
+trigger_slot = 345600
+
+[behaviours.long-range-fork]
+type = "Selector"
+children = ["long-range-fork.0", "long-range-fork.1"]
+
+[behaviours."long-range-fork.0"]
+type = "Sequence"
+children = ["long-range-fork.0.0", "long-range-fork.0.1"]
+
+[behaviours."long-range-fork.0.0"]
+type = "Condition"
+expression = "cardano.current_slot >= env.trigger_slot"
+
+[behaviours."long-range-fork.0.1"]
+type = "ForTicks"
+count = 3
+child = "lrf-attack"
+
+[behaviours."long-range-fork.1"]
+type = "HonestAction"
+
+[behaviours.lrf-attack]
+type = "Join"
+children = ["lrf-attack.0", "lrf-attack.1"]
+
+[behaviours."lrf-attack.0"]
+type = "Action"
+spec = { kind = "rb-header-equivocator", ways = 2 }
+
+[behaviours."lrf-attack.1"]
+type = "Action"
+spec = { kind = "drop-inbound-peers", probability = 1.0 }

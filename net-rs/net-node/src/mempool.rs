@@ -120,16 +120,6 @@ impl Mempool {
         &self.state
     }
 
-    /// Install a shared behaviour handle on the underlying mempool
-    /// state.  The `Consensus` facade hands the same handle to every
-    /// owned state machine.
-    pub fn install_behaviour_handle(
-        &mut self,
-        handle: shared_consensus::behaviour::BehaviourHandle,
-    ) {
-        self.state.behaviour = handle;
-    }
-
     /// Admit a tx that's already been validated (locally generated, or
     /// produced by `spawn_tx_validator` after its delay).  TxRejected
     /// effects (queue-full evictions, dedup) are dropped silently —
@@ -490,8 +480,14 @@ mod tests {
             });
         }
         let resolver = MempoolTxBodyResolver::new(pool);
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0xCC; 32])), Some(TxBody::new_with_vec(vec![0xDE, 0xAD])));
-        assert_eq!(resolver.resolve_body(&TxId::new_with_array([0x99; 32])), None);
+        assert_eq!(
+            resolver.resolve_body(&TxId::new_with_array([0xCC; 32])),
+            Some(TxBody::new_with_vec(vec![0xDE, 0xAD]))
+        );
+        assert_eq!(
+            resolver.resolve_body(&TxId::new_with_array([0x99; 32])),
+            None
+        );
     }
 
     #[tokio::test]

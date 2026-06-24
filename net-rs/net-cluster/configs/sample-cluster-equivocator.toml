@@ -23,6 +23,10 @@ aggregator_port = 9200
 stats_interval_secs = 1
 rb_generation_probability = 0.05
 
+# Behaviour-tree config installed on the selected node(s) via --behaviour-tree.
+# Top-level key (not under a [section]); path relative to the net-rs CWD.
+behaviour_tree = "net-cluster/behaviours/rb-equivocator.toml"
+
 topology_source = "random"
 
 [topology_random]
@@ -32,16 +36,10 @@ min_latency_ms = 5
 max_latency_ms = 100
 stake_distribution = "equal"
 
-# Per-node adversarial behaviour: install RbHeaderEquivocator on node 3.
-# Swap the selection variant for a different placement strategy —
-# `{ kind = "all" }`, `{ kind = "stake-ordered", count = N }`,
-# `{ kind = "stake-random", count = N }`, or
-# `{ kind = "stake-fraction", fraction = F }`.
-
-[behaviour]
-kind = "rb-header-equivocator"
-ways = 2
-
+# Which nodes run the behaviour_tree above (node 3 here). Swap the selection
+# variant for a different placement — `{ kind = "all" }`,
+# `{ kind = "stake-ordered", count = N }`, `{ kind = "stake-random", count = N }`,
+# or `{ kind = "stake-fraction", fraction = F }`.
 [behaviour_selection]
 kind = "nodes"
 indices = [3]

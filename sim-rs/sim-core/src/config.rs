@@ -120,7 +120,9 @@ pub struct FetchPolicy {
 }
 
 impl FetchPolicyKind {
-    pub fn into_block_policy(self) -> Box<dyn shared_consensus::fetch::BlockFetchPolicy + Send + Sync> {
+    pub fn into_block_policy(
+        self,
+    ) -> Box<dyn shared_consensus::fetch::BlockFetchPolicy + Send + Sync> {
         use shared_consensus::fetch::{BroadcastN, LowestRttFirst, NoFetch};
         match self {
             FetchPolicyKind::LowestRtt => Box::new(LowestRttFirst),
@@ -142,7 +144,9 @@ impl FetchPolicyKind {
         }
     }
 
-    pub fn into_eb_txs_policy(self) -> Box<dyn shared_consensus::fetch::EbTxsFetchPolicy + Send + Sync> {
+    pub fn into_eb_txs_policy(
+        self,
+    ) -> Box<dyn shared_consensus::fetch::EbTxsFetchPolicy + Send + Sync> {
         use shared_consensus::fetch::{BroadcastN, LowestRttFirst, NoFetch};
         match self {
             FetchPolicyKind::LowestRtt => Box::new(LowestRttFirst),
@@ -152,7 +156,6 @@ impl FetchPolicyKind {
             FetchPolicyKind::NoFetch => Box::new(NoFetch),
         }
     }
-
 }
 
 #[derive(Deserialize)]
@@ -383,10 +386,13 @@ pub struct RawParameters {
 }
 
 /// One row of [`RawParameters::consensus_behaviours`].
+///
+/// `behaviour_tree` is a path to a self-contained behaviour-tree config (TOML,
+/// resolved by `bt.py --resolve`), assigned to the nodes the `selection` picks.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConsensusBehaviourEntry {
-    pub spec: shared_consensus::behaviour::BehaviourSpec,
+    pub behaviour_tree: String,
     pub selection: shared_consensus::behaviour::BehaviourSelection,
 }
 
@@ -680,7 +686,10 @@ fn resolve_partition_links(
             to,
             direction,
         } => {
-            let from_ids = from.iter().map(|n| resolve(n)).collect::<Result<Vec<_>>>()?;
+            let from_ids = from
+                .iter()
+                .map(|n| resolve(n))
+                .collect::<Result<Vec<_>>>()?;
             let to_ids = to.iter().map(|n| resolve(n)).collect::<Result<Vec<_>>>()?;
             for &f in &from_ids {
                 for &t in &to_ids {
@@ -1009,8 +1018,9 @@ fn vote_weighted_average(params: &RawParameters, persistent: f64, non_persistent
     match params.committee_selection_algorithm {
         // Everyone and TopStakeFraction voters are all deterministically selected,
         // so they use persistent vote parameters (no eligibility proofs needed).
-        CommitteeSelectionAlgorithm::Everyone
-        | CommitteeSelectionAlgorithm::TopStakeFraction => persistent,
+        CommitteeSelectionAlgorithm::Everyone | CommitteeSelectionAlgorithm::TopStakeFraction => {
+            persistent
+        }
         CommitteeSelectionAlgorithm::WfaLs => {
             let total = params.persistent_voters + params.non_persistent_voters;
             if total == 0.0 {
@@ -1431,15 +1441,11 @@ pub struct SimConfiguration {
     /// Shared network stats collector (set by sequential engine, read by nodes).
     pub network_stats: Option<Arc<crate::network::stats::NetworkStatsCollector>>,
 
-    /// Per-node consensus behaviour assignment.  Resolved once at
-    /// build time from [`RawParameters::consensus_behaviours`].  Nodes
-    /// absent from the map run [`BehaviourSpec::Honest`] (the default
-    /// installed by `LeiosState::new`).  Only consumed by the
-    /// shared-consensus adapter.
-    ///
-    /// [`BehaviourSpec::Honest`]: shared_consensus::behaviour::BehaviourSpec::Honest
-    pub(crate) consensus_behaviour_specs:
-        BTreeMap<NodeId, shared_consensus::behaviour::BehaviourSpec>,
+    /// Per-node behaviour-tree config (TOML text). Resolved once at build time
+    /// from [`RawParameters::consensus_behaviours`]: the selection picks nodes,
+    /// the referenced file is read + validated. Nodes absent from the map run
+    /// an implicit honest tree. Only consumed by the shared-consensus adapter.
+    pub(crate) behaviour_tree_configs: BTreeMap<NodeId, String>,
 }
 
 impl SimConfiguration {
@@ -1479,11 +1485,28 @@ impl SimConfiguration {
             );
         }
         let total_stake: u64 = topology.nodes.iter().map(|n| n.stake).sum();
-        let consensus_behaviour_specs = resolve_consensus_behaviours(
-            &params.consensus_behaviours,
-            &topology.nodes,
-            params.seed,
-        );
+        // Resolve which node gets which behaviour-tree config, then read +
+        // validate each referenced file. Paths resolve relative to the process
+        // CWD (the sim config dir isn't threaded through `build`); fail fast
+        // with the path so a typo surfaces at startup.
+        // TODO: resolve paths relative to the parameter file's directory.
+        let behaviour_tree_configs = {
+            let assignments =
+                assign_behaviour_trees(&params.consensus_behaviours, &topology.nodes, params.seed);
+            let mut cache: BTreeMap<String, String> = BTreeMap::new();
+            let mut out: BTreeMap<NodeId, String> = BTreeMap::new();
+            for (node_id, path) in assignments {
+                if !cache.contains_key(&path) {
+                    let text = std::fs::read_to_string(&path)
+                        .map_err(|e| anyhow!("reading behaviour-tree config {path}: {e}"))?;
+                    shared_consensus::behaviour::tree::BtConfig::compile_str(&text)
+                        .map_err(|e| anyhow!("behaviour-tree config {path}: {e}"))?;
+                    cache.insert(path.clone(), text);
+                }
+                out.insert(node_id, cache[&path].clone());
+            }
+            out
+        };
         let attacks = AttackConfig::build(&params, &mut topology);
         // Resolve partition scenarios against the topology while it is
         // still in scope (its links/names are about to be moved into the
@@ -1558,10 +1581,14 @@ impl SimConfiguration {
             retry_vote_in_window: params.retry_vote_in_window,
             trace_nodes: HashSet::new(),
             nodes: topology.nodes,
-            links: topology.links.into_iter().map(|mut lc| {
-                lc.use_tcp = params.tcp_congestion_control;
-                lc
-            }).collect(),
+            links: topology
+                .links
+                .into_iter()
+                .map(|mut lc| {
+                    lc.use_tcp = params.tcp_congestion_control;
+                    lc
+                })
+                .collect(),
             stage_length: params.leios_stage_length_slots,
             max_eb_age: params.eb_max_age_slots,
             late_ib_inclusion: params.leios_late_ib_inclusion,
@@ -1609,21 +1636,22 @@ impl SimConfiguration {
             partition_schedule,
             tx_batch_window: params.tx_batch_window_ms.map(duration_ms),
             network_stats: None,
-            consensus_behaviour_specs,
+            behaviour_tree_configs,
         })
     }
 }
 
-/// Resolve `[(spec, selection)]` against the node list in `NodeId`
-/// order.  Stakes are read in the same order, so the
-/// `BTreeMap<usize, BehaviourSpec>` returned by
-/// [`shared_consensus::behaviour::resolve_specs`] maps directly onto
-/// `NodeId`s.
-fn resolve_consensus_behaviours(
+/// Resolve `[(behaviour_tree_path, selection)]` against the node list in
+/// `NodeId` order, returning the per-node config path. Stakes are read in node
+/// order so the indices from [`resolve_assignments`] map directly onto
+/// `NodeId`s. Overlapping selections are last-wins (a later item's tree
+/// overrides an earlier one for the same node — BT configs don't compose like
+/// `BehaviourSpec`s do).
+fn assign_behaviour_trees(
     items: &[ConsensusBehaviourEntry],
     nodes: &[NodeConfiguration],
     seed: u64,
-) -> BTreeMap<NodeId, shared_consensus::behaviour::BehaviourSpec> {
+) -> BTreeMap<NodeId, String> {
     if items.is_empty() {
         return BTreeMap::new();
     }
@@ -1634,16 +1662,15 @@ fn resolve_consensus_behaviours(
         "expected NodeConfiguration ordering by NodeId"
     );
     let stakes: Vec<u64> = nodes.iter().map(|n| n.stake).collect();
-    let pairs: Vec<(
-        shared_consensus::behaviour::BehaviourSpec,
-        shared_consensus::behaviour::BehaviourSelection,
-    )> = items
+    let pairs: Vec<(String, shared_consensus::behaviour::BehaviourSelection)> = items
         .iter()
-        .map(|e| (e.spec.clone(), e.selection.clone()))
+        .map(|e| (e.behaviour_tree.clone(), e.selection.clone()))
         .collect();
-    shared_consensus::behaviour::resolve_specs(&pairs, &stakes, Some(seed))
+    // `resolve_assignments` yields (idx, path) in item order; collecting into a
+    // map gives last-wins on overlap.
+    shared_consensus::behaviour::resolve_assignments(&pairs, &stakes, Some(seed))
         .into_iter()
-        .map(|(idx, spec)| (nodes[idx].id, spec))
+        .map(|(idx, path)| (nodes[idx].id, path))
         .collect()
 }
 
@@ -1735,7 +1762,7 @@ impl NodeBehaviours {
 #[cfg(test)]
 mod consensus_behaviour_tests {
     use super::*;
-    use shared_consensus::behaviour::{BehaviourSelection, BehaviourSpec};
+    use shared_consensus::behaviour::BehaviourSelection;
 
     fn node(id: usize, name: &str, stake: u64) -> NodeConfiguration {
         NodeConfiguration {
@@ -1752,10 +1779,17 @@ mod consensus_behaviour_tests {
         }
     }
 
+    fn entry(path: &str, selection: BehaviourSelection) -> ConsensusBehaviourEntry {
+        ConsensusBehaviourEntry {
+            behaviour_tree: path.to_string(),
+            selection,
+        }
+    }
+
     #[test]
     fn empty_items_returns_empty_map() {
         let nodes = vec![node(0, "a", 1), node(1, "b", 1)];
-        let out = resolve_consensus_behaviours(&[], &nodes, 0);
+        let out = assign_behaviour_trees(&[], &nodes, 0);
         assert!(out.is_empty());
     }
 
@@ -1767,52 +1801,39 @@ mod consensus_behaviour_tests {
             node(2, "c", 100),
             node(3, "d", 0), // relay
         ];
-        let items = vec![ConsensusBehaviourEntry {
-            spec: BehaviourSpec::LazyVoter {
-                reason: shared_consensus::leios::NoVoteReason::Declined,
-            },
-            selection: BehaviourSelection::StakeFraction { fraction: 0.4 },
-        }];
-        let out = resolve_consensus_behaviours(&items, &nodes, 0);
+        let items = vec![entry(
+            "lazy.toml",
+            BehaviourSelection::StakeFraction { fraction: 0.4 },
+        )];
+        let out = assign_behaviour_trees(&items, &nodes, 0);
         // total 300, target 120 → cover with 2 nodes (100 + 100).
         let picked: Vec<NodeId> = out.keys().copied().collect();
         assert_eq!(picked, vec![NodeId::new(0), NodeId::new(1)]);
-        for spec in out.values() {
-            assert!(matches!(spec, BehaviourSpec::LazyVoter { .. }));
+        for path in out.values() {
+            assert_eq!(path, "lazy.toml");
         }
     }
 
     #[test]
-    fn overlapping_selections_compose_per_node() {
+    fn overlapping_selections_are_last_wins_per_node() {
         let nodes = vec![node(0, "a", 100), node(1, "b", 100)];
         let items = vec![
-            ConsensusBehaviourEntry {
-                spec: BehaviourSpec::LazyVoter {
-                    reason: shared_consensus::leios::NoVoteReason::Declined,
-                },
-                selection: BehaviourSelection::All,
-            },
-            ConsensusBehaviourEntry {
-                spec: BehaviourSpec::RbHeaderEquivocator { ways: 2 },
-                selection: BehaviourSelection::Nodes { indices: vec![0] },
-            },
+            entry("lazy.toml", BehaviourSelection::All),
+            entry(
+                "equivocator.toml",
+                BehaviourSelection::Nodes { indices: vec![0] },
+            ),
         ];
-        let out = resolve_consensus_behaviours(&items, &nodes, 0);
-        match out.get(&NodeId::new(0)) {
-            Some(BehaviourSpec::Composite { children }) => {
-                assert_eq!(children.len(), 2);
-                assert!(matches!(children[0], BehaviourSpec::LazyVoter { .. }));
-                assert!(matches!(
-                    children[1],
-                    BehaviourSpec::RbHeaderEquivocator { ways: 2 }
-                ));
-            }
-            other => panic!("expected Composite at node 0, got {:?}", other),
-        }
-        assert!(matches!(
-            out.get(&NodeId::new(1)),
-            Some(BehaviourSpec::LazyVoter { .. })
-        ));
+        let out = assign_behaviour_trees(&items, &nodes, 0);
+        // Node 0 selected by both — the later item wins.
+        assert_eq!(
+            out.get(&NodeId::new(0)).map(String::as_str),
+            Some("equivocator.toml")
+        );
+        assert_eq!(
+            out.get(&NodeId::new(1)).map(String::as_str),
+            Some("lazy.toml")
+        );
     }
 
     #[test]
@@ -1820,15 +1841,13 @@ mod consensus_behaviour_tests {
         let nodes: Vec<_> = (0..10)
             .map(|i| node(i, &format!("n{i}"), if i % 2 == 0 { 100 } else { 0 }))
             .collect();
-        let items = vec![ConsensusBehaviourEntry {
-            spec: BehaviourSpec::LazyVoter {
-                reason: shared_consensus::leios::NoVoteReason::Declined,
-            },
-            selection: BehaviourSelection::StakeRandom { count: 2 },
-        }];
-        let a = resolve_consensus_behaviours(&items, &nodes, 42);
-        let b = resolve_consensus_behaviours(&items, &nodes, 42);
-        let c = resolve_consensus_behaviours(&items, &nodes, 43);
+        let items = vec![entry(
+            "lazy.toml",
+            BehaviourSelection::StakeRandom { count: 2 },
+        )];
+        let a = assign_behaviour_trees(&items, &nodes, 42);
+        let b = assign_behaviour_trees(&items, &nodes, 42);
+        let c = assign_behaviour_trees(&items, &nodes, 43);
         assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
         assert_ne!(a.keys().collect::<Vec<_>>(), c.keys().collect::<Vec<_>>());
         // never picks zero-stake nodes
@@ -1938,7 +1957,10 @@ mod tcp_envelope_tests {
         };
         let topo = Topology::from_raw(raw_topology_2node_with_bandwidth(), Some(&global));
         assert_eq!(topo.links.len(), 1);
-        let cfg = topo.links[0].tcp_envelope.as_ref().expect("envelope was attached");
+        let cfg = topo.links[0]
+            .tcp_envelope
+            .as_ref()
+            .expect("envelope was attached");
         assert_eq!(cfg.loss_prob_per_segment, 0.005);
         // Untouched fields keep their physics-derived defaults.
         assert_eq!(cfg.mss_bytes, 1460);
@@ -1959,12 +1981,16 @@ mod tcp_envelope_tests {
             ..Default::default()
         };
         let mut raw = raw_topology_2node_with_bandwidth();
-        raw.nodes.get_mut("b").unwrap().producers.get_mut("a").unwrap().tcp_envelope = Some(
-            RawTcpEnvelope {
-                rto_ms: Some(200), // per-link overrides global's 800
-                ..Default::default()
-            },
-        );
+        raw.nodes
+            .get_mut("b")
+            .unwrap()
+            .producers
+            .get_mut("a")
+            .unwrap()
+            .tcp_envelope = Some(RawTcpEnvelope {
+            rto_ms: Some(200), // per-link overrides global's 800
+            ..Default::default()
+        });
         let topo = Topology::from_raw(raw, Some(&global));
         let cfg = topo.links[0].tcp_envelope.as_ref().unwrap();
         assert_eq!(cfg.loss_prob_per_segment, 0.005); // from global
@@ -1979,10 +2005,8 @@ mod tcp_envelope_tests {
             cold-release-shape: linear
         ";
         let raw: RawTcpEnvelope = serde_yaml::from_str(yaml).unwrap();
-        let mut cfg = tcp_model::LinkEnvelopeCfg::defaults_for(
-            Duration::from_millis(150),
-            1_000_000,
-        );
+        let mut cfg =
+            tcp_model::LinkEnvelopeCfg::defaults_for(Duration::from_millis(150), 1_000_000);
         let baseline_cold_release = cfg.cold_release;
         raw.apply(&mut cfg).unwrap();
         assert_eq!(cfg.loss_prob_per_segment, 0.002);
@@ -1996,24 +2020,18 @@ mod tcp_envelope_tests {
     #[test]
     fn apply_rejects_invalid_mss_bytes() {
         let raw: RawTcpEnvelope = serde_yaml::from_str("mss-bytes: 0").unwrap();
-        let mut cfg = tcp_model::LinkEnvelopeCfg::defaults_for(
-            Duration::from_millis(150),
-            1_000_000,
-        );
+        let mut cfg =
+            tcp_model::LinkEnvelopeCfg::defaults_for(Duration::from_millis(150), 1_000_000);
         assert!(raw.apply(&mut cfg).is_err());
     }
 
     #[test]
     fn apply_rejects_loss_prob_outside_unit_interval() {
-        let mut cfg = tcp_model::LinkEnvelopeCfg::defaults_for(
-            Duration::from_millis(150),
-            1_000_000,
-        );
-        let bad_low: RawTcpEnvelope =
-            serde_yaml::from_str("loss-prob-per-segment: -0.1").unwrap();
+        let mut cfg =
+            tcp_model::LinkEnvelopeCfg::defaults_for(Duration::from_millis(150), 1_000_000);
+        let bad_low: RawTcpEnvelope = serde_yaml::from_str("loss-prob-per-segment: -0.1").unwrap();
         assert!(bad_low.apply(&mut cfg).is_err());
-        let bad_high: RawTcpEnvelope =
-            serde_yaml::from_str("loss-prob-per-segment: 1.5").unwrap();
+        let bad_high: RawTcpEnvelope = serde_yaml::from_str("loss-prob-per-segment: 1.5").unwrap();
         assert!(bad_high.apply(&mut cfg).is_err());
     }
 }
@@ -2214,9 +2232,15 @@ mod partition_tests {
         let schedule = PartitionScheduleEntry::build_schedule(&[scenario], &topology).unwrap();
         assert_eq!(schedule.len(), 2);
         assert_eq!(schedule[0].op, PartitionOp::Activate);
-        assert_eq!(schedule[0].timestamp, Timestamp::zero() + Duration::from_secs(300));
+        assert_eq!(
+            schedule[0].timestamp,
+            Timestamp::zero() + Duration::from_secs(300)
+        );
         assert_eq!(schedule[1].op, PartitionOp::Heal);
-        assert_eq!(schedule[1].timestamp, Timestamp::zero() + Duration::from_secs(900));
+        assert_eq!(
+            schedule[1].timestamp,
+            Timestamp::zero() + Duration::from_secs(900)
+        );
         // Activate and heal cut the identical link set.
         assert_eq!(schedule[0].links, schedule[1].links);
     }
@@ -2315,12 +2339,12 @@ mod partition_tests {
     fn rejects_invalid_time_windows() {
         let topology = fully_connected(&["a", "b"]);
         let bad: [(f64, Option<f64>); 6] = [
-            (60.0, Some(30.0)),         // inverted window
-            (30.0, Some(30.0)),         // zero-length window
-            (-5.0, None),               // negative start
-            (f64::NAN, None),           // NaN start
-            (f64::INFINITY, None),      // infinite start
-            (10.0, Some(f64::NAN)),     // NaN stop
+            (60.0, Some(30.0)),     // inverted window
+            (30.0, Some(30.0)),     // zero-length window
+            (-5.0, None),           // negative start
+            (f64::NAN, None),       // NaN start
+            (f64::INFINITY, None),  // infinite start
+            (10.0, Some(f64::NAN)), // NaN stop
         ];
         for (start, stop) in bad {
             let scenario = RawPartitionScenario {

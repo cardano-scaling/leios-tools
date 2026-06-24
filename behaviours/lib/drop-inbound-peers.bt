@@ -1,0 +1,2 @@
+# drop-inbound-peers — each slot, with `probability`, reset inbound peer connections.
+Action "drop-inbound-peers" ("drop-inbound-peers", probability = 0.15)

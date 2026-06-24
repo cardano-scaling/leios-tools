@@ -1,0 +1,2 @@
+# deep-reorg — every `every_slots` slots, roll the adopted chain back `depth` blocks and fork.
+Action "deep-reorg" ("deep-reorg", every_slots = 100, depth = 5)

@@ -466,14 +466,17 @@
     },
     "consensus-behaviours": {
       "default": [],
-      "description": "Per-node adversarial / experimental behaviours wired into the shared-consensus engine.\nEach entry pairs a BehaviourSpec (kind = honest|composite|rb-header-equivocator|lazy-voter)\nwith a BehaviourSelection (kind = all|nodes|stake-random|stake-ordered|stake-fraction)\npicking which nodes run it.  Overlapping selections compose.\nDeterministic for a given seed.  Ignored by engines other than `shared-consensus`.",
+      "description": "Per-node behaviour-tree assignments wired into the shared-consensus engine.\nEach entry pairs a behaviour-tree config path (a self-contained TOML, resolved by `bt.py --resolve`)\nwith a BehaviourSelection (kind = all|nodes|stake-random|stake-ordered|stake-fraction)\npicking which nodes run it.  Overlapping selections are last-wins.\nDeterministic for a given seed.  Ignored by engines other than `shared-consensus`.",
       "type": "array",
       "items": {
         "additionalProperties": false,
-        "required": ["spec", "selection"],
+        "required": ["behaviour-tree", "selection"],
         "type": "object",
         "properties": {
-          "spec": { "$ref": "#/definitions/BehaviourSpec" },
+          "behaviour-tree": {
+            "type": "string",
+            "description": "Path to a self-contained behaviour-tree config (TOML), relative to the working directory."
+          },
           "selection": { "$ref": "#/definitions/BehaviourSelection" }
         }
       }

@@ -276,7 +276,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// child via the same stdin pipe used by `update-config`.
 async fn handle_attack_command(
     cmd: server::AttackCommand,
-    cluster: &mut RunningCluster,
+    // The runtime attack-trigger no longer pushes a live config to children
+    // (the stdin behaviour-swap was removed with the hook system); kept in the
+    // signature for when a runtime BT-control surface lands (REST/US2).
+    _cluster: &mut RunningCluster,
     server_state: &Arc<server::ServerState>,
     seed: Option<u64>,
 ) {
@@ -304,38 +307,34 @@ async fn handle_attack_command(
                 *server_state.active_attack.write().await = None;
                 return;
             }
-            let update_json = serde_json::json!({ "behaviour": request.behaviour });
-            cluster
-                .pm
-                .send_config_update_to(&indices, &update_json)
-                .await;
-
+            // Runtime attack-triggering is inert in the BT MVP: behaviour is a
+            // static `--behaviour-tree` config installed at node spawn, and the
+            // old stdin hot-swap was removed with the hook system. Record the
+            // request for the UI but warn that it has no live effect (a runtime
+            // BT-config control surface is deferred to the REST/US2 work).
+            tracing::warn!(
+                indices = ?indices,
+                behaviour_tree = %request.behaviour_tree,
+                "runtime attack-trigger is not supported in the BT MVP (use a \
+                 static behaviour_tree at spawn); recording state only, no live swap"
+            );
             let started_at_s = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
             let active = config::ActiveAttack {
-                behaviour: request.behaviour,
+                behaviour_tree: request.behaviour_tree,
                 selection: request.selection,
                 indices: indices.clone(),
                 started_at_s,
             };
-            tracing::info!(
-                indices = ?indices,
-                behaviour = ?active.behaviour,
-                "runtime attack installed"
-            );
             *server_state.active_attack.write().await = Some(active);
         }
         server::AttackCommand::Stop => {
             let prior = server_state.active_attack.write().await.take();
             if let Some(prior) = prior {
-                let reset_json = serde_json::json!({ "behaviour_reset": true });
-                cluster
-                    .pm
-                    .send_config_update_to(&prior.indices, &reset_json)
-                    .await;
-                tracing::info!(indices = ?prior.indices, "runtime attack cleared");
+                // No live swap to undo (see Start) — just clear the recorded state.
+                tracing::info!(indices = ?prior.indices, "runtime attack state cleared");
             } else {
                 tracing::debug!("attack stop requested but no active attack");
             }

@@ -8,7 +8,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tokio::sync::watch;
 
-use net_core::protocols::txsubmission::{PendingTx};
+use net_core::protocols::txsubmission::PendingTx;
 use net_core::types::{BlockBody, Point, WrappedHeader};
 use shared_consensus::mempool::{EbKey, TxId};
 
@@ -683,7 +683,10 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_is_deterministic() {
-        let manifest = vec![TxId::new_with_array([0x10u8; 32]), TxId::new_with_array([0x20u8; 32])];
+        let manifest = vec![
+            TxId::new_with_array([0x10u8; 32]),
+            TxId::new_with_array([0x20u8; 32]),
+        ];
         let a = encode_overflow_eb(&manifest);
         let b = encode_overflow_eb(&manifest);
         assert_eq!(a, b);
@@ -692,7 +695,10 @@ mod tests {
 
     #[test]
     fn decode_overflow_eb_round_trip() {
-        let manifest = vec![TxId::new_with_array([0x10u8; 32]), TxId::new_with_array([0x20u8; 32])];
+        let manifest = vec![
+            TxId::new_with_array([0x10u8; 32]),
+            TxId::new_with_array([0x20u8; 32]),
+        ];
         let data = encode_overflow_eb(&manifest);
         let hashes = decode_overflow_eb(&data).expect("decode");
         assert_eq!(hashes, manifest);
@@ -706,7 +712,10 @@ mod tests {
 
     #[test]
     fn encode_overflow_eb_layout() {
-        let manifest = vec![TxId::new_with_array([0xAAu8; 32]), TxId::new_with_array([0xBBu8; 32])];
+        let manifest = vec![
+            TxId::new_with_array([0xAAu8; 32]),
+            TxId::new_with_array([0xBBu8; 32]),
+        ];
         let data = encode_overflow_eb(&manifest);
         // Decode the manifest map: { hash => size }, hashes in order.
         let mut dec = minicbor::Decoder::new(&data);

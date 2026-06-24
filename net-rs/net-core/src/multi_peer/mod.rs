@@ -88,15 +88,15 @@ pub struct CoordinatorConfig {
     /// [`PeerRttObserver`].  None = measurements are recorded only in
     /// the coordinator's internal `PeerState.rtt` (legacy behaviour).
     pub peer_rtt_observer: Option<PeerRttObserver>,
-    /// Shared handle to the per-node behaviour.  When set, server-side
-    /// per-peer outbound paths (currently the ChainSync RB-header
-    /// advertisement) call
-    /// [`shared_consensus::behaviour::Behaviour::transform_outbound`]
-    /// before each send, letting the behaviour route different headers
-    /// to different peer subsets (peer-split equivocation), suppress
-    /// sends for a partition / eclipse target, or augment with extras.
-    /// `None` = no transform; the I/O wrapper sends artefacts as-is.
-    pub outbound_behaviour: Option<shared_consensus::behaviour::BehaviourHandle>,
+    /// The BT control-signal snapshot + equivocation-variant store the
+    /// server-side per-peer outbound paths read. When set, the ChainSync
+    /// RB-header advertisement and the LeiosNotify offer path consult
+    /// `praos.outbound` / `leios.offer_eb_size` / `leios.echo_to_source`
+    /// before each send — routing different headers to different peer subsets
+    /// (peer-split equivocation), suppressing sends for a partition / eclipse
+    /// target, or rewriting offer fields. `None` = honest; artefacts sent
+    /// as-is.
+    pub outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
 }
 
 impl Default for CoordinatorConfig {
@@ -119,7 +119,7 @@ impl Default for CoordinatorConfig {
             peer_delays: HashMap::new(),
             tx_body_resolver: None,
             peer_rtt_observer: None,
-            outbound_behaviour: None,
+            outbound_controls: None,
         }
     }
 }

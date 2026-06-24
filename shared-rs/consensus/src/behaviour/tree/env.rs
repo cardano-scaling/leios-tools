@@ -1,0 +1,188 @@
+//! Environment, chain state, and the per-tick context.
+//!
+//! [`DynamicEnv`] is the resolved env: a name-keyed map of typed values (so
+//! arbitrary params can be declared in TOML, overlaid across includes, and
+//! addressed by REST `:key`). Keys may be dotted for owner-namespaced params
+//! (`network_shape.packet_delay`) vs. shared (`trigger_slot`).
+//!
+//! [`NativeChainState`] is the read-only node metrics, rebuilt each tick and
+//! passed by `&`. [`TickCtx`] bundles the pure inputs a tick may read.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+/// Externally-mutable parameters (config + later REST), read by conditions and
+/// actions (FR-010). Keys are dotted for owner-namespaced params.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DynamicEnv(pub BTreeMap<String, EnvValue>);
+
+/// A typed env value. The small union lets conditions type-check references.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvValue {
+    U64(u64),
+    F64(f64),
+    Str(String),
+    Bool(bool),
+}
+
+/// Guarded handle to the env. The tick reads it; a later REST surface writes
+/// it. `std` (not tokio) — this crate is sans-IO.
+pub type EnvHandle = Arc<RwLock<DynamicEnv>>;
+
+impl EnvValue {
+    /// A human-readable type name, for validation error messages.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            EnvValue::U64(_) => "integer",
+            EnvValue::F64(_) => "float",
+            EnvValue::Str(_) => "string",
+            EnvValue::Bool(_) => "bool",
+        }
+    }
+
+    /// View as a number (`U64`/`F64`), for numeric comparison.
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            EnvValue::U64(v) => Some(*v as f64),
+            EnvValue::F64(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// View as a string.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            EnvValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// View as a bool.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            EnvValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// True for `U64`/`F64`.
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, EnvValue::U64(_) | EnvValue::F64(_))
+    }
+}
+
+impl DynamicEnv {
+    pub fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn get(&self, key: &str) -> Option<&EnvValue> {
+        self.0.get(key)
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: EnvValue) {
+        self.0.insert(key.into(), value);
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+}
+
+/// Node metrics tracked by the host and read-only to the tree (FR-011). Rebuilt
+/// each tick. New fields are added as conditions require them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeChainState {
+    pub current_slot: u64,
+    pub current_epoch: u64,
+    pub mempool_tx_count: usize,
+}
+
+/// The chain-state field names a `cardano.*` reference may name. Centralised so
+/// condition validation and evaluation agree on the set.
+pub const CHAIN_FIELDS: &[&str] = &["current_slot", "current_epoch", "mempool_tx_count"];
+
+impl NativeChainState {
+    /// Read a known numeric chain field by its `cardano.<name>` short name.
+    /// Returns `None` for an unknown field.
+    pub fn numeric_field(&self, name: &str) -> Option<u64> {
+        match name {
+            "current_slot" => Some(self.current_slot),
+            "current_epoch" => Some(self.current_epoch),
+            "mempool_tx_count" => Some(self.mempool_tx_count as u64),
+            _ => None,
+        }
+    }
+}
+
+/// Everything a tick may read — pure inputs, no I/O, no clock.
+pub struct TickCtx<'a> {
+    /// Read from the [`EnvHandle`] by the caller before ticking.
+    pub env: &'a DynamicEnv,
+    /// Rebuilt each tick, read-only.
+    pub state: &'a NativeChainState,
+    /// Root seed for deterministic leaf choices.
+    pub seed: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_get_and_insert() {
+        let mut env = DynamicEnv::new();
+        env.insert("trigger_slot", EnvValue::U64(345600));
+        env.insert("drop_rate", EnvValue::F64(0.15));
+        env.insert("target", EnvValue::Str("pool-a".into()));
+        env.insert("armed", EnvValue::Bool(true));
+
+        assert_eq!(env.get("trigger_slot"), Some(&EnvValue::U64(345600)));
+        assert_eq!(
+            env.get("drop_rate").and_then(EnvValue::as_number),
+            Some(0.15)
+        );
+        assert_eq!(env.get("target").and_then(EnvValue::as_str), Some("pool-a"));
+        assert_eq!(env.get("armed").and_then(EnvValue::as_bool), Some(true));
+        assert_eq!(env.get("missing"), None);
+    }
+
+    #[test]
+    fn dotted_owner_namespaced_keys() {
+        let mut env = DynamicEnv::new();
+        env.insert("network_shape.packet_delay", EnvValue::U64(20));
+        env.insert("trigger_slot", EnvValue::U64(10));
+        // Shared and owner-namespaced keys coexist and are addressed verbatim.
+        assert_eq!(
+            env.get("network_shape.packet_delay"),
+            Some(&EnvValue::U64(20))
+        );
+        assert!(env.contains_key("trigger_slot"));
+        assert!(!env.contains_key("network_shape"));
+    }
+
+    #[test]
+    fn chain_state_known_fields_resolve() {
+        let s = NativeChainState {
+            current_slot: 42,
+            current_epoch: 1,
+            mempool_tx_count: 7,
+        };
+        assert_eq!(s.numeric_field("current_slot"), Some(42));
+        assert_eq!(s.numeric_field("current_epoch"), Some(1));
+        assert_eq!(s.numeric_field("mempool_tx_count"), Some(7));
+        assert_eq!(s.numeric_field("peers"), None);
+        // CHAIN_FIELDS and numeric_field agree on the known set.
+        for f in CHAIN_FIELDS {
+            assert!(s.numeric_field(f).is_some(), "{f} should resolve");
+        }
+    }
+
+    #[test]
+    fn env_value_type_names() {
+        assert_eq!(EnvValue::U64(1).type_name(), "integer");
+        assert_eq!(EnvValue::F64(1.0).type_name(), "float");
+        assert_eq!(EnvValue::Str("x".into()).type_name(), "string");
+        assert_eq!(EnvValue::Bool(true).type_name(), "bool");
+    }
+}

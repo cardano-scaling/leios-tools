@@ -1,0 +1,4 @@
+# rb-header-equivocator attack — CIP-0164 RB-header equivocation.
+include [ "rb-header-equivocator.bt" ]
+run { name = "rb-equivocator", seed = 1234567 }
+root [ "rb-header-equivocator" ]

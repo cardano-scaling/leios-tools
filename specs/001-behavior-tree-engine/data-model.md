@@ -40,6 +40,8 @@ pub struct PraosControl {
 #[derive(Debug, Clone, Default)]
 pub struct LeiosControl {
     pub vote: VotePolicy,                 // Honest | Abstain(NoVoteReason)
+    pub offer_eb_size: EbSizePolicy,      // rewrite eb_size on outbound MsgLeiosBlockOffer
+    pub echo_to_source: bool,             // false = honest no-echo gate; true = reflect offers back to source
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,10 +58,17 @@ pub enum OutboundControl {
     EquivocateRouting { slot: u64, ways: u8, seed: u64 }, // per-peer variant routing (lookup, not decision)
     DropTo(std::collections::BTreeSet<PeerId>),           // partition / mute
 }
+
+#[derive(Debug, Clone, Default)]
+pub enum EbSizePolicy {                                   // outbound MsgLeiosBlockOffer eb_size
+    #[default] Honest,
+    Linear { scale_num: u32, scale_den: u32, offset: i32 }, // (eb_size*num/den)+offset, clamped to u32
+}
 ```
 
 `ControlSignal::default()` is the honest node (no perturbation). `RbProductionStrategy`,
-`BodyPath`, and `NoVoteReason` are existing enums, reused unchanged.
+`BodyPath`, and `NoVoteReason` are existing enums, reused unchanged. `EbSizePolicy::Linear`
+reuses the merged `LieAboutEbSize` i128 size math.
 
 - **Conflicts**: same-field writes from two active leaves are reconciled in the tick
   (last active contributor in traversal order wins); the actuator never combines.
@@ -192,9 +201,11 @@ trait LeafAction {
 
 `Registered(ActionSpec)` uses the action registry (`ActionSpec`, formerly `BehaviourSpec`)
 as the action-kind discriminant + params. Each shipped adversary (`rb-header-equivocator`,
-`lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`) becomes a `LeafAction` whose
-`contribute` writes the matching `ControlSignal` fields. Composition is expressed by the BT
-structure (`Join`/`Sequence`), not a `composite` leaf.
+`lazy-voter`, `t22`, `deep-reorg`, `drop-inbound-peers`, and the merged `lie-about-eb-size`,
+`echo-to-source`) becomes a `LeafAction` whose `contribute` writes the matching
+`ControlSignal` fields (`lie-about-eb-size` → `leios.offer_eb_size`; `echo-to-source` →
+`leios.echo_to_source`). Composition is expressed by the BT structure (`Join`/`Sequence`),
+not a `composite` leaf.
 
 ### `ConditionExpr`
 Minimal grammar (D6); parsed and validated at load time.
@@ -230,16 +241,19 @@ pub struct BtConfig {
     pub env: BTreeMap<String, EnvValue>,          // dotted keys: shared `x` or owner `owner.x`
     pub behaviours: BTreeMap<BehaviourId, RawBehaviour>,    // [behaviours.<id>] (BehaviourId may be dotted)
     pub metadata: BTreeMap<String, ModuleMeta>,   // optional per-owner docs
-    pub includes: Vec<String>,                    // relative paths to sub-behaviour TOMLs
+    pub includes: Vec<String>,                    // unresolved form only; load() rejects a non-empty value (resolve at build time via bt.py --resolve, D13)
 }
 pub struct Run { pub name: String, pub seed: u64, pub root: BehaviourId }
 pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
 ```
 
-- `BtConfig::load(path)` resolves `includes` relative to `path` by a **single uniform
-  rule** (D13): deep-merge the document and its includes table-by-table, closer-to-root
-  wins (no per-section special handling). It detects cycles (behaviour graph + include graph),
-  then `validate()`s and compiles to `BehaviourTree`.
+- `BtConfig::load(path)` expects a **self-contained** config and does **not** resolve
+  `includes` — cross-file resolution and the uniform deep-merge (D13) are a **build step**
+  performed by the `bt.py --resolve` translator, which emits one includes-free config. A
+  loaded config that still carries a non-empty `includes` is a **load error** ("config not
+  resolved — run `bt.py --resolve`"). `load` then `validate()`s and compiles to
+  `BehaviourTree`, resolving name references (expansion, below) and detecting reference
+  cycles in the behaviour graph.
 - **Name references expand.** The config is a map of named definitions whose `children` ids
   may reference the same definition from more than one site (a DAG). Compilation **expands**
   each reference into an **independent instance**, so the `BehaviourTree` the engine ticks is
@@ -251,10 +265,13 @@ pub struct ModuleMeta { pub revision: u32 /* + description, … */ }
 
 ## Validation rules (spec FR-013) — all enforced at load, before activation
 
-1. Exactly one resolved `[run]` carrying `seed` and `root`; `run.root` names a defined
-   behaviour (that behaviour is the root). `[run]` set in an included fragment is flagged (lint).
-2. Every `children` / include reference resolves to a defined behaviour / readable file.
-3. No cycles in the behaviour graph or the include graph.
+0. `includes` is empty — a config still carrying includes is rejected (resolution is a
+   build step, D13: run `bt.py --resolve`). The `[run]`-in-a-fragment lint lives in the
+   translator, which knows the pre-merge file boundaries.
+1. Exactly one `[run]` carrying `seed` and `root`; `run.root` names a defined behaviour
+   (that behaviour is the root).
+2. Every `children` reference resolves to a defined behaviour.
+3. No cycles in the behaviour graph.
 4. Every behaviour `type` is known; composites have ≥1 child; leaves have none.
 5. Every `Condition` references only env keys present in the merged `[env]` and known
    chain-state fields, with matching types. A **referenced-but-undefined `env.X` is an

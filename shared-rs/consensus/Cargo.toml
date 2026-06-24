@@ -10,6 +10,7 @@ rand = "0.8"
 blake2b_simd = "1"
 tracing = "0.1"
 minicbor = { version = "0.25", features = ["std"] }
+toml = "0.8"
 
 [dev-dependencies]
 serde_json = "1"

@@ -27,25 +27,6 @@ use shared_consensus::mempool::TxBody;
 pub struct Consensus {
     praos: PraosConsensus,
     leios: LeiosConsensus,
-    /// Deterministic seed handed to
-    /// [`shared_consensus::behaviour::build`] whenever the per-node
-    /// behaviour is materialised — at startup and again from each
-    /// runtime config swap.  Derived once from `rng_seed` (or the node
-    /// identifier) and reused so a behaviour that hashes peer ids for
-    /// partitioning always lands on the same buckets across re-runs.
-    behaviour_seed: u64,
-    /// Shared handle to the per-node behaviour.  All three state
-    /// machines (praos, leios, mempool) point at the same `Arc<Mutex>`
-    /// so a single behaviour instance observes events from every layer
-    /// and so a runtime swap propagates to all of them at once.  The
-    /// coordinator holds its own clone for the per-peer outbound
-    /// transform path.
-    behaviour_handle: shared_consensus::behaviour::BehaviourHandle,
-    /// Spec the node materialised at startup.  Kept so a runtime
-    /// "reset" can walk the handle back to the original behaviour
-    /// (Honest for most nodes, but a node configured as a startup
-    /// attacker remains one).
-    startup_spec: shared_consensus::behaviour::BehaviourSpec,
 }
 
 impl Consensus {
@@ -68,8 +49,6 @@ impl Consensus {
         dyn_config: watch::Receiver<DynamicConfig>,
         rtt: PeerRttCache,
         fetch_policy: FetchPolicyConfig,
-        behaviour_handle: shared_consensus::behaviour::BehaviourHandle,
-        startup_spec: shared_consensus::behaviour::BehaviourSpec,
     ) -> Self {
         let mut praos = PraosConsensus::new(
             node_id.clone(),
@@ -98,102 +77,28 @@ impl Consensus {
         leios.set_rtt(rtt);
         leios.set_eb_policy(fetch_policy.eb.into_eb_policy());
         leios.set_eb_txs_policy(fetch_policy.eb_txs.into_eb_txs_policy());
-        let behaviour_seed = rng_seed
-            .unwrap_or_else(|| shared_consensus::behaviour::seed_from_node_id(praos.node_id_str()));
-        // Install the shared behaviour handle on every state machine so
-        // a stateful behaviour (equivocation variant store, peer
-        // partition map, …) sees events from every layer and the
-        // coordinator's outbound transform path observes the same
-        // instance.  Runtime swaps replace the trait object inside this
-        // handle; clones held elsewhere observe the new behaviour from
-        // their next hook call.
-        praos.install_behaviour_handle(behaviour_handle.clone());
-        leios.install_behaviour_handle(behaviour_handle.clone());
-        if let Ok(mut m) = mempool.lock() {
-            m.install_behaviour_handle(behaviour_handle.clone());
-        }
-        Self {
-            praos,
-            leios,
-            behaviour_seed,
-            behaviour_handle,
-            startup_spec,
-        }
+        Self { praos, leios }
     }
 
-    /// Swap the per-node behaviour by replacing the trait object inside
-    /// the shared handle.  Every state machine and the coordinator's
-    /// outbound transform path observe the new behaviour from their
-    /// next hook call.  Called at runtime from the stdin-driven
-    /// `DynamicConfigUpdate` path.
-    pub fn set_behaviour(
-        &mut self,
-        spec: &shared_consensus::behaviour::BehaviourSpec,
-        _mempool: &crate::mempool::SharedMempool,
-    ) {
-        tracing::info!(
-            ?spec,
-            behaviour_seed = self.behaviour_seed,
-            "swapping per-node behaviour"
-        );
-        shared_consensus::behaviour::swap_handle(&self.behaviour_handle, spec, self.behaviour_seed);
+    /// Apply the per-slot behaviour-tree [`ControlSignal`] to the consensus
+    /// state machines. Called once per slot by the I/O loop after ticking the
+    /// tree. The Leios state reads its vote policy and the t22 EB-processing
+    /// filter from this; the Praos state holds it for the production/reorg/drop
+    /// actuators the I/O loop consults.
+    ///
+    /// [`ControlSignal`]: shared_consensus::behaviour::tree::ControlSignal
+    pub fn apply_control(&mut self, control: &shared_consensus::behaviour::tree::ControlSignal) {
+        self.leios.state_mut().apply_control(control);
+        self.praos.state_mut().apply_control(control);
     }
 
-    /// Walk the per-node behaviour back to the spec materialised at
-    /// startup.  Used when net-cluster stops a runtime attack so each
-    /// node returns to its original configuration.
-    pub fn reset_behaviour(&mut self, _mempool: &crate::mempool::SharedMempool) {
-        tracing::info!(
-            startup_spec = ?self.startup_spec,
-            behaviour_seed = self.behaviour_seed,
-            "resetting per-node behaviour to startup spec"
-        );
-        shared_consensus::behaviour::swap_handle(
-            &self.behaviour_handle,
-            &self.startup_spec,
-            self.behaviour_seed,
-        );
-    }
-
-    /// Ask the per-node behaviour what to do for this slot's
-    /// self-produced RB.  See
-    /// [`shared_consensus::behaviour::RbProductionStrategy`].  Default
-    /// `HonestBehaviour` always returns `Normal`.
-    pub fn rb_production_strategy(
-        &mut self,
-        slot: u64,
-    ) -> shared_consensus::behaviour::RbProductionStrategy {
-        // The behaviour lives on `LeiosState` (chosen during the
-        // initial scaffolding because the Leios side has the broadest
-        // hook surface); the strategy method takes a `&PraosState`
-        // alongside.  Borrow split is done by passing `praos.state()`
-        // before mutably borrowing the leios layer.
-        let praos = self.praos.state();
-        self.leios
-            .state_mut()
-            .ask_rb_production_strategy(praos, slot)
-    }
-
-    /// Consult the behaviour for a deliberate self-reorg this slot and,
-    /// if requested, roll the adopted chain back and diffuse the
-    /// rollback to peers.  Returns the depth rolled back, or `None` when
-    /// the behaviour is honest or the chain is too short.  Honest nodes
-    /// pay only one cheap `None`-returning hook call per slot.
-    pub async fn maybe_force_reorg(&mut self, slot: u64) -> Option<u64> {
-        let depth = self.leios.state_mut().ask_praos_reorg(slot)?;
-        if self.praos.force_rollback(depth).await {
-            Some(depth)
-        } else {
-            None
-        }
-    }
-
-    /// Consult the behaviour for whether to reset accepted (inbound)
-    /// peer connections this slot.  The caller issues
-    /// `NetworkCommand::DropInboundPeers` when this returns true.  Honest
-    /// nodes pay one cheap `false`-returning hook call per slot.
-    pub fn should_drop_inbound_peers(&mut self, slot: u64) -> bool {
-        self.leios.state_mut().ask_drop_inbound_peers(slot)
+    /// Force a deliberate self-reorg of `depth` blocks (the `deep-reorg`
+    /// action, via `control.praos.reorg_depth`): roll the adopted chain back
+    /// and diffuse the rollback to peers. Returns `true` if a rollback actually
+    /// happened (the chain was long enough). The decision lives in the BT tick;
+    /// this is the mechanical actuator.
+    pub async fn force_reorg(&mut self, depth: u64) -> bool {
+        self.praos.force_rollback(depth).await
     }
 
     /// Notify the Leios layer of a new slot tick.

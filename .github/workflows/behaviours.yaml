@@ -1,0 +1,37 @@
+name: "behaviours"
+
+# Validates the behaviour-tree translator and guards against drift between the
+# `.bt` sources and the generated consumer configs (net-cluster + sim-rs).
+on:
+  pull_request:
+    paths:
+      - "behaviours/**"
+      - "net-rs/net-cluster/behaviours/**"
+      - "sim-rs/parameters/behaviours/**"
+      - ".github/workflows/behaviours.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - "behaviours/**"
+      - "net-rs/net-cluster/behaviours/**"
+      - "sim-rs/parameters/behaviours/**"
+      - ".github/workflows/behaviours.yaml"
+
+jobs:
+  behaviours-check:
+    name: "translator + config drift"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      # bt.py uses the stdlib `tomllib`, which needs Python >= 3.11
+      # (ubuntu-22.04 ships 3.10 by default).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # `make check` = round-trip idempotence (test) + the resolve golden
+      # (test-resolve) + the generated-config drift guard (check-configs).
+      # If a `.bt` source changed without re-running `make configs`, this fails.
+      - name: bt.py round-trip, resolve golden, and config-drift check
+        working-directory: behaviours
+        run: make check

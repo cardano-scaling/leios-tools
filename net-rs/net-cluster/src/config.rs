@@ -245,15 +245,14 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub tx_rate: Option<f64>,
 
-    /// Per-node adversarial / experimental behaviour.  See
-    /// `shared_consensus::behaviour::BehaviourSpec` for the catalogue.
-    /// When set, the nodes selected by [`Self::behaviour_selection`]
-    /// are started with this behaviour; the remaining nodes stay
-    /// honest.
+    /// Path to a self-contained behaviour-tree config (resolved by
+    /// `bt.py --resolve`). When set, the nodes selected by
+    /// [`Self::behaviour_selection`] are started with `--behaviour-tree
+    /// <path>`; the remaining nodes stay honest.
     #[serde(default)]
-    pub behaviour: Option<shared_consensus::behaviour::BehaviourSpec>,
+    pub behaviour_tree: Option<String>,
 
-    /// Which nodes should run [`Self::behaviour`].  See
+    /// Which nodes should run [`Self::behaviour_tree`].  See
     /// [`BehaviourSelection`] for the variants.  When `None` and
     /// `behaviour` is set, no node runs the behaviour (use
     /// `{ kind = "all" }` to attach it everywhere).
@@ -320,7 +319,7 @@ impl Default for ClusterConfig {
             event_window_size: default_event_window_size(),
             rb_generation_probability: None,
             tx_rate: None,
-            behaviour: None,
+            behaviour_tree: None,
             behaviour_selection: None,
             external_peers: Vec::new(),
             external_nodes: Vec::new(),
@@ -374,11 +373,16 @@ pub enum BehaviourSelection {
     StakeFraction { fraction: f64 },
 }
 
-/// Request payload for `POST /api/attack`: which behaviour to install
-/// and which nodes to install it on.
+/// Request payload for `POST /api/attack`: which behaviour-tree config to
+/// install and on which nodes.
+///
+/// NOTE: runtime attack-triggering is **inert** in the BT MVP — behaviour is a
+/// static `--behaviour-tree` config installed at node spawn; the old runtime
+/// hot-swap (stdin) was removed with the hook system. A runtime BT-config
+/// control surface is deferred to the REST/US2 work.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AttackRequest {
-    pub behaviour: shared_consensus::behaviour::BehaviourSpec,
+    pub behaviour_tree: String,
     pub selection: BehaviourSelection,
 }
 
@@ -389,7 +393,7 @@ pub struct AttackRequest {
 /// since UNIX epoch — same convention as event timestamps.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ActiveAttack {
-    pub behaviour: shared_consensus::behaviour::BehaviourSpec,
+    pub behaviour_tree: String,
     pub selection: BehaviourSelection,
     pub indices: Vec<usize>,
     pub started_at_s: f64,
@@ -739,7 +743,7 @@ indices = [0, 2]
         assert!(config.seed.is_none());
         assert!(config.rb_generation_probability.is_none());
         assert!(config.tx_rate.is_none());
-        assert!(config.behaviour.is_none());
+        assert!(config.behaviour_tree.is_none());
         assert!(config.behaviour_selection.is_none());
         assert!(config.external_peers.is_empty());
 

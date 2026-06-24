@@ -38,18 +38,6 @@ pub struct DynamicConfigUpdate {
     pub eb_validation_ms: Option<f64>,
     pub vote_validation_ms: Option<f64>,
     pub tx_rate: Option<f64>,
-    /// Hot-swap the per-node behaviour.  Carried separately from the
-    /// other fields because the swap mutates live state machines
-    /// rather than feeding a watch channel — see
-    /// `Consensus::set_behaviour`.
-    pub behaviour: Option<shared_consensus::behaviour::BehaviourSpec>,
-    /// When `Some(true)` and `behaviour` is `None`, the node walks the
-    /// behaviour handle back to the spec it materialised at startup.
-    /// Set by net-cluster when stopping a runtime attack so each node
-    /// returns to its original config (Honest for most, but a
-    /// pre-configured attacker remains an attacker).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub behaviour_reset: Option<bool>,
 }
 
 impl DynamicConfig {
@@ -266,13 +254,12 @@ pub struct NodeConfig {
     #[serde(default)]
     pub fetch_policy: FetchPolicyConfig,
 
-    /// Pluggable per-node adversarial / experimental behaviour.  See
-    /// `shared_consensus::behaviour` for the trait and the catalogue
-    /// of concrete impls.  `None` (the default) installs the no-op
-    /// honest behaviour and is indistinguishable from the historical
-    /// behaviour-less build.
+    /// Path to a self-contained behaviour-tree config (TOML), resolved by
+    /// `bt.py --resolve`. When set, the node ticks this tree each slot and
+    /// applies the resulting control signal. `None` runs an implicit honest
+    /// tree. This is the BT-engine replacement for the legacy `behaviour` spec.
     #[serde(default)]
-    pub behaviour: Option<shared_consensus::behaviour::BehaviourSpec>,
+    pub behaviour_tree: Option<String>,
 
     /// Outbound peer list.
     #[serde(default)]
@@ -672,7 +659,7 @@ impl Default for NodeConfig {
             validation: ValidationConfig::default(),
             telemetry: TelemetryConfig::default(),
             fetch_policy: FetchPolicyConfig::default(),
-            behaviour: None,
+            behaviour_tree: None,
             peers: Vec::new(),
         }
     }

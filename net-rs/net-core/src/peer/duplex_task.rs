@@ -46,7 +46,7 @@ pub(crate) struct DuplexTaskConfig {
     pub scheduler_type: crate::mux::scheduler::SchedulerType,
     /// Optional behaviour handle consulted by the ChainSync server's
     /// per-peer RB-header advertisement.  `None` = no transform.
-    pub outbound_behaviour: Option<shared_consensus::behaviour::BehaviourHandle>,
+    pub outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
 }
 
 /// Configuration for a duplex peer task from an already-accepted connection.
@@ -60,8 +60,8 @@ pub(crate) struct AcceptedDuplexTaskConfig {
     pub command_receiver: mpsc::Receiver<PeerCommand>,
     pub leios_enabled: bool,
     pub leios_store: Option<Arc<LeiosStore>>,
-    /// See [`DuplexTaskConfig::outbound_behaviour`].
-    pub outbound_behaviour: Option<shared_consensus::behaviour::BehaviourHandle>,
+    /// See [`DuplexTaskConfig::outbound_controls`].
+    pub outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
 }
 
 /// Run a duplex peer task. Connects outbound, then runs both client and
@@ -135,7 +135,7 @@ pub(crate) async fn run_duplex_task(config: DuplexTaskConfig) {
             leios_store: config.leios_store,
             event_sender: config.event_sender,
             command_receiver: config.command_receiver,
-            outbound_behaviour: config.outbound_behaviour,
+            outbound_controls: config.outbound_controls,
         },
     )
     .await;
@@ -167,7 +167,7 @@ pub(crate) async fn run_accepted_duplex_task(config: AcceptedDuplexTaskConfig) {
             leios_store: config.leios_store,
             event_sender: config.event_sender,
             command_receiver: config.command_receiver,
-            outbound_behaviour: config.outbound_behaviour,
+            outbound_controls: config.outbound_controls,
         },
     )
     .await;
@@ -183,7 +183,7 @@ struct DuplexProtocolParams {
     leios_store: Option<Arc<LeiosStore>>,
     event_sender: mpsc::Sender<(PeerId, PeerEvent)>,
     command_receiver: mpsc::Receiver<PeerCommand>,
-    outbound_behaviour: Option<shared_consensus::behaviour::BehaviourHandle>,
+    outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
 }
 
 /// Shared protocol wiring for duplex connections (both outbound and accepted).
@@ -197,7 +197,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         leios_store,
         event_sender,
         mut command_receiver,
-        outbound_behaviour,
+        outbound_controls,
     } = params;
     // --- Initiator (client) sub-tasks ---
     let mut init_channels = conn.initiator_channels.into_iter();
@@ -289,14 +289,14 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         cs_srv_recv,
         chain_store.clone(),
         peer_id,
-        outbound_behaviour.clone(),
+        outbound_controls.clone(),
     ));
     let bf_server = tokio::spawn(server_handlers::serve_blockfetch(
         bf_srv_send,
         bf_srv_recv,
         chain_store.clone(),
         peer_id,
-        outbound_behaviour.clone(),
+        outbound_controls.clone(),
     ));
     let ts_server = tokio::spawn(server_handlers::serve_txsubmission(
         ts_srv_send,
@@ -324,7 +324,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         let (lf_srv_send, lf_srv_recv) =
             resp_channels.next().expect("leios_fetch responder channel");
         let store = leios_store.expect("leios_store required when leios_enabled");
-        let ln_outbound_behaviour = outbound_behaviour.clone();
+        let ln_outbound_controls = outbound_controls.clone();
         let ln_store = store.clone();
         let ln_server = tokio::spawn(async move {
             server_handlers::serve_leios_notify(
@@ -332,7 +332,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
                 ln_srv_recv,
                 ln_store,
                 peer_id,
-                ln_outbound_behaviour.as_ref(),
+                ln_outbound_controls.as_ref(),
             )
             .await
         });

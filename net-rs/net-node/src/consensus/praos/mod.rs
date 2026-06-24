@@ -102,16 +102,6 @@ impl PraosConsensus {
         self.state.set_fetch_policy(policy);
     }
 
-    /// Install a shared behaviour handle on the underlying state.  The
-    /// `Consensus` facade calls this with the same handle for every
-    /// owned state machine and the coordinator, so one behaviour
-    /// instance sees events from every layer.
-    pub fn install_behaviour_handle(
-        &mut self,
-        handle: shared_consensus::behaviour::BehaviourHandle,
-    ) {
-        self.state.behaviour = handle;
-    }
 
     /// Borrow the node identifier the state was constructed with.  The
     /// `Consensus` facade uses this to derive a deterministic behaviour
@@ -125,6 +115,12 @@ impl PraosConsensus {
     /// `RbProductionStrategy` hook, which takes a `&PraosState`).
     pub(crate) fn state(&self) -> &shared_consensus::praos::PraosState {
         &self.state
+    }
+
+    /// Mutable access to the underlying state, e.g. to apply the per-slot
+    /// behaviour-tree control signal.
+    pub(crate) fn state_mut(&mut self) -> &mut shared_consensus::praos::PraosState {
+        &mut self.state
     }
 
     /// Deliberate self-reorg (the `DeepReorg` behaviour): roll the
