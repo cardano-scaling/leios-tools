@@ -16,10 +16,21 @@
 //! per-decoder checks) per the net-rs "Security audit" discipline.
 
 mod block;
+mod eb;
 mod header;
 
 pub use block::{BlockBody, LeiosBlockInfo};
+pub use eb::{decode_overflow_eb, encode_overflow_eb};
 pub use header::{HeaderInfo, WrappedHeader};
+
+/// Blake2b-256 of arbitrary bytes — matches the EB-key derivation used across
+/// the wire and the `tx_from_received_bytes` tx-id derivation.
+pub fn blake2b_256(bytes: &[u8]) -> [u8; 32] {
+    let result = blake2b_simd::Params::new().hash_length(32).hash(bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(result.as_bytes());
+    out
+}
 
 use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;

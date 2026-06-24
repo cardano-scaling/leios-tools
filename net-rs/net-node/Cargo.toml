@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 shared-consensus = { path = "../../shared-rs/consensus" }
+net-codec = { path = "../net-codec" }
 net-core = { path = "../net-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "io-std", "io-util"] }
 clap = { version = "4", features = ["derive"] }

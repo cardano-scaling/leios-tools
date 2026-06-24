@@ -175,7 +175,7 @@ impl Consensus {
             Point::Specific { hash, .. } => *hash,
             Point::Origin => return,
         };
-        if let Some(tx_hashes) = crate::production::decode_overflow_eb(blob) {
+        if let Some(tx_hashes) = net_codec::decode_overflow_eb(blob) {
             self.praos
                 .record_announced_eb_tx_count(&hash, tx_hashes.len() as u32);
         }

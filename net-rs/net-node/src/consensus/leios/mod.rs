@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
-use crate::production::decode_overflow_eb;
+use net_codec::decode_overflow_eb;
 use crate::telemetry::NodeEvent;
 use crate::validation::{LedgerCommand, Validator};
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
@@ -931,9 +931,9 @@ mod tests {
     /// `make_overflow_eb` (`[slot, [hash, ...]]`) plus the EB hash.
     fn make_manifest(_slot: u64, hashes: &[TxId]) -> (Vec<u8>, [u8; 32]) {
         // The endorser_block is the CIP-0164 `{ tx_hash => tx_size }`
-        // manifest map — use the production encoder so the test blob
+        // manifest map — use the net-codec encoder so the test blob
         // matches what `decode_overflow_eb` expects.
-        let data = crate::production::encode_overflow_eb(hashes);
+        let data = net_codec::encode_overflow_eb(hashes);
         let hash_result = blake2b_simd::Params::new().hash_length(32).hash(&data);
         let mut eb_hash = [0u8; 32];
         eb_hash.copy_from_slice(hash_result.as_bytes());

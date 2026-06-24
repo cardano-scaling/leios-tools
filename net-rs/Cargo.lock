@@ -852,6 +852,7 @@ dependencies = [
  "clap",
  "figment",
  "minicbor",
+ "net-codec",
  "net-core",
  "rand 0.8.6",
  "reqwest",
