@@ -26,13 +26,14 @@ COPY shared-rs/ /build/shared-rs/
 # omitted to keep the build closure small in a fast-growing monorepo.
 RUN mkdir -p /build/net-rs
 COPY net-rs/Cargo.lock /build/net-rs/Cargo.lock
+COPY net-rs/net-codec/ /build/net-rs/net-codec/
 COPY net-rs/net-core/  /build/net-rs/net-core/
 COPY net-rs/net-node/  /build/net-rs/net-node/
 
 # Synthesise a minimal workspace Cargo.toml so cargo doesn't look for the
 # omitted net-cli / net-cluster members. Lockfile entries for absent
 # members are inert.
-RUN printf '[workspace]\nmembers = ["net-core", "net-node"]\nresolver = "2"\n' \
+RUN printf '[workspace]\nmembers = ["net-codec", "net-core", "net-node"]\nresolver = "2"\n' \
     > /build/net-rs/Cargo.toml
 
 WORKDIR /build/net-rs
