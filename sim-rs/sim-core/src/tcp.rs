@@ -181,7 +181,11 @@ fn do_send(
 /// Pop the earliest pending ACK, advance `now` to its arrival time (if it
 /// hasn't arrived yet), process it, and drain any further ACKs that have
 /// already arrived by the new `now`.
-fn wait_for_ack(props: &TcpConnProps, now: Timestamp, mut state: TcpState) -> (Timestamp, TcpState) {
+fn wait_for_ack(
+    props: &TcpConnProps,
+    now: Timestamp,
+    mut state: TcpState,
+) -> (Timestamp, TcpState) {
     let Reverse((ack_ts, ack_bytes)) = state
         .acknowledgements
         .pop()
@@ -203,7 +207,7 @@ fn drain_arrived_acks(props: &TcpConnProps, now: Timestamp, mut state: TcpState)
     loop {
         match state.acknowledgements.peek() {
             Some(Reverse((ts, _))) if *ts <= now => {
-                let ack_bytes = state.acknowledgements.pop().unwrap().0 .1;
+                let ack_bytes = state.acknowledgements.pop().unwrap().0.1;
                 state = accum_ack(props, state, ack_bytes);
             }
             _ => return state,
@@ -370,8 +374,12 @@ mod tests {
     fn adjacent_fragments_are_merged() {
         // Adjacent fragments (no gap between sends) should be collapsed.
         let props = props_with_latency_ms(1); // tiny RTT → window refills immediately
-        let (_, fragments, _) =
-            forecast_tcp_msg_send(&props, TcpState::default(), Timestamp::zero(), 5 * INITIAL_CONGESTION_WINDOW);
+        let (_, fragments, _) = forecast_tcp_msg_send(
+            &props,
+            TcpState::default(),
+            Timestamp::zero(),
+            5 * INITIAL_CONGESTION_WINDOW,
+        );
 
         // With a 1 ms RTT, the congestion window grows quickly; all contiguous
         // sends should collapse to a small number of merged fragments.

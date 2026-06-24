@@ -13,9 +13,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     clock::{Clock, Timestamp},
     config::{
-        CpuTimeConfig, Direction, NodeConfiguration, NodeId, RawLinkInfo, RawNode,
-        RawNodeLocation, RawParameters, RawPartitionScenario, RawPartitionSelector, RawTopology,
-        SimConfiguration,
+        CpuTimeConfig, Direction, NodeConfiguration, NodeId, RawLinkInfo, RawNode, RawNodeLocation,
+        RawParameters, RawPartitionScenario, RawPartitionSelector, RawTopology, SimConfiguration,
     },
     events::{Event, EventTracker},
     model::Transaction,
@@ -98,7 +97,13 @@ impl NodeImpl for PingNode {
     fn handle_new_slot(&mut self, slot: u64) -> EventResult<Self> {
         let mut result = EventResult::default();
         for &peer in &self.peers {
-            result.send_to(peer, Ping { from: self.id, slot });
+            result.send_to(
+                peer,
+                Ping {
+                    from: self.id,
+                    slot,
+                },
+            );
         }
         result
     }
@@ -168,10 +173,7 @@ fn quad_topology() -> RawTopology {
 
 const NUM_SLOTS: u64 = 6;
 
-fn build_config(
-    shard_count: usize,
-    scenarios: Vec<RawPartitionScenario>,
-) -> Arc<SimConfiguration> {
+fn build_config(shard_count: usize, scenarios: Vec<RawPartitionScenario>) -> Arc<SimConfiguration> {
     let mut params: RawParameters =
         serde_yaml::from_slice(include_bytes!("../../../../parameters/config.default.yaml"))
             .unwrap();
@@ -256,11 +258,7 @@ fn recv_slots_from(events: &[(Event, Timestamp)], from: NodeId) -> BTreeSet<u64>
 }
 
 /// Slots at which `to` received a ping originating from `from`.
-fn recv_slots_from_to(
-    events: &[(Event, Timestamp)],
-    from: NodeId,
-    to_name: &str,
-) -> BTreeSet<u64> {
+fn recv_slots_from_to(events: &[(Event, Timestamp)], from: NodeId, to_name: &str) -> BTreeSet<u64> {
     let needle = format!("from={from},");
     events
         .iter()
@@ -269,9 +267,10 @@ fn recv_slots_from_to(
                 node,
                 event_type,
                 detail,
-            } if event_type == "recv" && node == to_name && detail.starts_with(&needle) => {
-                detail.rsplit("slot=").next().and_then(|s| s.parse::<u64>().ok())
-            }
+            } if event_type == "recv" && node == to_name && detail.starts_with(&needle) => detail
+                .rsplit("slot=")
+                .next()
+                .and_then(|s| s.parse::<u64>().ok()),
             _ => None,
         })
         .collect()
@@ -307,7 +306,10 @@ async fn cut_drops_pings_during_window_sequential() {
 
     // Pings from a reach peers only for slots sent before the cut (0, 1).
     let from_a = recv_slots_from(&events, a);
-    assert!(from_a.contains(&0) && from_a.contains(&1), "pre-cut pings missing: {from_a:?}");
+    assert!(
+        from_a.contains(&0) && from_a.contains(&1),
+        "pre-cut pings missing: {from_a:?}"
+    );
     assert!(
         from_a.iter().all(|&s| s < 2),
         "a's pings leaked past the cut: {from_a:?}"
@@ -329,7 +331,10 @@ async fn cut_drops_pings_during_window_actor() {
     let events = run_actor(config).await;
 
     let from_a = recv_slots_from(&events, a);
-    assert!(from_a.contains(&0) && from_a.contains(&1), "pre-cut pings missing: {from_a:?}");
+    assert!(
+        from_a.contains(&0) && from_a.contains(&1),
+        "pre-cut pings missing: {from_a:?}"
+    );
     assert!(
         from_a.iter().all(|&s| s < 2),
         "a's pings leaked past the cut: {from_a:?}"
@@ -351,8 +356,14 @@ async fn heal_restores_flow_sequential() {
     let events = run_sequential(config).await;
 
     let from_a = recv_slots_from(&events, a);
-    assert!(from_a.contains(&0) && from_a.contains(&1), "pre-cut pings missing: {from_a:?}");
-    assert!(!from_a.contains(&2) && !from_a.contains(&3), "in-window pings leaked: {from_a:?}");
+    assert!(
+        from_a.contains(&0) && from_a.contains(&1),
+        "pre-cut pings missing: {from_a:?}"
+    );
+    assert!(
+        !from_a.contains(&2) && !from_a.contains(&3),
+        "in-window pings leaked: {from_a:?}"
+    );
     assert!(from_a.contains(&4), "post-heal ping missing: {from_a:?}");
 }
 
@@ -430,8 +441,16 @@ async fn telemetry_emitted_exactly_once() {
 
     // 2-shard sequential: still exactly one of each (shard 0 is emitter).
     let events = run_sequential(build_config(2, vec![isolate("a", 2.0, Some(4.0))])).await;
-    assert_eq!(count_started(&events), 1, "duplicate PartitionStarted across shards");
-    assert_eq!(count_healed(&events), 1, "duplicate PartitionHealed across shards");
+    assert_eq!(
+        count_started(&events),
+        1,
+        "duplicate PartitionStarted across shards"
+    );
+    assert_eq!(
+        count_healed(&events),
+        1,
+        "duplicate PartitionHealed across shards"
+    );
 }
 
 /// Determinism with a partition active: two sequential runs produce
@@ -454,7 +473,9 @@ async fn partition_run_is_deterministic_sequential() {
             .filter_map(|(e, t)| {
                 let label = match e {
                     Event::TestNodeEvent { node, detail, .. } => format!("{node}:{detail}"),
-                    Event::PartitionStarted { name, link_count, .. } => {
+                    Event::PartitionStarted {
+                        name, link_count, ..
+                    } => {
                         format!("started:{name}:{link_count}")
                     }
                     Event::PartitionHealed { name, link_count } => {
@@ -486,7 +507,10 @@ async fn cut_enforced_across_shards_sequential() {
         multi_a.iter().all(|&s| s < 2),
         "cross-shard cut leaked a's pings: {multi_a:?}"
     );
-    assert_eq!(single_a, multi_a, "multi-shard cut differs from single-shard");
+    assert_eq!(
+        single_a, multi_a,
+        "multi-shard cut differs from single-shard"
+    );
 }
 
 #[tokio::test]
@@ -521,7 +545,11 @@ async fn multi_shard_partition_deterministic_sequential() {
         }
         by_node
     };
-    assert_eq!(canon(&a), canon(&b), "multi-shard partition run not deterministic");
+    assert_eq!(
+        canon(&a),
+        canon(&b),
+        "multi-shard partition run not deterministic"
+    );
     assert_eq!(count_started(&a), 1);
     assert_eq!(count_healed(&a), 1);
 }

@@ -6,10 +6,10 @@
 
 pub mod codec;
 
+use shared_consensus::mempool::{TxBody, TxId};
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use shared_consensus::mempool::{TxBody, TxId};
 
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 
@@ -319,8 +319,9 @@ pub async fn run_client(
                 // Look up requested tx bodies from the pending set.
                 let mut txs = Vec::new();
                 for requested_id in &tx_ids {
-                    if let Some(pos) =
-                        pending_bodies.iter().position(|p| p.tx_id == requested_id.tx_id)
+                    if let Some(pos) = pending_bodies
+                        .iter()
+                        .position(|p| p.tx_id == requested_id.tx_id)
                     {
                         let pending = pending_bodies.remove(pos).expect("position valid");
                         txs.push(pending.body);

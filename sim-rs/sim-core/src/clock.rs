@@ -7,8 +7,8 @@ use std::{
     time::Duration,
 };
 
-pub use coordinator::{ClockCoordinator, PeerShard};
 use coordinator::ClockEvent;
+pub use coordinator::{ClockCoordinator, PeerShard};
 use futures::FutureExt;
 pub use mock::MockClockCoordinator;
 use timestamp::AtomicTimestamp;

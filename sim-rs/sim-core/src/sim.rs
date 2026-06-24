@@ -14,7 +14,6 @@ use crate::{
 
 pub(crate) mod actor;
 mod common;
-pub(crate) mod shared_consensus;
 mod cpu;
 mod driver;
 mod leios;
@@ -22,6 +21,7 @@ pub(crate) mod linear_leios;
 pub(crate) mod linear_wire;
 mod lottery;
 pub(crate) mod sequential;
+pub(crate) mod shared_consensus;
 mod slot;
 mod stracciatella;
 #[cfg(test)]
@@ -53,12 +53,9 @@ impl Simulation {
                     event_sender,
                 ))))
             }
-            crate::config::Engine::Actor => {
-                Ok(Self(SimulationInner::Actor(actor::ActorSimulation::new(
-                    config,
-                    event_sender,
-                )?)))
-            }
+            crate::config::Engine::Actor => Ok(Self(SimulationInner::Actor(
+                actor::ActorSimulation::new(config, event_sender)?,
+            ))),
         }
     }
 

@@ -870,8 +870,8 @@ mod tests {
         be.array(0).unwrap(); // 2 tx_witness_sets
         be.null().unwrap(); // 3 auxiliary_data_set
         be.array(0).unwrap(); // 4 invalid_transactions
-        // 5 leios_certificate = [slot_no, endorser_block_hash : hash32,
-        //                        signers : bytes, aggregated_signature : bytes .size 48]
+                              // 5 leios_certificate = [slot_no, endorser_block_hash : hash32,
+                              //                        signers : bytes, aggregated_signature : bytes .size 48]
         be.array(4).unwrap();
         be.u64(12345).unwrap();
         be.bytes(&[0xAB; 32]).unwrap();

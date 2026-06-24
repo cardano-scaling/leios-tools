@@ -12,7 +12,7 @@ use crate::{
     network::{Network, NetworkSink, NetworkSource},
     sim::{
         EventResult, MiniProtocol, NodeImpl, SimMessage as _,
-        common::{CpuTaskWrapper, NodeEvent, self},
+        common::{self, CpuTaskWrapper, NodeEvent},
         cpu::CpuTaskQueue,
     },
 };
@@ -141,23 +141,36 @@ impl<N: NodeImpl> NodeDriver<N> {
 
     fn schedule_cpu_task(&mut self, task: N::Task) {
         let now = self.clock.now();
-        let subtasks =
-            common::schedule_cpu_task::<N>(&mut self.cpu, &self.tracker, self.id, now, task, &self.sim_config);
+        let subtasks = common::schedule_cpu_task::<N>(
+            &mut self.cpu,
+            &self.tracker,
+            self.id,
+            now,
+            task,
+            &self.sim_config,
+        );
         for subtask in subtasks {
             let timestamp = now + subtask.duration;
-            self.events
-                .push(FutureEvent(timestamp, NodeEvent::CpuSubtaskCompleted(subtask)));
+            self.events.push(FutureEvent(
+                timestamp,
+                NodeEvent::CpuSubtaskCompleted(subtask),
+            ));
         }
     }
 
-    fn handle_subtask_completed(&mut self, subtask: crate::sim::cpu::Subtask) -> Option<EventResult<N>> {
+    fn handle_subtask_completed(
+        &mut self,
+        subtask: crate::sim::cpu::Subtask,
+    ) -> Option<EventResult<N>> {
         let now = self.clock.now();
         let result =
             common::complete_cpu_subtask::<N>(&mut self.cpu, &self.tracker, self.id, now, subtask);
         if let Some(subtask) = result.next_subtask {
             let timestamp = now + subtask.duration;
-            self.events
-                .push(FutureEvent(timestamp, NodeEvent::CpuSubtaskCompleted(subtask)));
+            self.events.push(FutureEvent(
+                timestamp,
+                NodeEvent::CpuSubtaskCompleted(subtask),
+            ));
         }
         let task = result.finished_task?;
         Some(self.node.handle_cpu_task(task))

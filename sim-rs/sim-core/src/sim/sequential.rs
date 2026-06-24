@@ -16,10 +16,12 @@ use crate::{
     config::{LeiosVariant, NodeId, SimConfiguration},
     events::EventTracker,
     model::Transaction,
-    network::{connection::ConnectionKind, partition::PartitionRuntime, stats::NetworkStatsCollector},
+    network::{
+        connection::ConnectionKind, partition::PartitionRuntime, stats::NetworkStatsCollector,
+    },
     sim::{
         MiniProtocol, NodeImpl, SimMessage as _,
-        common::{CpuTaskWrapper, NodeEvent, self},
+        common::{self, CpuTaskWrapper, NodeEvent},
         cpu::{CpuTaskQueue, Subtask},
         leios::LeiosNode,
         linear_leios::LinearLeiosNode,
@@ -55,7 +57,9 @@ enum GlobalEvent<N: NodeImpl> {
     },
     NetworkDelivery(Link),
     TxGeneration,
-    SlotBoundary { slot: u64 },
+    SlotBoundary {
+        slot: u64,
+    },
 }
 
 impl<N: NodeImpl> GlobalEvent<N> {
@@ -81,9 +85,7 @@ impl<N: NodeImpl> GlobalEvent<N> {
             GlobalEvent::NodeTimed { node_idx, event } => {
                 let (sub, task, subtask) = match event {
                     NodeEvent::NewSlot(slot) => (0u8, *slot, 0u64),
-                    NodeEvent::CpuSubtaskCompleted(s) => {
-                        (1u8, s.task_id, s.subtask_id)
-                    }
+                    NodeEvent::CpuSubtaskCompleted(s) => (1u8, s.task_id, s.subtask_id),
                     NodeEvent::Other(_) => {
                         // Node-local TimedEvents are opaque; they
                         // originate from the single node identified by
@@ -122,7 +124,6 @@ impl<N: NodeImpl> Default for BatchNodeOutput<N> {
         }
     }
 }
-
 
 /// Cross-shard message sent between sequential shards.
 ///
@@ -400,11 +401,7 @@ impl<N: NodeImpl> SequentialSimulation<N> {
             let mut total_node_work = 0usize;
 
             let mut events_at_ts: Vec<GlobalEvent<N>> = Vec::new();
-            while self
-                .event_queue
-                .peek()
-                .is_some_and(|e| e.0 == timestamp)
-            {
+            while self.event_queue.peek().is_some_and(|e| e.0 == timestamp) {
                 let FutureEvent(_, event) = self.event_queue.pop().unwrap();
                 events_at_ts.push(event);
             }
@@ -440,8 +437,7 @@ impl<N: NodeImpl> SequentialSimulation<N> {
                     GlobalEvent::TxGeneration => {
                         // When tx_batch_window is set, generate all TXs within
                         // that window in one batch. Otherwise generate one at a time.
-                        let batch_end = self.config.tx_batch_window
-                            .map(|w| timestamp + w);
+                        let batch_end = self.config.tx_batch_window.map(|w| timestamp + w);
                         while let Some((node_idx, tx, next_time)) =
                             self.tx_generator.generate(timestamp)
                         {
@@ -452,8 +448,10 @@ impl<N: NodeImpl> SequentialSimulation<N> {
                                     // Next TX falls within the batch window — continue.
                                 }
                                 Some(t) => {
-                                    self.event_queue
-                                        .push(FutureEvent(self.quantize(t), GlobalEvent::TxGeneration));
+                                    self.event_queue.push(FutureEvent(
+                                        self.quantize(t),
+                                        GlobalEvent::TxGeneration,
+                                    ));
                                     break;
                                 }
                                 None => break,
@@ -533,8 +531,7 @@ impl<N: NodeImpl> SequentialSimulation<N> {
                         continue;
                     }
                     let work = std::mem::take(work);
-                    let output =
-                        process_node_batch(&mut self.nodes[node_idx], work, timestamp);
+                    let output = process_node_batch(&mut self.nodes[node_idx], work, timestamp);
                     self.apply_batch_output(output, timestamp);
                 }
             }
@@ -744,7 +741,11 @@ fn process_node_batch<N: NodeImpl>(
             }
             WorkItem::CpuSubtaskCompleted(subtask) => {
                 let result = common::complete_cpu_subtask::<N>(
-                    &mut node_state.cpu, &node_state.tracker, node_state.id, timestamp, subtask,
+                    &mut node_state.cpu,
+                    &node_state.tracker,
+                    node_state.id,
+                    timestamp,
+                    subtask,
                 );
                 if let Some(subtask) = result.next_subtask {
                     output.new_events.push(FutureEvent(
@@ -780,7 +781,12 @@ fn process_node_batch<N: NodeImpl>(
 
         for task in result.tasks {
             let subtasks = common::schedule_cpu_task::<N>(
-                &mut node_state.cpu, &node_state.tracker, node_state.id, timestamp, task, &node_state.config,
+                &mut node_state.cpu,
+                &node_state.tracker,
+                node_state.id,
+                timestamp,
+                task,
+                &node_state.config,
             );
             for subtask in subtasks {
                 output.new_events.push(FutureEvent(
@@ -921,8 +927,10 @@ where
     let clock_coordinators: Vec<ClockCoordinator> = (0..shard_count)
         .map(|_| ClockCoordinator::new(config.timestamp_resolution))
         .collect();
-    let shared_times: Vec<Arc<AtomicTimestamp>> =
-        clock_coordinators.iter().map(|cc| cc.shared_time()).collect();
+    let shared_times: Vec<Arc<AtomicTimestamp>> = clock_coordinators
+        .iter()
+        .map(|cc| cc.shared_time())
+        .collect();
     let clocks: Vec<Clock> = clock_coordinators.iter().map(|cc| cc.clock()).collect();
     let trackers: Vec<EventTracker> = clocks
         .iter()
@@ -937,12 +945,10 @@ where
     }
 
     // Compute shard assignments
-    let shard_lookup: Arc<HashMap<NodeId, usize>> =
-        crate::sharding::compute_shard_lookup(&config);
+    let shard_lookup: Arc<HashMap<NodeId, usize>> = crate::sharding::compute_shard_lookup(&config);
 
     // Create node impls grouped by shard
-    let mut per_shard_nodes: Vec<Vec<(usize, N)>> =
-        (0..shard_count).map(|_| Vec::new()).collect();
+    let mut per_shard_nodes: Vec<Vec<(usize, N)>> = (0..shard_count).map(|_| Vec::new()).collect();
     for (global_idx, node_config) in config.nodes.iter().enumerate() {
         let shard = shard_lookup[&node_config.id];
         per_shard_nodes[shard].push((
@@ -1006,16 +1012,12 @@ where
         }
 
         // Build connections
-        let mut connections: HashMap<Link, ConnectionKind<MiniProtocol, N::Message>> = HashMap::new();
+        let mut connections: HashMap<Link, ConnectionKind<MiniProtocol, N::Message>> =
+            HashMap::new();
         let net_oracle = crate::rng::Rng::new(config.seed);
         let make_conn = |from, to, lc: &crate::config::LinkConfiguration| {
             let envelope = lc.tcp_envelope.as_ref().map(|cfg| {
-                crate::network::connection::EnvelopeWiring::new(
-                    cfg.clone(),
-                    net_oracle,
-                    from,
-                    to,
-                )
+                crate::network::connection::EnvelopeWiring::new(cfg.clone(), net_oracle, from, to)
             });
             ConnectionKind::from_config(lc.latency, lc.bandwidth_bps, lc.use_tcp, envelope)
         };
@@ -1039,7 +1041,9 @@ where
         // behaviour.
         let _ = rng.next_u64(); // preserve master-RNG consumption count for other draws below
         let tx_rng = crate::rng::Rng::new(config.seed);
-        let indexed_nodes: Vec<_> = config.nodes.iter()
+        let indexed_nodes: Vec<_> = config
+            .nodes
+            .iter()
             .filter_map(|n| node_indices.get(&n.id).map(|&idx| (idx, n)))
             .collect();
         let tx_generator = TxGeneratorCore::new(tx_rng, &config, shard_idx, indexed_nodes);
@@ -1065,28 +1069,29 @@ where
         }
 
         // Cross-shard state
-        let cross_shard = if let Some((ref senders, ref mut receivers, ref min_latencies, min_lookahead)) =
-            cross_shard_wiring
-        {
-            let peer_shards: Vec<PeerShardInfo> = (0..shard_count)
-                .filter(|&j| j != shard_idx && min_latencies[j][shard_idx] != Duration::MAX)
-                .map(|j| PeerShardInfo {
-                    time: shared_times[j].clone(),
-                    min_latency: min_latencies[j][shard_idx].max(min_lookahead),
+        let cross_shard =
+            if let Some((ref senders, ref mut receivers, ref min_latencies, min_lookahead)) =
+                cross_shard_wiring
+            {
+                let peer_shards: Vec<PeerShardInfo> = (0..shard_count)
+                    .filter(|&j| j != shard_idx && min_latencies[j][shard_idx] != Duration::MAX)
+                    .map(|j| PeerShardInfo {
+                        time: shared_times[j].clone(),
+                        min_latency: min_latencies[j][shard_idx].max(min_lookahead),
+                    })
+                    .collect();
+                Some(CrossShardState {
+                    shard_index: shard_idx,
+                    shard_lookup: shard_lookup.clone(),
+                    tx: senders.clone(),
+                    rx: receivers[shard_idx].take().unwrap(),
+                    peer_shards,
+                    send_seq: 0,
+                    pending: BinaryHeap::new(),
                 })
-                .collect();
-            Some(CrossShardState {
-                shard_index: shard_idx,
-                shard_lookup: shard_lookup.clone(),
-                tx: senders.clone(),
-                rx: receivers[shard_idx].take().unwrap(),
-                peer_shards,
-                send_seq: 0,
-                pending: BinaryHeap::new(),
-            })
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         shards.push(SequentialSimulation {
             nodes,

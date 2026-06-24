@@ -337,8 +337,16 @@ mod tests {
             ("b", BehaviourSelection::StakeRandom { count: 3 }),
         ];
         let out = resolve_assignments(&items, &stakes, Some(7));
-        let a: BTreeSet<usize> = out.iter().filter(|(_, p)| *p == "a").map(|(i, _)| *i).collect();
-        let b: BTreeSet<usize> = out.iter().filter(|(_, p)| *p == "b").map(|(i, _)| *i).collect();
+        let a: BTreeSet<usize> = out
+            .iter()
+            .filter(|(_, p)| *p == "a")
+            .map(|(i, _)| *i)
+            .collect();
+        let b: BTreeSet<usize> = out
+            .iter()
+            .filter(|(_, p)| *p == "b")
+            .map(|(i, _)| *i)
+            .collect();
         assert_ne!(
             a, b,
             "two StakeRandom items with same count should select different subsets"

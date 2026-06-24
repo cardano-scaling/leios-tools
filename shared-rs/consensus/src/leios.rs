@@ -33,11 +33,11 @@ use crate::elections::{Elections, SlotEffect};
 use crate::fetch::{
     CandidateTracker, EbFetchPolicy, EbTxsFetchPolicy, LowestRttFirst, PeerRtt, UniformRtt,
 };
+use crate::mempool::{TxBody, TxId};
 use crate::peer::PeerId;
 use crate::pipeline::PipelineConfig;
 use crate::types::Point;
 use crate::types::Vote;
-use crate::mempool::{TxBody, TxId};
 
 /// How long an in-flight fetch entry remains "active" before being
 /// considered stale and eligible for retry.
@@ -1306,8 +1306,8 @@ fn indices_to_bitmap(indices: &[u32]) -> BTreeMap<u16, u64> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mempool::{TxBody, TxId};
     use super::*;
+    use crate::mempool::{TxBody, TxId};
 
     fn pipeline() -> PipelineConfig {
         PipelineConfig {
@@ -1697,7 +1697,9 @@ mod tests {
         let ha = tx_id(0xA0);
         let hb = tx_id(0xA1);
         let hc = tx_id(0xA2);
-        state.eb_tx_hashes.insert(h(1), (10, vec![ha.clone(), hb.clone(), hc.clone()]));
+        state
+            .eb_tx_hashes
+            .insert(h(1), (10, vec![ha.clone(), hb.clone(), hc.clone()]));
         // Body order arrives as [b, a, c] but should come out [a, b, c].
         let bodies = vec![
             (TxBody::new_with_vec(b"body-b".to_vec()), hb),
@@ -1707,7 +1709,11 @@ mod tests {
         let outcome = state.match_eb_tx_response(&point(10, 1), &bodies);
         assert_eq!(
             outcome.matched_bodies,
-            vec![TxBody::new_with_vec(b"body-a".to_vec()), TxBody::new_with_vec(b"body-b".to_vec()), TxBody::new_with_vec(b"body-c".to_vec())]
+            vec![
+                TxBody::new_with_vec(b"body-a".to_vec()),
+                TxBody::new_with_vec(b"body-b".to_vec()),
+                TxBody::new_with_vec(b"body-c".to_vec())
+            ]
         );
     }
 
@@ -1717,9 +1723,15 @@ mod tests {
         let ha = tx_id(0xA0);
         state.eb_tx_hashes.insert(h(1), (10, vec![ha.clone()]));
         let bogus = tx_id(0xFF);
-        let bodies = vec![(TxBody::new_with_vec(b"body-a".to_vec()), ha), (TxBody::new_with_vec(b"bogus".to_vec()), bogus)];
+        let bodies = vec![
+            (TxBody::new_with_vec(b"body-a".to_vec()), ha),
+            (TxBody::new_with_vec(b"bogus".to_vec()), bogus),
+        ];
         let outcome = state.match_eb_tx_response(&point(10, 1), &bodies);
-        assert_eq!(outcome.matched_bodies, vec![TxBody::new_with_vec(b"body-a".to_vec())]);
+        assert_eq!(
+            outcome.matched_bodies,
+            vec![TxBody::new_with_vec(b"body-a".to_vec())]
+        );
     }
 
     #[test]
@@ -1879,8 +1891,14 @@ mod tests {
         requested.insert(0u16, 0b11u64);
         state.pending_eb_tx_fetches.insert(h(1), (10, requested));
         // Only body for index 0 (ha) arrives.
-        let outcome = state.match_eb_tx_response(&point(10, 1), &[(TxBody::new_with_vec(b"body-a".to_vec()), ha)]);
-        assert_eq!(outcome.matched_bodies, vec![TxBody::new_with_vec(b"body-a".to_vec())]);
+        let outcome = state.match_eb_tx_response(
+            &point(10, 1),
+            &[(TxBody::new_with_vec(b"body-a".to_vec()), ha)],
+        );
+        assert_eq!(
+            outcome.matched_bodies,
+            vec![TxBody::new_with_vec(b"body-a".to_vec())]
+        );
         assert_eq!(outcome.requested, 2);
         // Index 1 still missing.
         let mut expected_remaining = BTreeMap::new();
@@ -1904,7 +1922,10 @@ mod tests {
         let mut requested = BTreeMap::new();
         requested.insert(0u16, 0b1u64);
         state.pending_eb_tx_fetches.insert(h(1), (10, requested));
-        let outcome = state.match_eb_tx_response(&point(10, 1), &[(TxBody::new_with_vec(b"body-a".to_vec()), ha)]);
+        let outcome = state.match_eb_tx_response(
+            &point(10, 1),
+            &[(TxBody::new_with_vec(b"body-a".to_vec()), ha)],
+        );
         assert!(outcome.remaining_bitmap.is_empty());
         assert!(!state.pending_eb_tx_fetches.contains_key(&h(1)));
     }
@@ -1912,9 +1933,14 @@ mod tests {
     #[test]
     fn match_eb_tx_response_unknown_manifest_passes_bodies_through() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
-        let outcome =
-            state.match_eb_tx_response(&point(10, 1), &[(TxBody::new_with_vec(b"some-body".to_vec()), tx_id(0xAA))]);
-        assert_eq!(outcome.matched_bodies, vec![TxBody::new_with_vec(b"some-body".to_vec())]);
+        let outcome = state.match_eb_tx_response(
+            &point(10, 1),
+            &[(TxBody::new_with_vec(b"some-body".to_vec()), tx_id(0xAA))],
+        );
+        assert_eq!(
+            outcome.matched_bodies,
+            vec![TxBody::new_with_vec(b"some-body".to_vec())]
+        );
         assert_eq!(outcome.requested, 0);
         assert!(outcome.remaining_bitmap.is_empty());
     }

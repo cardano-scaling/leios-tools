@@ -75,8 +75,8 @@ use crate::{
     },
     rng::{DrawSite, Rng},
     sim::{
-        linear_wire::{CpuTask, Message, TimedEvent},
         NodeImpl,
+        linear_wire::{CpuTask, Message, TimedEvent},
     },
 };
 use shared_consensus::behaviour::tree::actions::HonestAction;

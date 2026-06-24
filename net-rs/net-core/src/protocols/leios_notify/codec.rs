@@ -376,17 +376,17 @@ mod tests {
     #[test]
     fn decode_synthetic_bls_votes() {
         let bytes = hex(concat!(
-            "82",                                                                 // array(2)
-            "04",                                                                 // tag = 4
-            "81",                                                                 // votes array(1)
-            "84",                                                                 // vote array(4)
-            "1a0005dfc7",                                                         // slot = 0x0005dfc7
-            "5820",                                                               // bytes(32) header
-            "630ee36ae6a20e024a30cb582b3fcd1fd3a1aa0df16c1c7be53fea9ac3f1f70b",   // eb_hash
-            "1882",                                                               // voter_id = 130
-            "5830",                                                               // bytes(48) header
-            "abababababababababababababababababababababababababababababababab",   // sig (32 bytes)
-            "abababababababababababababababab",                                   // sig (16 bytes) → 48 total
+            "82",                                                               // array(2)
+            "04",                                                               // tag = 4
+            "81",                                                               // votes array(1)
+            "84",                                                               // vote array(4)
+            "1a0005dfc7",                                                       // slot = 0x0005dfc7
+            "5820",                                                             // bytes(32) header
+            "630ee36ae6a20e024a30cb582b3fcd1fd3a1aa0df16c1c7be53fea9ac3f1f70b", // eb_hash
+            "1882",                                                             // voter_id = 130
+            "5830",                                                             // bytes(48) header
+            "abababababababababababababababababababababababababababababababab", // sig (32 bytes)
+            "abababababababababababababababab", // sig (16 bytes) → 48 total
         ));
         let decoded: Message = minicbor::decode(&bytes).unwrap();
         match &decoded {

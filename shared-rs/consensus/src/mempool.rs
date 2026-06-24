@@ -60,12 +60,12 @@ impl TxId {
     pub fn new_with_slice(bytes: &[u8; 32]) -> Self {
         Self(Arc::new(bytes.clone()))
     }
-    
+
     /// Moves array to inner one.
     pub fn new_with_array(bytes: [u8; 32]) -> Self {
         Self(Arc::new(bytes))
     }
-    
+
     /// Return a short hex representation of the first 4 bytes.
     pub fn hex_short(&self) -> String {
         self.0
@@ -87,7 +87,7 @@ impl TxBody {
     pub fn new_with_vec(body: Vec<u8>) -> TxBody {
         TxBody(body.into())
     }
-    
+
     pub fn new_with_slice(body: &[u8]) -> TxBody {
         TxBody(body.to_vec().into())
     }
@@ -103,7 +103,9 @@ impl TxBody {
     /// Blake2b-256 over arbitrary bytes. Matches the tx-id derivation used
     /// by the consensus layer: `blake2b_simd::Params::new().hash_length(32)`.
     pub fn get_blake2b_256(&self) -> [u8; 32] {
-        let result = blake2b_simd::Params::new().hash_length(32).hash(self.get_slice());
+        let result = blake2b_simd::Params::new()
+            .hash_length(32)
+            .hash(self.get_slice());
         let mut out = [0u8; 32];
         out.copy_from_slice(result.as_bytes());
         out
@@ -603,8 +605,14 @@ impl MempoolState {
         if self.contains(tx_id) || self.eb_pinned.contains_key(tx_id) {
             return;
         }
-        self.eb_pinned
-            .insert(tx_id.clone(), MempoolTx { tx_id: tx_id.clone(), body, size });
+        self.eb_pinned.insert(
+            tx_id.clone(),
+            MempoolTx {
+                tx_id: tx_id.clone(),
+                body,
+                size,
+            },
+        );
     }
 
     /// True iff the body for `tx_id` is locally available — either
@@ -772,7 +780,11 @@ mod tests {
     }
 
     fn tx(id: u8, size: u32) -> (TxId, TxBody, u32) {
-        (TxId::new_with_slice(&[id; 32]), TxBody::new_with_vec(vec![0u8; size as usize]), size)
+        (
+            TxId::new_with_slice(&[id; 32]),
+            TxBody::new_with_vec(vec![0u8; size as usize]),
+            size,
+        )
     }
 
     fn admit(state: &mut MempoolState, id: u8, size: u32) -> Vec<MempoolEffect> {
@@ -904,10 +916,16 @@ mod tests {
         admit(&mut s, 1, 100);
         admit(&mut s, 2, 200);
         admit(&mut s, 3, 300);
-        let included = vec![TxId::new_with_slice(&[1u8; 32]), TxId::new_with_slice(&[3u8; 32])];
+        let included = vec![
+            TxId::new_with_slice(&[1u8; 32]),
+            TxId::new_with_slice(&[3u8; 32]),
+        ];
         s.on_block_applied(&included);
         assert_eq!(s.len(), 1);
-        assert_eq!(s.txs.front().unwrap().tx_id, TxId::new_with_slice(&[2u8; 32]));
+        assert_eq!(
+            s.txs.front().unwrap().tx_id,
+            TxId::new_with_slice(&[2u8; 32])
+        );
         assert_eq!(s.total_bytes(), 200);
     }
 
@@ -1111,7 +1129,14 @@ mod tests {
         let eb = eb_key(50, 0xEE);
         let (manifest, evictions) = s.produce_eb(eb, 3);
 
-        assert_eq!(manifest, vec![TxId::new_with_slice(&[1u8; 32]), TxId::new_with_slice(&[2u8; 32]), TxId::new_with_slice(&[3u8; 32])]);
+        assert_eq!(
+            manifest,
+            vec![
+                TxId::new_with_slice(&[1u8; 32]),
+                TxId::new_with_slice(&[2u8; 32]),
+                TxId::new_with_slice(&[3u8; 32])
+            ]
+        );
         assert!(evictions.is_empty(), "no older EBs to evict yet");
         assert!(s.is_empty(), "txs are drained");
         assert_eq!(s.total_bytes(), 0);
@@ -1176,7 +1201,9 @@ mod tests {
     #[test]
     fn get_eb_bodies_returns_partial_subset_in_index_order() {
         let mut s = MempoolState::new(10);
-        let ids: Vec<TxId> = (0..5).map(|i| TxId::new_with_slice(&[i as u8; 32])).collect();
+        let ids: Vec<TxId> = (0..5)
+            .map(|i| TxId::new_with_slice(&[i as u8; 32]))
+            .collect();
         let eb = eb_key(30, 0x33);
         s.record_eb_manifest(eb, ids.clone());
         // Only bodies for indices 1 and 3 are locally available.
@@ -1186,7 +1213,13 @@ mod tests {
         // Server gets a bitmap request for [0, 1, 2, 3, 4]; returns only the
         // bodies it has, in ascending index order.
         let got = s.get_eb_bodies(&eb, 0..5).unwrap();
-        assert_eq!(got, vec![TxBody::new_with_vec(vec![0x11]), TxBody::new_with_vec(vec![0x33])]);
+        assert_eq!(
+            got,
+            vec![
+                TxBody::new_with_vec(vec![0x11]),
+                TxBody::new_with_vec(vec![0x33])
+            ]
+        );
     }
 
     #[test]
@@ -1204,7 +1237,10 @@ mod tests {
         s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xCC]), 1);
         // Second call with a different (faked) body must not overwrite.
         s.merge_eb_body(&id, TxBody::new_with_vec(vec![0xFF]), 1);
-        assert_eq!(s.get_body_by_id(&id), Some(TxBody::new_with_vec(vec![0xCC])));
+        assert_eq!(
+            s.get_body_by_id(&id),
+            Some(TxBody::new_with_vec(vec![0xCC]))
+        );
     }
 
     #[test]
@@ -1231,7 +1267,8 @@ mod tests {
         assert!(s.get_eb_manifest(&old_eb).is_some());
 
         // Push max_eb_slot far past the window.
-        let evictions = s.record_eb_manifest(eb_key(100, 0x02), vec![TxId::new_with_slice(&[0xBBu8; 32])]);
+        let evictions =
+            s.record_eb_manifest(eb_key(100, 0x02), vec![TxId::new_with_slice(&[0xBBu8; 32])]);
 
         // Old EB and its body are evicted; new EB stays.
         assert!(s.get_eb_manifest(&old_eb).is_none());

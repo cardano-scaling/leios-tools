@@ -1,4 +1,7 @@
-use std::{collections::{BTreeMap, HashMap}, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use crate::{
     config::{NodeId, SimConfiguration},
@@ -179,10 +182,7 @@ fn bisect_kl(
             for &ai in &a_candidates {
                 for &bi in &b_candidates {
                     // Edge weight between ai and bi
-                    let edge_ab = adj[items[ai]]
-                        .get(&items[bi])
-                        .copied()
-                        .unwrap_or(0) as i64;
+                    let edge_ab = adj[items[ai]].get(&items[bi]).copied().unwrap_or(0) as i64;
                     let gain = gains[ai] + gains[bi] - 2 * edge_ab;
                     if gain > best_gain {
                         best_gain = gain;

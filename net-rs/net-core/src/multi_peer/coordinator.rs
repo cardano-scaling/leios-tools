@@ -86,14 +86,14 @@ impl OfferDedup {
     }
 }
 
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 use super::chain_fragment::ChainFragment;
 use crate::bearer::tcp::TcpBearer;
 use crate::mux::MuxConfig;
 use crate::protocols::peersharing::PeerAddress;
 use crate::types::{Point, Tip, Vote};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use super::types::{NetworkCommand, NetworkEvent};
 use super::{CoordinatorConfig, CoordinatorHandle};
@@ -668,7 +668,9 @@ impl Coordinator {
                             .iter()
                             .filter_map(|body| {
                                 let id = body.get_blake2b_256();
-                                by_hash.get(&TxId::new_with_array(id)).map(|&i| (i, body.clone()))
+                                by_hash
+                                    .get(&TxId::new_with_array(id))
+                                    .map(|&i| (i, body.clone()))
                             })
                             .collect();
                         if !indexed.is_empty() {
@@ -1480,9 +1482,9 @@ pub fn spawn_coordinator(config: CoordinatorConfig) -> CoordinatorHandle {
 
 #[cfg(test)]
 mod tests {
-    use shared_consensus::mempool::{TxBody, TxId};
     use super::*;
     use crate::types::WrappedHeader;
+    use shared_consensus::mempool::{TxBody, TxId};
 
     /// Helper: set up a coordinator with a MemBearer-connected peer.
     /// Returns (CoordinatorHandle, server_handle, MemBearer pair).
@@ -2654,8 +2656,8 @@ mod tests {
         let h1 = [0x02u8; 32];
         let resolver: Arc<dyn TxBodyResolver> = Arc::new(StubResolver(
             [
-                (TxId::new_with_array(h0), TxBody::new_with_vec(vec![10u8])), 
-                (TxId::new_with_array(h1), TxBody::new_with_vec(vec![20u8]))
+                (TxId::new_with_array(h0), TxBody::new_with_vec(vec![10u8])),
+                (TxId::new_with_array(h1), TxBody::new_with_vec(vec![20u8])),
             ]
             .into_iter()
             .collect(),
@@ -2688,10 +2690,7 @@ mod tests {
             .send(NetworkCommand::RecordLeiosEbManifest {
                 source: None,
                 point,
-                tx_hashes: vec![
-                    TxId::new_with_array(h0),
-                    TxId::new_with_array(h1)
-                ],
+                tx_hashes: vec![TxId::new_with_array(h0), TxId::new_with_array(h1)],
             })
             .await
             .expect("command should accept");
@@ -2708,7 +2707,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(got, Some(vec![TxBody::new_with_vec(vec![10u8]), TxBody::new_with_vec(vec![20u8])]));
+        assert_eq!(
+            got,
+            Some(vec![
+                TxBody::new_with_vec(vec![10u8]),
+                TxBody::new_with_vec(vec![20u8])
+            ])
+        );
 
         net_cmd_sender
             .send(NetworkCommand::Shutdown)
@@ -2741,7 +2746,10 @@ mod tests {
 
         let hash = [0xA1u8; 32];
         let point = Point::Specific { slot: 7, hash };
-        let txs: Vec<TxBody> = vec![TxBody::new_with_vec(vec![1, 2, 3]), TxBody::new_with_vec(vec![4, 5, 6])];
+        let txs: Vec<TxBody> = vec![
+            TxBody::new_with_vec(vec![1, 2, 3]),
+            TxBody::new_with_vec(vec![4, 5, 6]),
+        ];
 
         net_cmd_sender
             .send(NetworkCommand::InjectLeiosBlockTxs {

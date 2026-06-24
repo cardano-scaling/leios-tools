@@ -103,7 +103,8 @@ impl ClockCoordinator {
                     let task_notified = self.task_notify.notified();
                     tokio::pin!(task_notified);
                     task_notified.as_mut().enable();
-                    let mut peer_notified: Vec<_> = self.peer_shards
+                    let mut peer_notified: Vec<_> = self
+                        .peer_shards
                         .iter()
                         .map(|p| Box::pin(p.time_advanced.notified()))
                         .collect();
@@ -124,7 +125,9 @@ impl ClockCoordinator {
                         let mut ceiling = Timestamp::max();
                         for peer in &self.peer_shards {
                             let c = peer.time.load(Ordering::Acquire) + peer.min_latency;
-                            if c < ceiling { ceiling = c; }
+                            if c < ceiling {
+                                ceiling = c;
+                            }
                         }
                         if timestamp > ceiling {
                             // CMB null message: advance published time to ceiling

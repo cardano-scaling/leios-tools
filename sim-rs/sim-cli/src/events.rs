@@ -517,7 +517,9 @@ impl EventMonitor {
                 Event::VoteReceived { .. } => {
                     vote_messages.received += 1;
                 }
-                Event::PartitionStarted { name, link_count, .. } => {
+                Event::PartitionStarted {
+                    name, link_count, ..
+                } => {
                     info!("Network partition '{name}' activated: {link_count} edge(s) cut.");
                 }
                 Event::PartitionHealed { name, link_count } => {
@@ -779,45 +781,79 @@ impl EventMonitor {
             ));
             lines.push(format!(
                 "{} out of {} IBs were included in at least one EB.",
-                ibs.values().filter(|ib| ib.included_in_eb.is_some()).count(), ibs.len(),
+                ibs.values()
+                    .filter(|ib| ib.included_in_eb.is_some())
+                    .count(),
+                ibs.len(),
             ));
             lines.push(format!(
                 "{} out of {} IBs expired before they reached an EB.",
-                expired_ibs, ibs.len(),
+                expired_ibs,
+                ibs.len(),
             ));
         }
         lines.push(format!(
             "{} out of {} EBs expired before an EB from their stage reached an RB.",
-            expired_ebs, ebs.len(),
+            expired_ebs,
+            ebs.len(),
         ));
         lines.push(format!(
             "{} out of {} transaction(s) were included in at least one EB.",
-            times_to_reach_eb.len(), txs.len(),
+            times_to_reach_eb.len(),
+            txs.len(),
         ));
         lines.push(format!("{} total votes were generated.", total_votes));
-        lines.push(format!("Each stake pool produced an average of {:.3} vote(s) (stddev {:.3}).",
-            votes_per_pool_stats.mean, votes_per_pool_stats.std_dev));
-        lines.push(format!("Each EB received an average of {:.3} vote(s) (stddev {:.3}).",
-            votes_per_eb.mean, votes_per_eb.std_dev));
+        lines.push(format!(
+            "Each stake pool produced an average of {:.3} vote(s) (stddev {:.3}).",
+            votes_per_pool_stats.mean, votes_per_pool_stats.std_dev
+        ));
+        lines.push(format!(
+            "Each EB received an average of {:.3} vote(s) (stddev {:.3}).",
+            votes_per_eb.mean, votes_per_eb.std_dev
+        ));
         lines.push(format!("There were {bundle_count} bundle(s) of votes. Each bundle contained {:.3} vote(s) (stddev {:.3}).",
             votes_per_bundle_stats.mean, votes_per_bundle_stats.std_dev));
         if !no_vote_reasons.is_empty() {
             let total: u64 = no_vote_reasons.values().sum();
-            lines.push(format!("{total} vote(s) were not generated due to validation failures:"));
+            lines.push(format!(
+                "{total} vote(s) were not generated due to validation failures:"
+            ));
             for (reason, count) in no_vote_reasons {
                 lines.push(format!("  {reason:?}: {count}"));
             }
         }
         if uncertified_ebs > 0 {
-            lines.push(format!("{uncertified_ebs} out of {} EB(s) did not reach the vote threshold ({}).",
-                ebs.len(), self.vote_threshold));
+            lines.push(format!(
+                "{uncertified_ebs} out of {} EB(s) did not reach the vote threshold ({}).",
+                ebs.len(),
+                self.vote_threshold
+            ));
         }
-        lines.push(format!("{} L1 block(s) had a Leios endorsement.", leios_blocks_with_endorsements));
-        lines.push(format!("{} tx(s) ({}) were referenced by a Leios endorsement.", leios_txs, pretty_bytes(leios_tx_bytes, pbo.clone())));
-        lines.push(format!("{} tx(s) ({}) were included directly in a Praos block.", praos_txs, pretty_bytes(praos_tx_bytes, pbo.clone())));
-        lines.push(format!("Spatial efficiency: {}/{} ({:.3}%) of Leios bytes were unique transactions.", pretty_bytes(leios_tx_bytes, pbo.clone()), pretty_bytes(total_leios_bytes, pbo.clone()),
-              (leios_tx_bytes as f64 / total_leios_bytes as f64) * 100.));
-        lines.push(format!("{} tx(s) ({:.3}%) referenced by a Leios endorsement were redundant.", total_leios_txs - leios_txs, (total_leios_txs - leios_txs) as f64 / total_leios_txs as f64 * 100.));
+        lines.push(format!(
+            "{} L1 block(s) had a Leios endorsement.",
+            leios_blocks_with_endorsements
+        ));
+        lines.push(format!(
+            "{} tx(s) ({}) were referenced by a Leios endorsement.",
+            leios_txs,
+            pretty_bytes(leios_tx_bytes, pbo.clone())
+        ));
+        lines.push(format!(
+            "{} tx(s) ({}) were included directly in a Praos block.",
+            praos_txs,
+            pretty_bytes(praos_tx_bytes, pbo.clone())
+        ));
+        lines.push(format!(
+            "Spatial efficiency: {}/{} ({:.3}%) of Leios bytes were unique transactions.",
+            pretty_bytes(leios_tx_bytes, pbo.clone()),
+            pretty_bytes(total_leios_bytes, pbo.clone()),
+            (leios_tx_bytes as f64 / total_leios_bytes as f64) * 100.
+        ));
+        lines.push(format!(
+            "{} tx(s) ({:.3}%) referenced by a Leios endorsement were redundant.",
+            total_leios_txs - leios_txs,
+            (total_leios_txs - leios_txs) as f64 / total_leios_txs as f64 * 100.
+        ));
         if has_ibs {
             let ib_time_stats = compute_stats(times_to_reach_ib.iter().map(|t| t.as_secs_f64()));
             lines.push(format!(
@@ -843,8 +879,7 @@ impl EventMonitor {
                 "Final network stats:".to_string(),
             ),
         };
-        info_span!("leios")
-            .in_scope(|| info!("{}\n  {}", protocol_header, lines.join("\n  ")));
+        info_span!("leios").in_scope(|| info!("{}\n  {}", protocol_header, lines.join("\n  ")));
 
         let mut lines = vec![tx_messages.summary_line("TX")];
         if has_ibs {
@@ -852,8 +887,7 @@ impl EventMonitor {
         }
         lines.push(eb_messages.summary_line("EB"));
         lines.push(vote_messages.summary_line("Vote"));
-        info_span!("network")
-            .in_scope(|| info!("{}\n  {}", network_header, lines.join("\n  ")));
+        info_span!("network").in_scope(|| info!("{}\n  {}", network_header, lines.join("\n  ")));
     }
 }
 
@@ -972,10 +1006,7 @@ async fn flush_buffered(
     output: &mut OutputTarget,
 ) -> Result<()> {
     // Collect keys to flush (can't mutate while iterating).
-    let keys: Vec<Timestamp> = buffered
-        .range(..up_to)
-        .map(|(k, _)| *k)
-        .collect();
+    let keys: Vec<Timestamp> = buffered.range(..up_to).map(|(k, _)| *k).collect();
     for ts in keys {
         let mut events = buffered.remove(&ts).unwrap();
         events.sort_by_key(|e| e.message.node_id());

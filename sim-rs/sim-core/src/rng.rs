@@ -355,7 +355,14 @@ mod tests {
         let withhold = rng.draw_u64(n, s, DrawSite::WithholdDecision);
         let mempool = rng.draw_u64(n, s, DrawSite::MempoolSwap { call: 0, idx: 0 });
         let txgen = rng.draw_u64(n, s, DrawSite::TxGenNode { tx_idx: 0 });
-        let vrf = rng.draw_u64(n, s, DrawSite::VoteVrf { eb_id: eb(s, 5), trial: 0 });
+        let vrf = rng.draw_u64(
+            n,
+            s,
+            DrawSite::VoteVrf {
+                eb_id: eb(s, 5),
+                trial: 0,
+            },
+        );
         let all = [rb, withhold, mempool, txgen, vrf];
         let unique: HashSet<_> = all.iter().collect();
         assert_eq!(unique.len(), all.len(), "DrawSite variants collided");

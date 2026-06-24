@@ -142,10 +142,9 @@ where
         let send_dur = now - Timestamp::zero();
         let p = env.state.cfg().msg_loss_prob(bytes);
         let loss = p > 0.0
-            && env.rng.draw_bool_with_context(
-                &("tcp_loss", env.from, env.to, send_dur, self.next_id),
-                p,
-            );
+            && env
+                .rng
+                .draw_bool_with_context(&("tcp_loss", env.from, env.to, send_dur, self.next_id), p);
         env.state.on_send(send_dur, bytes, loss);
     }
 
@@ -276,7 +275,6 @@ where
 
         self.last_event = now;
     }
-
 
     fn split_bytes_amongst_queues(&self, bytes: u64) -> BTreeMap<TProtocol, u64> {
         let mut queue_bytes: Vec<(&TProtocol, u64)> = self
@@ -651,7 +649,12 @@ mod tests {
         use tcp_model::LinkEnvelopeCfg;
         let mut cfg = LinkEnvelopeCfg::defaults_for(latency, bps);
         cfg.loss_prob_per_segment = loss_p;
-        super::EnvelopeWiring::new(cfg, crate::rng::Rng::new(0xC0FFEE), NodeId::new(1), NodeId::new(2))
+        super::EnvelopeWiring::new(
+            cfg,
+            crate::rng::Rng::new(0xC0FFEE),
+            NodeId::new(1),
+            NodeId::new(2),
+        )
     }
 
     #[test]
@@ -664,7 +667,8 @@ mod tests {
         warm.send("m", 1_000_000, MiniProtocol::One, Timestamp::zero());
         let warm_arrival = warm.recv_many(far_future)[0].1;
 
-        let mut cold = Connection::with_envelope(latency, Some(bps), envelope_for(latency, bps, 0.0));
+        let mut cold =
+            Connection::with_envelope(latency, Some(bps), envelope_for(latency, bps, 0.0));
         cold.send("m", 1_000_000, MiniProtocol::One, Timestamp::zero());
         let cold_arrival = cold.recv_many(far_future)[0].1;
 
@@ -680,13 +684,17 @@ mod tests {
     fn envelope_loss_pushes_arrival_to_delivery_floor() {
         let latency = Duration::from_millis(150);
         let bps = 1_000_000u64;
-        let mut conn = Connection::with_envelope(latency, Some(bps), envelope_for(latency, bps, 1.0));
+        let mut conn =
+            Connection::with_envelope(latency, Some(bps), envelope_for(latency, bps, 1.0));
         let send_at = Timestamp::zero() + Duration::from_millis(100);
         conn.send("m", 1500, MiniProtocol::One, send_at);
         let arrival = conn.recv_many(send_at + Duration::from_secs(5))[0].1;
         // Loss certain → stall window = RTO = max(1s, 2*latency) = 1s.
         let floor = send_at + Duration::from_secs(1);
-        assert!(arrival >= floor, "arrival {arrival:?} below floor {floor:?}");
+        assert!(
+            arrival >= floor,
+            "arrival {arrival:?} below floor {floor:?}"
+        );
     }
 
     #[test]
@@ -705,7 +713,10 @@ mod tests {
         let mut env = Connection::with_envelope(latency, Some(bps), wiring);
 
         let start = Timestamp::zero() + Duration::from_secs(1);
-        for (i, p) in [MiniProtocol::One, MiniProtocol::Two, MiniProtocol::Three].into_iter().enumerate() {
+        for (i, p) in [MiniProtocol::One, MiniProtocol::Two, MiniProtocol::Three]
+            .into_iter()
+            .enumerate()
+        {
             let when = start + Duration::from_millis(50 * i as u64);
             plain.send("m", 100, p.clone(), when);
             env.send("m", 100, p, when);
@@ -761,23 +772,15 @@ impl<TProtocol: Clone + Ord, TMessage> ConnectionKind<TProtocol, TMessage> {
             Self::tcp(latency, bandwidth_bps)
         } else {
             match envelope {
-                Some(wiring) => Self::Simple(Connection::with_envelope(
-                    latency,
-                    bandwidth_bps,
-                    wiring,
-                )),
+                Some(wiring) => {
+                    Self::Simple(Connection::with_envelope(latency, bandwidth_bps, wiring))
+                }
                 None => Self::simple(latency, bandwidth_bps),
             }
         }
     }
 
-    pub fn send(
-        &mut self,
-        message: TMessage,
-        bytes: u64,
-        protocol: TProtocol,
-        now: Timestamp,
-    ) {
+    pub fn send(&mut self, message: TMessage, bytes: u64, protocol: TProtocol, now: Timestamp) {
         match self {
             Self::Simple(c) => c.send(message, bytes, protocol, now),
             Self::Tcp(c) => c.send(message, bytes, now),

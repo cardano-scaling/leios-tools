@@ -7,11 +7,11 @@
 pub mod bitmap;
 pub mod codec;
 
-use std::collections::BTreeMap;
-use std::time::Duration;
-use shared_consensus::mempool::TxBody;
 use crate::protocols::{Agency, Protocol, ProtocolError, Runner};
 use crate::types::Point;
+use shared_consensus::mempool::TxBody;
+use std::collections::BTreeMap;
+use std::time::Duration;
 
 /// LeiosFetch protocol ID in the multiplexer.
 pub const PROTOCOL_ID: u16 = 19;
@@ -435,7 +435,7 @@ mod tests {
                     transactions: vec![
                         TxBody::new_with_vec(vec![0x01]),
                         TxBody::new_with_vec(vec![0x02]),
-                        TxBody::new_with_vec(vec![0x03])
+                        TxBody::new_with_vec(vec![0x03]),
                     ],
                 })
                 .await

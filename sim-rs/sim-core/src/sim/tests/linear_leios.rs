@@ -743,9 +743,16 @@ fn top_stake_fraction_should_select_voters() {
     let has_vote_task = sim
         .queued
         .get(&small)
-        .map(|q| q.tasks.iter().any(|t| matches!(t, CpuTask::VTBundleGenerated(..))))
+        .map(|q| {
+            q.tasks
+                .iter()
+                .any(|t| matches!(t, CpuTask::VTBundleGenerated(..)))
+        })
         .unwrap_or(false);
-    assert!(!has_vote_task, "small node should not have generated a vote");
+    assert!(
+        !has_vote_task,
+        "small node should not have generated a vote"
+    );
 }
 
 /// CIP-164 PR #1196: under TopStakeFraction the per-voter contribution

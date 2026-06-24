@@ -48,7 +48,8 @@ impl NetworkStatsCollector {
     ) {
         let s = &self.shards[shard_idx];
         s.connections.store(connections, Ordering::Relaxed);
-        s.active_connections.store(active_connections, Ordering::Relaxed);
+        s.active_connections
+            .store(active_connections, Ordering::Relaxed);
         s.queued_messages.store(queued_messages, Ordering::Relaxed);
         s.queued_bytes.store(queued_bytes, Ordering::Relaxed);
     }

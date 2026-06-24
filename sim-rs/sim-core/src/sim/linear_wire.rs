@@ -140,9 +140,7 @@ impl SimMessage for Message {
             // (2-byte u16 index + 8-byte u64 word = 10 bytes per
             // segment, plus a CBOR map overhead).
             Self::RequestEBTxs(_, bitmap) => 40 + 10 * bitmap.len() as u64,
-            Self::EBTxs(_, txs) => {
-                40 + txs.iter().map(|tx| tx.bytes).sum::<u64>()
-            }
+            Self::EBTxs(_, txs) => 40 + txs.iter().map(|tx| tx.bytes).sum::<u64>(),
 
             Self::AnnounceVotes(_) => 8,
             Self::RequestVotes(_) => 8,
