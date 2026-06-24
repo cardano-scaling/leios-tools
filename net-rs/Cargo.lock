@@ -817,6 +817,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "net-codec"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "minicbor",
+ "shared-consensus",
+ "tracing",
+]
+
+[[package]]
 name = "net-core"
 version = "0.1.0"
 dependencies = [
@@ -824,6 +834,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "minicbor",
+ "net-codec",
  "serde",
  "shared-consensus",
  "socket2 0.5.10",

@@ -4,7 +4,7 @@ use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
-use super::{Point, MAX_HEADER_SIZE};
+use crate::{Point, MAX_HEADER_SIZE};
 
 /// Number of base fields in a Shelley+ header_body array (before Leios extensions).
 const HEADER_BODY_BASE_FIELDS: u64 = 10;
@@ -814,7 +814,7 @@ mod tests {
         let header = WrappedHeader::new(raw.clone());
         let point = header.point().expect("should derive point");
         match point {
-            super::super::Point::Specific { slot, hash } => {
+            crate::Point::Specific { slot, hash } => {
                 assert_eq!(slot, 5000);
                 // Hash should be blake2b-256 of the raw header bytes.
                 let expected = header_hash(&raw);
