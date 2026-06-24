@@ -39,7 +39,12 @@ impl LivenessMonitor {
 
     /// Returns (txs, ibs, ebs, queue_len) for memory diagnostics.
     pub fn stats(&self) -> (usize, usize, usize, usize) {
-        (self.txs.len(), self.ibs.len(), self.ebs.len(), self.queue.len())
+        (
+            self.txs.len(),
+            self.ibs.len(),
+            self.ebs.len(),
+            self.queue.len(),
+        )
     }
 
     pub async fn recv(&mut self) -> Option<(Event, Timestamp)> {

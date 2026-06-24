@@ -17,12 +17,8 @@ use crate::{
 };
 
 use super::{
-    MiniProtocol, NodeImpl,
-    driver::NodeDriver,
-    leios::LeiosNode,
-    linear_leios::LinearLeiosNode,
-    slot::SlotWitness,
-    stracciatella::StracciatellaLeiosNode,
+    MiniProtocol, NodeImpl, driver::NodeDriver, leios::LeiosNode, linear_leios::LinearLeiosNode,
+    slot::SlotWitness, stracciatella::StracciatellaLeiosNode,
 };
 
 pub(crate) trait Actor {
@@ -76,23 +72,18 @@ impl ActorSimulation {
                     super::linear_leios::register_actors,
                 )
             }
-            LeiosVariant::SharedConsensus => {
-                Self::new_generic::<super::shared_consensus::SharedConsensus, _>(
-                    config,
-                    event_sender,
-                    no_additional_actors,
-                )
-            }
-            LeiosVariant::FullWithoutIbs => {
-                Self::new_generic::<StracciatellaLeiosNode, _>(
-                    config,
-                    event_sender,
-                    no_additional_actors,
-                )
-            }
-            _ => {
-                Self::new_generic::<LeiosNode, _>(config, event_sender, no_additional_actors)
-            }
+            LeiosVariant::SharedConsensus => Self::new_generic::<
+                super::shared_consensus::SharedConsensus,
+                _,
+            >(
+                config, event_sender, no_additional_actors
+            ),
+            LeiosVariant::FullWithoutIbs => Self::new_generic::<StracciatellaLeiosNode, _>(
+                config,
+                event_sender,
+                no_additional_actors,
+            ),
+            _ => Self::new_generic::<LeiosNode, _>(config, event_sender, no_additional_actors),
         }
     }
 

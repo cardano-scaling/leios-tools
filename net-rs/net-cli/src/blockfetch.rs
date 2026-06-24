@@ -47,8 +47,7 @@ pub async fn run(
         None => {
             // ChainSync: find the tip so we have a point for BlockFetch.
             println!("finding intersection...");
-            let result =
-                chainsync::find_intersection(&mut cs_runner, vec![Point::Origin]).await?;
+            let result = chainsync::find_intersection(&mut cs_runner, vec![Point::Origin]).await?;
             let tip = match result {
                 Some((_point, tip)) => {
                     println!("intersection found, tip: {tip}");

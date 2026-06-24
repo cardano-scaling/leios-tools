@@ -23,7 +23,8 @@ use super::connection::{ConnectionKind, EnvelopeWiring};
 use super::partition::PartitionRuntime;
 
 /// Tuple sent directly from source NC to target NC for cross-shard messages.
-pub type CrossShardDelivery<TProtocol, TMessage> = (NodeId, NodeId, TProtocol, TMessage, u64, Timestamp);
+pub type CrossShardDelivery<TProtocol, TMessage> =
+    (NodeId, NodeId, TProtocol, TMessage, u64, Timestamp);
 
 pub struct NetworkCoordinator<TProtocol, TMessage> {
     source: mpsc::UnboundedReceiver<Message<TProtocol, TMessage>>,
@@ -132,9 +133,7 @@ impl<TProtocol: Clone + Eq + Hash + Ord, TMessage: Debug> NetworkCoordinator<TPr
             to: config.to,
         };
         let envelope = match (config.tcp_envelope, self.rng_oracle) {
-            (Some(cfg), Some(rng)) => {
-                Some(EnvelopeWiring::new(cfg, rng, config.from, config.to))
-            }
+            (Some(cfg), Some(rng)) => Some(EnvelopeWiring::new(cfg, rng, config.from, config.to)),
             (Some(_), None) => {
                 debug_assert!(
                     false,
@@ -274,4 +273,3 @@ pub struct Message<TProtocol, TMessage> {
     pub body: TMessage,
     pub bytes: u64,
 }
-

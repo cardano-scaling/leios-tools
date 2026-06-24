@@ -78,7 +78,10 @@ pub async fn serve_chainsync(
             }
         };
         if first_recv {
-            tracing::info!(peer = peer.0, "chainsync: downstream opened protocol with us");
+            tracing::info!(
+                peer = peer.0,
+                "chainsync: downstream opened protocol with us"
+            );
             first_recv = false;
         }
 
@@ -297,7 +300,10 @@ pub async fn serve_blockfetch(
             }
         };
         if first_recv {
-            tracing::info!(peer = peer.0, "blockfetch: downstream opened protocol with us");
+            tracing::info!(
+                peer = peer.0,
+                "blockfetch: downstream opened protocol with us"
+            );
             first_recv = false;
         }
 
@@ -376,7 +382,10 @@ fn lookup_variant_body(
 /// when this function returns — that's the watchdog's actual effect.
 pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerId) {
     let mut runner = Runner::<KeepAlive>::new(Role::Server, ka_send, ka_recv);
-    tracing::info!(peer = peer.0, "cardano-keepalive: serve_keepalive task started");
+    tracing::info!(
+        peer = peer.0,
+        "cardano-keepalive: serve_keepalive task started"
+    );
 
     let mut msg_count: u64 = 0;
     let exit_reason: &'static str = loop {
@@ -584,9 +593,7 @@ pub async fn serve_txsubmission(
                                         let _ = event_sender
                                             .send((
                                                 peer_id,
-                                                PeerEvent::TransactionReceived {
-                                                    body: tx.clone(),
-                                                },
+                                                PeerEvent::TransactionReceived { body: tx.clone() },
                                             ))
                                             .await;
                                     }
@@ -677,7 +684,10 @@ pub async fn serve_peersharing(
             }
         };
         if first_recv {
-            tracing::info!(peer = peer.0, "peersharing: downstream opened protocol with us");
+            tracing::info!(
+                peer = peer.0,
+                "peersharing: downstream opened protocol with us"
+            );
             first_recv = false;
         }
 
@@ -791,7 +801,10 @@ pub async fn serve_leios_notify(
             }
         };
         if first_recv {
-            tracing::info!(peer = peer.0, "leios_notify: downstream opened protocol with us");
+            tracing::info!(
+                peer = peer.0,
+                "leios_notify: downstream opened protocol with us"
+            );
             first_recv = false;
         }
 
@@ -977,7 +990,10 @@ pub async fn serve_leios_fetch(
             }
         };
         if first_recv {
-            tracing::info!(peer = peer.0, "leios_fetch: downstream opened protocol with us");
+            tracing::info!(
+                peer = peer.0,
+                "leios_fetch: downstream opened protocol with us"
+            );
             first_recv = false;
         }
 
@@ -1187,8 +1203,13 @@ mod tests {
         let authentic = WrappedHeader::opaque(vec![0x82, 0x07, 0xD8, 0x18, 0x42, 0xAA, 0xBB]);
         store.append_block(make_point(1), authentic.clone(), make_body(1, 50), 1);
 
-        let server_handle =
-            tokio::spawn(serve_chainsync(server_send, server_recv, store, PeerId(0), None));
+        let server_handle = tokio::spawn(serve_chainsync(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+            None,
+        ));
 
         let mut client = Runner::<ChainSync>::new(Role::Client, client_send, client_recv);
         let _ = chainsync::find_intersection(&mut client, vec![Point::Origin])
@@ -1198,7 +1219,10 @@ mod tests {
         match chainsync::request_next(&mut client).await.unwrap() {
             chainsync::ChainSyncEvent::RollForward { header, .. } => {
                 assert_eq!(header.raw, authentic.raw, "header forwarded verbatim");
-                assert_eq!(header.raw[1], 0x07, "era tag 7 preserved, not body-derived 8");
+                assert_eq!(
+                    header.raw[1], 0x07,
+                    "era tag 7 preserved, not body-derived 8"
+                );
             }
             other => panic!("expected RollForward, got {other:?}"),
         }
@@ -1233,8 +1257,13 @@ mod tests {
             );
         }
 
-        let server_handle =
-            tokio::spawn(serve_blockfetch(server_send, server_recv, store, PeerId(0), None));
+        let server_handle = tokio::spawn(serve_blockfetch(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+            None,
+        ));
 
         let mut client = Runner::<BlockFetch>::new(Role::Client, client_send, client_recv);
 
@@ -1312,20 +1341,17 @@ mod tests {
         // so the response comes from a post-snap entry.
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
         let inject_store = store.clone();
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 42,
-                        hash: [0xAB; 32],
-                    },
-                    vec![1, 2, 3],
-                    None,
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 42,
+                    hash: [0xAB; 32],
+                },
+                vec![1, 2, 3],
+                None,
+            );
+        });
 
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
@@ -1427,28 +1453,25 @@ mod tests {
         // no-echo gate alone decides which one reaches the wire.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 10,
-                        hash: [0xAA; 32],
-                    },
-                    vec![1, 2, 3],
-                    Some(connected_peer),
-                );
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 11,
-                        hash: [0xBB; 32],
-                    },
-                    vec![4, 5, 6, 7],
-                    Some(other_peer),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 10,
+                    hash: [0xAA; 32],
+                },
+                vec![1, 2, 3],
+                Some(connected_peer),
+            );
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 11,
+                    hash: [0xBB; 32],
+                },
+                vec![4, 5, 6, 7],
+                Some(other_peer),
+            );
+        });
 
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
@@ -1504,30 +1527,27 @@ mod tests {
         // decide between two queued entries on its own.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                // Same EB advertised by other_peer then by connected_peer —
-                // dedup collapses these into a single entry whose `sources`
-                // contains both. The server must still skip it for connected_peer.
-                let point = Point::Specific {
-                    slot: 10,
-                    hash: [0xAA; 32],
-                };
-                inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(other_peer));
-                inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(connected_peer));
-                // A separate EB advertised by third_peer — this one must be delivered.
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 11,
-                        hash: [0xBB; 32],
-                    },
-                    vec![4, 5, 6, 7],
-                    Some(third_peer),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Same EB advertised by other_peer then by connected_peer —
+            // dedup collapses these into a single entry whose `sources`
+            // contains both. The server must still skip it for connected_peer.
+            let point = Point::Specific {
+                slot: 10,
+                hash: [0xAA; 32],
+            };
+            inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(other_peer));
+            inject_store.inject_block(point.clone(), vec![1, 2, 3], Some(connected_peer));
+            // A separate EB advertised by third_peer — this one must be delivered.
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 11,
+                    hash: [0xBB; 32],
+                },
+                vec![4, 5, 6, 7],
+                Some(third_peer),
+            );
+        });
 
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, .. } => {
@@ -1587,22 +1607,19 @@ mod tests {
         // point did not appear twice.
         let inject_store = store.clone();
         let point_for_inject = point.clone();
-        let (first, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(point_for_inject.clone(), vec![0xCD; 17], Some(PeerId(1)));
-                inject_store.inject_block(point_for_inject, vec![0xCD; 17], Some(PeerId(2)));
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 22,
-                        hash: [0x34; 32],
-                    },
-                    vec![0xEF; 5],
-                    Some(PeerId(3)),
-                );
-            }
-        );
+        let (first, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(point_for_inject.clone(), vec![0xCD; 17], Some(PeerId(1)));
+            inject_store.inject_block(point_for_inject, vec![0xCD; 17], Some(PeerId(2)));
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 22,
+                    hash: [0x34; 32],
+                },
+                vec![0xEF; 5],
+                Some(PeerId(3)),
+            );
+        });
 
         match first.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point: p, eb_size } => {
@@ -1679,20 +1696,17 @@ mod tests {
         // instead and the assertion below catches it.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 100,
-                        hash: [0xEE; 32],
-                    },
-                    vec![0xBB; 20],
-                    Some(PeerId(8)),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 100,
+                    hash: [0xEE; 32],
+                },
+                vec![0xBB; 20],
+                Some(PeerId(8)),
+            );
+        });
 
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
@@ -1757,20 +1771,17 @@ mod tests {
         // connected_peer — honest policy would drop this echo.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 10,
-                        hash: [0xAA; 32],
-                    },
-                    vec![1, 2, 3, 4, 5],
-                    Some(connected_peer),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 10,
+                    hash: [0xAA; 32],
+                },
+                vec![1, 2, 3, 4, 5],
+                Some(connected_peer),
+            );
+        });
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                 assert_eq!(
@@ -1781,7 +1792,10 @@ mod tests {
                     },
                     "EchoToSource should let the offer through to its source"
                 );
-                assert_eq!(eb_size, 5, "eb_size should be the honest length, not mutated");
+                assert_eq!(
+                    eb_size, 5,
+                    "eb_size should be the honest length, not mutated"
+                );
             }
             other => panic!("expected BlockOffer, got {other:?}"),
         }
@@ -1837,20 +1851,17 @@ mod tests {
         // no-echo gate doesn't drop it before the transform runs.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 42,
-                        hash: [0xCC; 32],
-                    },
-                    vec![0u8; 12345],
-                    Some(other_peer),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 42,
+                    hash: [0xCC; 32],
+                },
+                vec![0u8; 12345],
+                Some(other_peer),
+            );
+        });
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { point, eb_size } => {
                 assert_eq!(
@@ -1919,20 +1930,17 @@ mod tests {
         // Inject after the snap, sourced from a different peer.
         let inject_store = store.clone();
         let mut client = Runner::<LeiosNotify>::new(Role::Client, client_send, client_recv);
-        let (event, _) = tokio::join!(
-            leios_notify::request_next(&mut client),
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                inject_store.inject_block(
-                    Point::Specific {
-                        slot: 100,
-                        hash: [0xDD; 32],
-                    },
-                    vec![0u8; 1000],
-                    Some(other_peer),
-                );
-            }
-        );
+        let (event, _) = tokio::join!(leios_notify::request_next(&mut client), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            inject_store.inject_block(
+                Point::Specific {
+                    slot: 100,
+                    hash: [0xDD; 32],
+                },
+                vec![0u8; 1000],
+                Some(other_peer),
+            );
+        });
         match event.unwrap() {
             leios_notify::LeiosNotifyEvent::BlockOffer { eb_size, .. } => {
                 assert_eq!(eb_size, 1001, "expected honest 1000 + offset 1");
@@ -1971,7 +1979,12 @@ mod tests {
         );
 
         // Start server.
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
+        let server_handle = tokio::spawn(serve_leios_fetch(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+        ));
 
         // Client: fetch block.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -2008,7 +2021,12 @@ mod tests {
         // Empty store — no blocks injected.
         let (store, _rx) = LeiosStore::new(100);
 
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
+        let server_handle = tokio::spawn(serve_leios_fetch(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+        ));
 
         // Client: request a block that doesn't exist.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -2050,11 +2068,17 @@ mod tests {
         let point = Point::Specific { slot: 50, hash };
         // Each tx body is a single valid CBOR value (a 3-byte bytestring,
         // 0x43 = bytes(3)) — the codec passes txs through as raw CBOR.
-        let txs: Vec<TxBody> = (0..100u8).map(|i| TxBody::new_with_vec(vec![0x43, i, i, i])).collect();
+        let txs: Vec<TxBody> = (0..100u8)
+            .map(|i| TxBody::new_with_vec(vec![0x43, i, i, i]))
+            .collect();
         store.inject_block_txs_full(point.clone(), txs, None);
 
-        let server_handle =
-            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone(), PeerId(0)));
+        let server_handle = tokio::spawn(serve_leios_fetch(
+            server_send,
+            server_recv,
+            store.clone(),
+            PeerId(0),
+        ));
 
         // Client: ask for indices 0, 5, 64, 99.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
@@ -2119,15 +2143,25 @@ mod tests {
         let point = Point::Specific { slot: 33, hash };
         store.record_eb_manifest(point.clone(), vec![h0, h1, h2], None);
 
-        let server_handle =
-            tokio::spawn(serve_leios_fetch(server_send, server_recv, store.clone(), PeerId(0)));
+        let server_handle = tokio::spawn(serve_leios_fetch(
+            server_send,
+            server_recv,
+            store.clone(),
+            PeerId(0),
+        ));
 
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);
         let bitmap = crate::protocols::leios_fetch::bitmap::from_indices(&[0, 2]);
         let got = leios_fetch::fetch_block_txs(&mut client, point, bitmap)
             .await
             .expect("server should respond");
-        assert_eq!(got, vec![TxBody::new_with_vec(vec![0x41u8, 0xB0]), TxBody::new_with_vec(vec![0x41u8, 0xB2])]);
+        assert_eq!(
+            got,
+            vec![
+                TxBody::new_with_vec(vec![0x41u8, 0xB0]),
+                TxBody::new_with_vec(vec![0x41u8, 0xB2])
+            ]
+        );
 
         let _ = leios_fetch::done(&mut client).await;
         server_handle.await.ok();
@@ -2150,7 +2184,12 @@ mod tests {
         // Empty store — no block txs injected.
         let (store, _rx) = LeiosStore::new(100);
 
-        let server_handle = tokio::spawn(serve_leios_fetch(server_send, server_recv, store, PeerId(0)));
+        let server_handle = tokio::spawn(serve_leios_fetch(
+            server_send,
+            server_recv,
+            store,
+            PeerId(0),
+        ));
 
         // Client: request txs for a block that doesn't exist.
         let mut client = Runner::<LeiosFetch>::new(Role::Client, client_send, client_recv);

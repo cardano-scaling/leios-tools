@@ -506,8 +506,16 @@ pub(crate) fn spawn_leios_notify(
                     // BLS vote signatures are fixed-size, so a min/max
                     // summary is enough here — individual lengths are
                     // logged per-vote at debug just below.
-                    let sig_min = votes.iter().map(|v| v.vote_signature.len()).min().unwrap_or(0);
-                    let sig_max = votes.iter().map(|v| v.vote_signature.len()).max().unwrap_or(0);
+                    let sig_min = votes
+                        .iter()
+                        .map(|v| v.vote_signature.len())
+                        .min()
+                        .unwrap_or(0);
+                    let sig_max = votes
+                        .iter()
+                        .map(|v| v.vote_signature.len())
+                        .max()
+                        .unwrap_or(0);
                     let sig_prefix = votes
                         .first()
                         .map(|v| {
@@ -1381,7 +1389,10 @@ mod tests {
             let (_id, event) = server_event_rx.recv().await.unwrap();
             match event {
                 PeerEvent::TransactionReceived { body } => {
-                    assert_eq!(body, TxBody::new_with_vec(vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]));
+                    assert_eq!(
+                        body,
+                        TxBody::new_with_vec(vec![0x45, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E])
+                    );
                 }
                 other => panic!("expected TransactionReceived, got {other:?}"),
             }

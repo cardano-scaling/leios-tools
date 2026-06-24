@@ -97,7 +97,8 @@ impl<TProtocol: Clone + Eq + Hash + Ord, TMessage: Debug> Network<TProtocol, TMe
         targets: Vec<mpsc::UnboundedSender<CrossShardDelivery<TProtocol, TMessage>>>,
         shard_lookup: Arc<HashMap<NodeId, usize>>,
     ) {
-        self.coordinator.set_cross_shard_routing(targets, shard_lookup);
+        self.coordinator
+            .set_cross_shard_routing(targets, shard_lookup);
     }
 
     pub fn set_cross_shard_delivery(
@@ -135,7 +136,6 @@ impl<TProtocol: Clone + Eq + Hash + Ord, TMessage: Debug> Network<TProtocol, TMe
     pub async fn run(&mut self) -> Result<()> {
         self.coordinator.run(&mut self.clock).await
     }
-
 }
 
 pub struct NetworkSource<T> {

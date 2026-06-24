@@ -284,7 +284,10 @@ mod tests {
         use shared_consensus::behaviour::tree::BtConfig;
         for (name, text) in [
             ("lazy-voter", include_str!("../behaviours/lazy-voter.toml")),
-            ("rb-equivocator", include_str!("../behaviours/rb-equivocator.toml")),
+            (
+                "rb-equivocator",
+                include_str!("../behaviours/rb-equivocator.toml"),
+            ),
             ("t22", include_str!("../behaviours/t22.toml")),
             (
                 "duplex-follower-bug",

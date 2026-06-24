@@ -42,8 +42,8 @@ pub(crate) trait NetworkRunnable: Send {
 use std::fmt::Debug;
 use std::hash::Hash;
 
-impl<TProtocol: Clone + Eq + Hash + Ord + Send + 'static, TMessage: Debug + Send + 'static> NetworkRunnable
-    for Network<TProtocol, TMessage>
+impl<TProtocol: Clone + Eq + Hash + Ord + Send + 'static, TMessage: Debug + Send + 'static>
+    NetworkRunnable for Network<TProtocol, TMessage>
 {
     fn run(&mut self) -> futures::future::BoxFuture<'_, Result<()>> {
         Box::pin(Network::run(self))
@@ -130,14 +130,19 @@ where
 
     // Log cross-shard edge statistics
     if shard_count > 1 {
-        let cross_shard_edges = config.links.iter()
+        let cross_shard_edges = config
+            .links
+            .iter()
             .filter(|l| shard_lookup[&l.nodes.0] != shard_lookup[&l.nodes.1])
             .count();
         let total_edges = config.links.len();
         tracing::info!(
             cross_shard_edges,
             total_edges,
-            pct = format!("{:.1}%", 100.0 * cross_shard_edges as f64 / total_edges as f64),
+            pct = format!(
+                "{:.1}%",
+                100.0 * cross_shard_edges as f64 / total_edges as f64
+            ),
             "cross-shard edge count"
         );
     }
@@ -158,9 +163,13 @@ where
             }
         }
         let min_lookahead = config.timestamp_resolution;
-        let cmb_lookahead = min_latencies.iter().flatten()
+        let cmb_lookahead = min_latencies
+            .iter()
+            .flatten()
             .filter(|&&d| d != Duration::MAX)
-            .min().copied().unwrap_or(Duration::MAX)
+            .min()
+            .copied()
+            .unwrap_or(Duration::MAX)
             .max(min_lookahead);
         tracing::info!(?cmb_lookahead, "CMB lookahead (min cross-shard latency)");
         for i in 0..shard_count {

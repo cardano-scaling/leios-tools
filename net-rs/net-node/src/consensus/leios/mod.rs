@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use crate::config::{CommitteeSelection, DynamicConfig, StakeEntry};
-use net_codec::decode_overflow_eb;
 use crate::telemetry::NodeEvent;
 use crate::validation::{LedgerCommand, Validator};
+use net_codec::decode_overflow_eb;
 use net_core::multi_peer::types::{NetworkCommand, NetworkEvent};
 use net_core::types::{Point, Vote};
 use rand::rngs::StdRng;
@@ -218,7 +218,6 @@ impl LeiosConsensus {
     ) {
         self.state.set_eb_txs_policy(policy);
     }
-
 
     /// Mutable borrow of [`LeiosState`] for the few wrapper paths that
     /// need to drive the take/restore behaviour helpers (e.g.

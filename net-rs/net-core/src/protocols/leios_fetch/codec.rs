@@ -14,12 +14,12 @@
 
 use std::collections::BTreeMap;
 
+use super::{Message, MAX_BITMAP_ENTRIES, MAX_BLOCK_SIZE, MAX_TRANSACTIONS, MAX_TRANSACTION_SIZE};
+use crate::types::Point;
 use minicbor::decode::Error as DecodeError;
 use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 use shared_consensus::mempool::TxBody;
-use super::{Message, MAX_BITMAP_ENTRIES, MAX_BLOCK_SIZE, MAX_TRANSACTIONS, MAX_TRANSACTION_SIZE};
-use crate::types::Point;
 
 impl minicbor::Encode<()> for Message {
     fn encode<W: minicbor::encode::Write>(
@@ -179,7 +179,11 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<TxBody>, DecodeError> {
             }
             let mut items = Vec::with_capacity(n);
             for _ in 0..n {
-                items.push(TxBody::new_with_vec(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?));
+                items.push(TxBody::new_with_vec(decode_raw_bounded(
+                    d,
+                    MAX_TRANSACTION_SIZE,
+                    "transaction",
+                )?));
             }
             Ok(items)
         }
@@ -195,7 +199,11 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<TxBody>, DecodeError> {
                         "transaction list exceeds maximum of {MAX_TRANSACTIONS}"
                     )));
                 }
-                items.push(TxBody::new_with_vec(decode_raw_bounded(d, MAX_TRANSACTION_SIZE, "transaction")?));
+                items.push(TxBody::new_with_vec(decode_raw_bounded(
+                    d,
+                    MAX_TRANSACTION_SIZE,
+                    "transaction",
+                )?));
             }
             Ok(items)
         }

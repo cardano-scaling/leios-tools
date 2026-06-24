@@ -17,8 +17,7 @@ use minicbor::encode::Error as EncodeError;
 use minicbor::{Decoder, Encoder};
 
 use super::{
-    EraTxId, Message, TxBody, TxId, TxIdAndSize, TX_ID_SIZE, MAX_TX_SIZE, MAX_UNACKED,
-    ORIGIN_ERA,
+    EraTxId, Message, TxBody, TxId, TxIdAndSize, MAX_TX_SIZE, MAX_UNACKED, ORIGIN_ERA, TX_ID_SIZE,
 };
 
 /// CBOR tag 24 ("encoded CBOR data item"), wrapping the era-tagged tx
@@ -114,9 +113,9 @@ fn decode_tx_body<'a>(d: &mut Decoder<'a>, _ctx: &mut ()) -> Result<TxBody, Deco
     let raw = d.bytes()?;
     if raw.len() > MAX_TX_SIZE {
         return Err(DecodeError::message(format!(
-           "tx body too large: {} bytes exceeds limit {MAX_TX_SIZE}",
-           raw.len()
-       )));
+            "tx body too large: {} bytes exceeds limit {MAX_TX_SIZE}",
+            raw.len()
+        )));
     }
     Ok(TxBody::new_with_slice(raw))
 }
@@ -462,7 +461,7 @@ mod tests {
         // hash, not pre-encoded CBOR. The codec must wrap on send and unwrap
         // on receive so the same bytes survive a round trip.
         let mut raw_hash: [u8; 32] = [0u8; 32];
-        raw_hash.copy_from_slice (&(0..32).collect::<Vec<u8>>());
+        raw_hash.copy_from_slice(&(0..32).collect::<Vec<u8>>());
         let msg = Message::MsgReplyTxIds {
             tx_ids: vec![TxIdAndSize {
                 tx_id: TxId::new_with_slice(&raw_hash),
@@ -489,7 +488,10 @@ mod tests {
         let body_a: Vec<u8> = (0..200).map(|i| (i * 7) as u8).collect();
         let body_b: Vec<u8> = (0..1500).map(|i| (i * 31) as u8).collect();
         let msg = Message::MsgReplyTxs {
-            txs: vec![TxBody::new_with_vec(body_a.clone()), TxBody::new_with_vec(body_b.clone())],
+            txs: vec![
+                TxBody::new_with_vec(body_a.clone()),
+                TxBody::new_with_vec(body_b.clone()),
+            ],
         };
         let decoded = round_trip(&msg);
         match decoded {

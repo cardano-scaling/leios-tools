@@ -102,7 +102,6 @@ impl PraosConsensus {
         self.state.set_fetch_policy(policy);
     }
 
-
     /// Borrow the node identifier the state was constructed with.  The
     /// `Consensus` facade uses this to derive a deterministic behaviour
     /// seed when no explicit `rng_seed` is configured.
@@ -312,8 +311,11 @@ impl PraosConsensus {
                         // Record the authentic wire header bytes; reused
                         // when the block is cached so we re-serve them
                         // downstream verbatim.
-                        self.state
-                            .note_authentic_header(hash, info.block_number, header.raw.clone());
+                        self.state.note_authentic_header(
+                            hash,
+                            info.block_number,
+                            header.raw.clone(),
+                        );
                         self.state.on_tip_advanced(
                             *peer_id,
                             tip.point.clone(),

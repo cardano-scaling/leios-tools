@@ -65,8 +65,7 @@ impl<TMessage> TcpConnection<TMessage> {
                 // Idle reset: if the link has been quiet for longer than the
                 // RTO threshold and all in-flight ACKs have returned, reset
                 // the congestion window (RFC 6298).
-                let idle_threshold =
-                    Duration::from_secs(1).max(self.props.latency * 2);
+                let idle_threshold = Duration::from_secs(1).max(self.props.latency * 2);
                 if now >= cursor + idle_threshold && self.state.all_acks_arrived(now) {
                     self.state = TcpState::default();
                 }
@@ -90,11 +89,7 @@ impl<TMessage> TcpConnection<TMessage> {
 
     pub fn recv_many(&mut self, now: Timestamp) -> Vec<(TMessage, Timestamp)> {
         let mut results = Vec::new();
-        while self
-            .latency_queue
-            .front()
-            .is_some_and(|(_, ts)| *ts <= now)
-        {
+        while self.latency_queue.front().is_some_and(|(_, ts)| *ts <= now) {
             results.push(self.latency_queue.pop_front().unwrap());
         }
         results

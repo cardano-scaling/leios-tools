@@ -6,7 +6,9 @@ use tokio::sync::mpsc;
 
 use crate::{
     clock::{ClockBarrier, Timestamp},
-    config::{NodeConfiguration, NodeId, RealTransactionConfig, SimConfiguration, TransactionConfig},
+    config::{
+        NodeConfiguration, NodeId, RealTransactionConfig, SimConfiguration, TransactionConfig,
+    },
     model::{Transaction, TransactionId},
     rng::Rng as SimRng,
 };
@@ -117,11 +119,7 @@ impl TxGeneratorCore {
         let mut tx_rng = self.rng.seeded_chacha_from(&("tx_generator", tx_idx));
 
         let &idx = self.node_weights.sample(&mut tx_rng)?;
-        let conflict_fraction = self
-            .tx_conflict_fractions
-            .get(idx)
-            .copied()
-            .flatten();
+        let conflict_fraction = self.tx_conflict_fractions.get(idx).copied().flatten();
 
         let tx = {
             let config = self.config.as_ref().unwrap();
@@ -157,9 +155,8 @@ impl TxGeneratorCore {
         // saturating behaviour for non-positive samples from e.g. a
         // Normal distribution (from_secs_f64 panics on negatives).
         let config = self.config.as_ref().unwrap();
-        let secs_until_tx = (config.frequency_ms.sample(&mut tx_rng) / 1000.0
-            * self.shard_count as f64)
-            .max(0.0);
+        let secs_until_tx =
+            (config.frequency_ms.sample(&mut tx_rng) / 1000.0 * self.shard_count as f64).max(0.0);
         let next_at = now + Duration::from_secs_f64(secs_until_tx);
 
         let next_time = if config.stop_time.is_some_and(|t| next_at > t) {

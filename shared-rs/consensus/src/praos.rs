@@ -1383,8 +1383,7 @@ impl PraosState {
             .iter()
             .filter(|e| match e.prev_hash {
                 Some(p) => {
-                    self.chain_tree.block_number(&p).is_none()
-                        && !self.block_cache.contains_key(&p)
+                    self.chain_tree.block_number(&p).is_none() && !self.block_cache.contains_key(&p)
                 }
                 None => false,
             })
@@ -2379,8 +2378,20 @@ mod tests {
         // Pre-issuer callers (issuer = Vec::new()) get no-op detection,
         // preserving legacy behavior.
         let mut s = fresh();
-        s.on_block_received(pt(100, 1), vec![], vec![], Some(hi(100, 100, None)), ParsedBodyInfo::default());
-        s.on_block_received(pt(100, 2), vec![], vec![], Some(hi(100, 100, None)), ParsedBodyInfo::default());
+        s.on_block_received(
+            pt(100, 1),
+            vec![],
+            vec![],
+            Some(hi(100, 100, None)),
+            ParsedBodyInfo::default(),
+        );
+        s.on_block_received(
+            pt(100, 2),
+            vec![],
+            vec![],
+            Some(hi(100, 100, None)),
+            ParsedBodyInfo::default(),
+        );
         assert!(!s.is_equivocating_slot(100));
     }
 
@@ -2631,14 +2642,14 @@ mod tests {
         // Pending (not-yet-fetched) authentic headers must survive the
         // k-prune as long as their block is within k of the adopted tip.
         let mut s = PraosState::new("test".to_string(), 2); // k = 2
-        // Adopt a tip at block 5 so the prune window is block_no >= 3.
+                                                            // Adopt a tip at block 5 so the prune window is block_no >= 3.
         install_validated_block(&mut s, 100, 1, 1, None);
         install_validated_block(&mut s, 101, 2, 2, Some(1));
         install_validated_block(&mut s, 102, 3, 3, Some(2));
         install_validated_block(&mut s, 103, 4, 4, Some(3));
         install_validated_block(&mut s, 104, 5, 5, Some(4));
         s.adopted_tip_hash = Some(h(5)); // bn=5, k=2 ⇒ prune window bn >= 3
-        // A recent pending header (block 5) and a stale one (block 1).
+                                         // A recent pending header (block 5) and a stale one (block 1).
         s.note_authentic_header(h(20), 5, vec![0x82, 0x07, 0x01]);
         s.note_authentic_header(h(21), 1, vec![0x82, 0x07, 0x02]);
         s.on_block_applied(pt(104, 5), Instant::now());
@@ -2748,7 +2759,13 @@ mod tests {
     #[test]
     fn on_block_received_origin_point_is_noop() {
         let mut s = fresh();
-        let fx = s.on_block_received(Point::Origin, vec![], vec![], None, ParsedBodyInfo::default());
+        let fx = s.on_block_received(
+            Point::Origin,
+            vec![],
+            vec![],
+            None,
+            ParsedBodyInfo::default(),
+        );
         assert!(fx.is_empty());
     }
 
@@ -2772,7 +2789,13 @@ mod tests {
     #[test]
     fn on_block_received_opaque_header_no_chain_tree_insert() {
         let mut s = fresh();
-        let fx = s.on_block_received(pt(100, 1), vec![0xAA], vec![0xBB], None, ParsedBodyInfo::default());
+        let fx = s.on_block_received(
+            pt(100, 1),
+            vec![0xAA],
+            vec![0xBB],
+            None,
+            ParsedBodyInfo::default(),
+        );
         // No chain_tree entry, so try_switch fails silently.
         assert!(fx.is_empty());
         assert!(s.chain_tree.block_number(&h(1)).is_none());

@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use std::time::Duration;
 use crate::peer::{ConnectionMode, PeerId};
 use crate::protocols::peersharing::PeerAddress;
 use crate::protocols::txsubmission::PendingTx;
-use shared_consensus::mempool::{TxBody, TxId};
 use crate::types::{BlockBody, Point, Tip, Vote, WrappedHeader};
+use shared_consensus::mempool::{TxBody, TxId};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Coordinator ↔ Application

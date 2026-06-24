@@ -435,7 +435,12 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
     // its table that was never removed or reconnected. `remove_peer` is
     // idempotent, so a duplicate `Failed` from a racing sub-task is safe.
     let _ = event_sender
-        .send((peer_id, PeerEvent::Failed { reason: teardown_reason }))
+        .send((
+            peer_id,
+            PeerEvent::Failed {
+                reason: teardown_reason,
+            },
+        ))
         .await;
 
     // Clean up all sub-tasks.

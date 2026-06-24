@@ -16,9 +16,9 @@ use rand_chacha::ChaChaRng;
 use crate::{
     clock::{Clock, Timestamp},
     config::{
-        CommitteeSelectionAlgorithm, EBPropagationCriteria, LeiosVariant,
-        MempoolSamplingStrategy, NodeBehaviours, NodeConfiguration, NodeId, RelayStrategy,
-        SimConfiguration, TransactionConfig,
+        CommitteeSelectionAlgorithm, EBPropagationCriteria, LeiosVariant, MempoolSamplingStrategy,
+        NodeBehaviours, NodeConfiguration, NodeId, RelayStrategy, SimConfiguration,
+        TransactionConfig,
     },
     events::EventTracker,
     model::{
@@ -36,8 +36,13 @@ use crate::{
 };
 
 enum TransactionView {
-    Pending { seen_slot: u64 },
-    Received { tx: Arc<Transaction>, seen_slot: u64 },
+    Pending {
+        seen_slot: u64,
+    },
+    Received {
+        tx: Arc<Transaction>,
+        seen_slot: u64,
+    },
 }
 
 enum RankingBlockView {
@@ -337,12 +342,7 @@ impl LinearLeiosNode {
     fn prune_old_leios_state(&mut self, _current_slot: u64) {
         // Only prune state for EBs that have been superseded: a strictly newer
         // EB has been endorsed on-chain, so the older ones will never be needed.
-        let latest_endorsed_slot = self
-            .leios
-            .endorsed_ebs
-            .values()
-            .copied()
-            .max();
+        let latest_endorsed_slot = self.leios.endorsed_ebs.values().copied().max();
         let Some(latest_slot) = latest_endorsed_slot else {
             return;
         };
@@ -382,18 +382,13 @@ impl LinearLeiosNode {
         }
 
         self.leios.votes.retain(|_, view| match view {
-            VoteBundleView::Received { votes } => {
-                votes.ebs.keys().any(|eb| eb.slot >= latest_slot)
-            }
+            VoteBundleView::Received { votes } => votes.ebs.keys().any(|eb| eb.slot >= latest_slot),
             VoteBundleView::Requested => true,
         });
 
-        self.leios
-            .ebs_by_rb
-            .retain(|_, eb_id| {
-                eb_id.slot >= latest_slot
-                    || self.leios.incomplete_onchain_ebs.contains(eb_id)
-            });
+        self.leios.ebs_by_rb.retain(|_, eb_id| {
+            eb_id.slot >= latest_slot || self.leios.incomplete_onchain_ebs.contains(eb_id)
+        });
     }
 
     fn log_memory_stats(&self, slot: u64) {
@@ -466,8 +461,7 @@ impl LinearLeiosNode {
 
         // leios.votes_by_eb
         let votes_by_eb_count = self.leios.votes_by_eb.len();
-        let votes_by_eb_voters: usize =
-            self.leios.votes_by_eb.values().map(|m| m.len()).sum();
+        let votes_by_eb_voters: usize = self.leios.votes_by_eb.values().map(|m| m.len()).sum();
         let votes_by_eb_bytes = votes_by_eb_count * 64 + votes_by_eb_voters * 32;
 
         // leios.eb_peer_announcements
@@ -518,19 +512,39 @@ impl LinearLeiosNode {
              \x20 Process RSS: {:.0} MB",
             slot,
             num_nodes,
-            txs_total, txs_bytes as f64 / 1e6, txs_received,
-            mp_len, mempool_bytes as f64 / 1e6, mp_local_bl, self.mempool.tx_generated_backlog_max_size.unwrap_or(0), mp_peer_bl, self.mempool.tx_peer_backlog_max_size.unwrap_or(0),
-            praos_blocks, praos_bytes as f64 / 1e6, praos_tx_refs,
-            ledger_count, ledger_bytes as f64 / 1e6, ledger_inputs,
-            ebs_count, ebs_bytes as f64 / 1e6, ebs_tx_refs,
-            votes_count, votes_bytes as f64 / 1e6,
-            votes_by_eb_count, votes_by_eb_bytes as f64 / 1e6, votes_by_eb_voters,
-            eb_announce_count, eb_announce_bytes as f64 / 1e6, eb_announce_peers,
+            txs_total,
+            txs_bytes as f64 / 1e6,
+            txs_received,
+            mp_len,
+            mempool_bytes as f64 / 1e6,
+            mp_local_bl,
+            self.mempool.tx_generated_backlog_max_size.unwrap_or(0),
+            mp_peer_bl,
+            self.mempool.tx_peer_backlog_max_size.unwrap_or(0),
+            praos_blocks,
+            praos_bytes as f64 / 1e6,
+            praos_tx_refs,
+            ledger_count,
+            ledger_bytes as f64 / 1e6,
+            ledger_inputs,
+            ebs_count,
+            ebs_bytes as f64 / 1e6,
+            ebs_tx_refs,
+            votes_count,
+            votes_bytes as f64 / 1e6,
+            votes_by_eb_count,
+            votes_by_eb_bytes as f64 / 1e6,
+            votes_by_eb_voters,
+            eb_announce_count,
+            eb_announce_bytes as f64 / 1e6,
+            eb_announce_peers,
             ebs_by_rb_count,
             endorsed_count,
             pruned_count,
             missing_txs_count,
-            node_total as f64 / 1e6, num_nodes, all_nodes_mb,
+            node_total as f64 / 1e6,
+            num_nodes,
+            all_nodes_mb,
             rss_mb,
         );
 
@@ -558,7 +572,12 @@ impl LinearLeiosNode {
             self.sim_config.relay_strategy == RelayStrategy::RequestFromAll
                 && matches!(t, TransactionView::Pending { .. })
         }) {
-            self.txs.insert(id, TransactionView::Pending { seen_slot: self.current_slot });
+            self.txs.insert(
+                id,
+                TransactionView::Pending {
+                    seen_slot: self.current_slot,
+                },
+            );
             self.queued.send_to(from, Message::RequestTx(id));
         }
     }
@@ -640,7 +659,13 @@ impl LinearLeiosNode {
             .unwrap_or(self.current_slot);
         if self
             .txs
-            .insert(id, TransactionView::Received { tx: tx.clone(), seen_slot })
+            .insert(
+                id,
+                TransactionView::Received {
+                    tx: tx.clone(),
+                    seen_slot,
+                },
+            )
             .is_some_and(|tv| matches!(tv, TransactionView::Received { .. }))
         {
             return;
@@ -1374,7 +1399,13 @@ impl LinearLeiosNode {
         for tx in withheld_txs {
             // Add the peer's withheld TXs to the list we know of,
             // but not to our mempools
-            self.txs.insert(tx.id, TransactionView::Received { tx, seen_slot: self.current_slot });
+            self.txs.insert(
+                tx.id,
+                TransactionView::Received {
+                    tx,
+                    seen_slot: self.current_slot,
+                },
+            );
         }
         // If an attacker receives an EB over a side channel,
         // it will skip validation and will not disseminate it to peers.
@@ -1437,8 +1468,13 @@ impl LinearLeiosNode {
             };
             self.tracker.track_transaction_generated(&tx, self.id);
             let tx = Arc::new(tx);
-            self.txs
-                .insert(tx.id, TransactionView::Received { tx: tx.clone(), seen_slot: self.current_slot });
+            self.txs.insert(
+                tx.id,
+                TransactionView::Received {
+                    tx: tx.clone(),
+                    seen_slot: self.current_slot,
+                },
+            );
             txs.push(tx);
         }
         txs
@@ -1750,11 +1786,7 @@ impl LinearLeiosNode {
             return;
         }
 
-        let mut state = self
-            .ledger_state
-            .take()
-            .map(|(_, s)| s)
-            .unwrap_or_default();
+        let mut state = self.ledger_state.take().map(|(_, s)| s).unwrap_or_default();
 
         let mut block_queue = vec![block_id];
         while let Some(block_id) = block_queue.pop() {
@@ -1808,7 +1840,8 @@ impl LinearLeiosNode {
         site: DrawSite,
     ) -> Option<u64> {
         let rng = Rng::new(self.sim_config.seed);
-        self.lottery.run(kind, success_rate, &rng, self.id, slot, site)
+        self.lottery
+            .run(kind, success_rate, &rng, self.id, slot, site)
     }
 }
 

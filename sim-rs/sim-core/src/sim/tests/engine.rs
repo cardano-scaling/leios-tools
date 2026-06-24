@@ -163,7 +163,11 @@ impl NodeImpl for TestNode {
                 let mut result = EventResult::default();
                 result.schedule_event(
                     self.clock.now() + Duration::from_millis(100),
-                    TestTimedEvent::SendPong { to: from, slot, roll },
+                    TestTimedEvent::SendPong {
+                        to: from,
+                        slot,
+                        roll,
+                    },
                 );
                 result
             }
@@ -441,8 +445,7 @@ async fn run_with_config(
 ) -> Vec<(String, String, String, Timestamp)> {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut rng = ChaChaRng::seed_from_u64(config.seed);
-    let runner =
-        crate::sim::sequential::build_for_test::<TestNode>(config.clone(), tx, &mut rng);
+    let runner = crate::sim::sequential::build_for_test::<TestNode>(config.clone(), tx, &mut rng);
     let token = CancellationToken::new();
     tokio::task::spawn_blocking(move || runner.run(token))
         .await
@@ -507,7 +510,10 @@ async fn test_sequential_deterministic() {
     // Strip timestamps for comparison — just compare (node, event_type, detail) sequences
     let stripped1: Vec<_> = events1.iter().map(|e| (&e.0, &e.1, &e.2)).collect();
     let stripped2: Vec<_> = events2.iter().map(|e| (&e.0, &e.1, &e.2)).collect();
-    assert_eq!(stripped1, stripped2, "sequential engine should be deterministic");
+    assert_eq!(
+        stripped1, stripped2,
+        "sequential engine should be deterministic"
+    );
 }
 
 #[tokio::test]

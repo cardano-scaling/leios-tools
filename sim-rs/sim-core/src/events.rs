@@ -383,16 +383,19 @@ impl Event {
             Self::TXSent { sender, .. } => Some(sender.id),
             Self::TXReceived { recipient, .. } => Some(recipient.id),
             Self::TXLost { .. } => None,
-            Self::RBLotteryWon { producer, .. }
-            | Self::RBGenerated { producer, .. } => Some(producer.id),
+            Self::RBLotteryWon { producer, .. } | Self::RBGenerated { producer, .. } => {
+                Some(producer.id)
+            }
             Self::RBSent { sender, .. } => Some(sender.id),
             Self::RBReceived { recipient, .. } => Some(recipient.id),
-            Self::IBLotteryWon { producer, .. }
-            | Self::IBGenerated { producer, .. } => Some(producer.id),
+            Self::IBLotteryWon { producer, .. } | Self::IBGenerated { producer, .. } => {
+                Some(producer.id)
+            }
             Self::IBSent { sender, .. } => Some(sender.id),
             Self::IBReceived { recipient, .. } => Some(recipient.id),
-            Self::EBLotteryWon { producer, .. }
-            | Self::EBGenerated { producer, .. } => Some(producer.id),
+            Self::EBLotteryWon { producer, .. } | Self::EBGenerated { producer, .. } => {
+                Some(producer.id)
+            }
             Self::EBSent { sender, .. } => Some(sender.id),
             Self::EBReceived { recipient, .. } => Some(recipient.id),
             Self::VTLotteryWon { producer, .. }
