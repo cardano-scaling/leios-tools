@@ -141,6 +141,12 @@ The bearer/transport layer must be trait-based and pluggable. Current scope is T
 ```
 net-rs/
   Cargo.toml            -- workspace root
+  net-codec/            -- public library crate: Cardano ledger-object CBOR
+    src/
+      lib.rs            -- Point, Tip, Vote (re-exported from shared-consensus), encode/decode_points, size constants
+      header.rs         -- WrappedHeader, HeaderInfo (Shelley+ header parser with Leios extensions), header_hash
+      block.rs          -- BlockBody, LeiosBlockInfo (block body parser), praos_inspect
+      eb.rs             -- CIP-0164 overflow EB manifest codec (encode/decode_overflow_eb)
   net-core/             -- library crate
     src/
       lib.rs
@@ -149,9 +155,7 @@ net-rs/
         scheduler/      -- Scheduling strategies: PriorityWfq (default), StrictPriority, RoundRobin
         codec.rs        -- CBOR framing over mux channels (CodecSend/CodecRecv)
       types/            -- Shared Cardano types
-        mod.rs          -- Point, Tip, encode/decode_points
-        header.rs       -- WrappedHeader, HeaderInfo (Shelley+ header parser with Leios extensions)
-        block.rs        -- BlockBody, LeiosBlockInfo (block body parser)
+        mod.rs          -- re-exports the ledger-object codec from the net-codec crate (Point, Tip, WrappedHeader, BlockBody, encode/decode_points)
       protocols/
         protocol.rs     -- Protocol trait, Runner with agency-checked send/recv
         handshake/      -- Handshake protocol (state machine, CBOR codec, N2N version data)
