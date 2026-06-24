@@ -9,7 +9,7 @@ use tracing::warn;
 
 use shared_consensus::praos::{LeiosCertSummary, ParsedBodyInfo};
 
-use super::{Point, MAX_BLOCK_SIZE};
+use crate::{Point, MAX_BLOCK_SIZE};
 
 /// Number of base fields in a Shelley+ block array (before Leios extensions).
 const BLOCK_BASE_FIELDS: u64 = 4;
@@ -144,9 +144,9 @@ impl BlockBody {
     /// Extract the header from this block body as a WrappedHeader.
     ///
     /// Returns None for Byron blocks or unparseable data.
-    pub fn header(&self) -> Option<super::WrappedHeader> {
+    pub fn header(&self) -> Option<crate::WrappedHeader> {
         let buf = self.try_extract_header().ok()?;
-        Some(super::WrappedHeader::new(buf))
+        Some(crate::WrappedHeader::new(buf))
     }
 
     /// One-pass inspection of a Conway+ Praos `merged_block`.
@@ -399,11 +399,11 @@ impl BlockBody {
         let header_buf = self.try_extract_header()?;
 
         // Parse header for slot.
-        let info = super::HeaderInfo::parse(&header_buf)
+        let info = crate::HeaderInfo::parse(&header_buf)
             .ok_or_else(|| DecodeError::message("failed to parse header"))?;
 
         // Compute Blake2b-256 of the full header CBOR for the block hash.
-        let hash = super::header::header_hash(&header_buf);
+        let hash = crate::header::header_hash(&header_buf);
 
         Ok(Point::Specific {
             slot: info.slot,
