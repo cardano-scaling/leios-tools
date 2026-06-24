@@ -20,6 +20,7 @@ mini-protocol code keeps compiling unchanged.
 | `lib.rs` | `Point`, `Tip`, `Vote` (re-exported from `shared-consensus`), CBOR helpers (`encode_points`, `decode_points`), and size constants |
 | `header.rs` | `WrappedHeader` (raw CBOR + parsed info), `HeaderInfo` (Shelley+ header fields), header-hash (Blake2b-256) |
 | `block.rs` | `BlockBody` (raw CBOR + parsed info), `LeiosBlockInfo` (CIP-0164 EB certificate), `praos_inspect` body parser |
+| `eb.rs` | CIP-0164 overflow endorser-block manifest codec (`encode_overflow_eb`, `decode_overflow_eb`) |
 
 ## Types
 

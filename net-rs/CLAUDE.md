@@ -146,6 +146,7 @@ net-rs/
       lib.rs            -- Point, Tip, Vote (re-exported from shared-consensus), encode/decode_points, size constants
       header.rs         -- WrappedHeader, HeaderInfo (Shelley+ header parser with Leios extensions), header_hash
       block.rs          -- BlockBody, LeiosBlockInfo (block body parser), praos_inspect
+      eb.rs             -- CIP-0164 overflow EB manifest codec (encode/decode_overflow_eb)
   net-core/             -- library crate
     src/
       lib.rs

@@ -10,9 +10,21 @@
 
 use shared_consensus::mempool::TxId;
 
+/// Maximum number of tx-hash entries accepted in an overflow EB manifest.
+///
+/// The blob is untrusted wire data: a CBOR map header can claim an arbitrary
+/// entry count, so we must bound it before reserving/allocating (otherwise a
+/// 9-byte blob claiming `2^64-1` entries triggers a capacity-overflow panic).
+/// Mirrors net-core's `leios_fetch::MAX_TRANSACTIONS` — an EB manifest cannot
+/// reference more transactions than a LeiosFetch response can carry. Defined
+/// locally because net-codec is below net-core in the layering and cannot
+/// depend on it.
+pub const MAX_OVERFLOW_EB_TXS: usize = 65_536;
+
 /// Decode an `endorser_block = { tx_hash => tx_size }` manifest map, returning
 /// the referenced tx hashes in wire order. Returns `None` if the blob isn't a
-/// well-formed manifest map (32-byte keys, integer values). Sizes are ignored.
+/// well-formed manifest map (32-byte keys, integer values) or declares more
+/// than [`MAX_OVERFLOW_EB_TXS`] entries. Sizes are ignored.
 pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
     fn read_hash(dec: &mut minicbor::Decoder) -> Option<TxId> {
         let bytes = dec.bytes().ok()?;
@@ -29,16 +41,25 @@ pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
     let mut hashes = Vec::new();
     match entries {
         Some(n) => {
+            // Bound the declared length before reserving — `n` is attacker
+            // controlled and unrelated to the actual blob size.
+            if n as usize > MAX_OVERFLOW_EB_TXS {
+                return None;
+            }
             hashes.reserve(n as usize);
             for _ in 0..n {
                 hashes.push(read_hash(&mut dec)?);
             }
         }
         None => loop {
-            // Indefinite-length map: read until the break marker.
+            // Indefinite-length map: read until the break marker, capping the
+            // entry count so a never-terminating map can't grow without bound.
             if dec.datatype().ok()? == minicbor::data::Type::Break {
                 dec.skip().ok()?;
                 break;
+            }
+            if hashes.len() >= MAX_OVERFLOW_EB_TXS {
+                return None;
             }
             hashes.push(read_hash(&mut dec)?);
         },
@@ -93,6 +114,15 @@ mod tests {
     fn decode_overflow_eb_rejects_garbage() {
         assert!(decode_overflow_eb(&[0xFF, 0xFF]).is_none());
         assert!(decode_overflow_eb(&[]).is_none());
+    }
+
+    #[test]
+    fn decode_overflow_eb_rejects_oversized_length() {
+        // A definite-length map header claiming 2^64-1 entries must be
+        // rejected before any reserve/allocation (no panic, no OOM).
+        // `bb` = map(uint64 length), followed by 8x 0xff.
+        let blob = [0xbb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        assert!(decode_overflow_eb(&blob).is_none());
     }
 
     #[test]
