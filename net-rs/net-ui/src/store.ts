@@ -440,6 +440,11 @@ export const useStore = create<DashboardState>()((set, get) => ({
     const nodeIdToIdx: Map<string, number> | null = topology
       ? new Map(topology.nodes.map((n) => [n.node_id, n.index]))
       : null;
+    // Relay address → external node id, so PeerConnected/Disconnected events
+    // to a Blue-team relay flash the corresponding external edge.
+    const addrToExternalId: Map<string, string> | null = topology
+      ? new Map((topology.external_nodes ?? []).map((e) => [e.address, e.id]))
+      : null;
     const peerAddrMap = get().peerAddrMap;
     const resolvePeerAddr = (node: string, peer_id: string): string | undefined => {
       return (
@@ -491,10 +496,21 @@ export const useStore = create<DashboardState>()((set, get) => ({
           addr = resolvePeerAddr(node, peer_id);
         }
         if (!addr) continue;
-        const peerIdx = addrToNodeIdx.get(addr);
         const localIdx = nodeIdToIdx.get(node);
-        if (peerIdx === undefined || localIdx === undefined) continue;
-        const key = edgeKey(localIdx, peerIdx);
+        if (localIdx === undefined) continue;
+        // Resolve the peer to either an internal node (numeric edge key) or
+        // an external relay (`ext-<localIdx>-<id>` key, matching the React
+        // edge id in TopologyGraph).
+        const peerIdx = addrToNodeIdx.get(addr);
+        const externalId = addrToExternalId?.get(addr);
+        let key: string;
+        if (peerIdx !== undefined) {
+          key = edgeKey(localIdx, peerIdx);
+        } else if (externalId !== undefined) {
+          key = `ext-${localIdx}-${externalId}`;
+        } else {
+          continue;
+        }
         const state: EdgeFlashType =
           type === "PeerConnected" ? "connected" : "disconnected";
         const seq = (edgeFlashes[key] ??= []);
@@ -513,8 +529,12 @@ export const useStore = create<DashboardState>()((set, get) => ({
     // Mutate ring buffer in place — no immutable copy in store state.
     // LeiosElectionInfo is internal (drives server-side vote aggregation
     // surfaced via the votes API); don't surface it in the event log.
+    // MemorySizes is per-slot leak diagnostics — net-node emits one per
+    // node per slot, which swamps the log; it stays in cluster-events.jsonl
+    // for offline analysis but is hidden from the live display.
     for (const e of newEvents) {
       if (e.message.type === "LeiosElectionInfo") continue;
+      if (e.message.type === "MemorySizes") continue;
       if (eventRing.length >= MAX_EVENTS) eventRing.shift();
       eventRing.push(e);
     }

@@ -15,6 +15,16 @@ export default defineConfig({
       "/api": `http://127.0.0.1:${apiPort}`,
     },
   },
+  // `vite preview` (production build) needs the same /api proxy as the dev
+  // server, otherwise the served bundle can't reach the aggregator. Use
+  // `npm run build && npm run preview` for long-running monitoring (the dev
+  // build leaks memory via React's User-Timing profiler — see README).
+  preview: {
+    port: uiPort,
+    proxy: {
+      "/api": `http://127.0.0.1:${apiPort}`,
+    },
+  },
   resolve: {
     alias: [{ find: "@", replacement: __dirname + "src" }],
   },

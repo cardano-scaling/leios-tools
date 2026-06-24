@@ -5,10 +5,26 @@
 //! This module provides `CodecSend` and `CodecRecv` which handle CBOR
 //! serialization/deserialization over the raw byte channels.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use bytes::{Bytes, BytesMut};
 
 use super::channel::{ChannelRecv, ChannelSend};
 use super::MuxError;
+
+/// When enabled, `CodecRecv::recv` dumps the raw CBOR hex of each received
+/// Leios mini-protocol message to stderr (`WIRE_HEX recv …`). Enabled via the
+/// `--wire-hex` CLI flag (see `set_wire_hex`); off by default.
+static WIRE_HEX: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable raw Leios wire-hex tracing (see [`WIRE_HEX`]).
+pub fn set_wire_hex(enabled: bool) {
+    WIRE_HEX.store(enabled, Ordering::Relaxed);
+}
+
+fn wire_hex_enabled() -> bool {
+    WIRE_HEX.load(Ordering::Relaxed)
+}
 
 /// Sending half: CBOR-encodes messages and writes them to the channel.
 pub struct CodecSend {
@@ -94,6 +110,19 @@ impl CodecRecv {
                                 size: consumed,
                                 limit: max_msg_size,
                             });
+                        }
+                        if wire_hex_enabled() {
+                            let type_name = std::any::type_name::<T>();
+                            if type_name.contains("leios_notify")
+                                || type_name.contains("leios_fetch")
+                            {
+                                use std::fmt::Write as _;
+                                let mut hex = String::with_capacity(consumed * 2);
+                                for b in &self.buffer[..consumed] {
+                                    let _ = write!(hex, "{b:02x}");
+                                }
+                                eprintln!("WIRE_HEX recv {type_name} {consumed}B {hex}");
+                            }
                         }
                         let _ = self.buffer.split_to(consumed);
                         return Ok(value);

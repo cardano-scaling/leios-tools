@@ -14,6 +14,8 @@ pub async fn run(
     listen: Option<String>,
     duplex: bool,
     leios: bool,
+    fetch_eb: bool,
+    fetch_eb_txs: bool,
     max_handshaking: usize,
     max_connections_per_ip: usize,
     scheduler_args: &crate::scheduler_args::SchedulerArgs,
@@ -103,9 +105,30 @@ pub async fn run(
             }
             NetworkEvent::LeiosBlockOffered { peer_id, point } => {
                 println!("  leios: EB offered at {point} by {peer_id}");
+                if fetch_eb {
+                    // Construct a LeiosFetch (MsgLeiosBlockRequest) for the
+                    // offered EB so its MsgLeiosBlock reply can be captured.
+                    let _ = handle
+                        .commands
+                        .send(NetworkCommand::FetchLeiosBlock { peer_id, point })
+                        .await;
+                }
             }
             NetworkEvent::LeiosBlockTxsOffered { peer_id, point } => {
                 println!("  leios: EB transactions offered at {point} by {peer_id}");
+                if fetch_eb_txs {
+                    // Request the first chunk of txs (indices 0..63) so the
+                    // MsgLeiosBlockTxs reply can be captured.
+                    let bitmap = std::collections::BTreeMap::from([(0u16, u64::MAX)]);
+                    let _ = handle
+                        .commands
+                        .send(NetworkCommand::FetchLeiosBlockTxs {
+                            peer_id,
+                            point,
+                            bitmap,
+                        })
+                        .await;
+                }
             }
             NetworkEvent::LeiosBlockReceived { point, block, .. } => {
                 println!("  leios: EB received at {point} ({} bytes)", block.len());

@@ -27,32 +27,73 @@ export function useForceLayout() {
       simRef.current = null;
     }
 
-    const nodeArray: ForceNode[] = topology.nodes.map((n, i) => ({
-      nodeId: n.node_id,
-      x: Math.cos((2 * Math.PI * i) / topology.nodes.length) * 200,
-      y: Math.sin((2 * Math.PI * i) / topology.nodes.length) * 200,
-    }));
+    // Build one combined node array: internal nodes first (so their indices
+    // match topology.edges' numeric from/to), external nodes appended after.
+    const externalNodes = topology.external_nodes ?? [];
+    const externalEdges = topology.external_edges ?? [];
+    const total = topology.nodes.length + externalNodes.length;
+
+    const nodeArray: ForceNode[] = [
+      ...topology.nodes.map((n, i) => ({
+        nodeId: n.node_id,
+        x: Math.cos((2 * Math.PI * i) / total) * 200,
+        y: Math.sin((2 * Math.PI * i) / total) * 200,
+      })),
+      ...externalNodes.map((e, k) => {
+        const i = topology.nodes.length + k;
+        return {
+          nodeId: e.id,
+          // External nodes seed slightly further out so they ring the cluster.
+          x: Math.cos((2 * Math.PI * i) / total) * 260,
+          y: Math.sin((2 * Math.PI * i) / total) * 260,
+        };
+      }),
+    ];
 
     const idToIndex = new Map<string, number>();
-    topology.nodes.forEach((n, i) => idToIndex.set(n.node_id, i));
+    nodeArray.forEach((n, i) => idToIndex.set(n.nodeId, i));
 
-    const linkArray: SimulationLinkDatum<ForceNode>[] = topology.edges.map(
+    // Internal links use numeric from/to (valid indices into the prefix);
+    // external links resolve `from` (internal index) directly and `to`
+    // (external id) through idToIndex.
+    const internalLinks: SimulationLinkDatum<ForceNode>[] = topology.edges.map(
       (e) => ({
         source: e.from,
         target: e.to,
       }),
     );
+    // Drop external edges whose `to` doesn't resolve to a known node rather
+    // than silently linking them to internal node 0. Used everywhere below
+    // (links, latency lookup) so positional indices stay aligned.
+    const validExternalEdges = externalEdges.filter((e) => idToIndex.has(e.to));
+    const externalLinks: SimulationLinkDatum<ForceNode>[] = validExternalEdges.map(
+      (e) => ({
+        source: e.from,
+        target: idToIndex.get(e.to)!,
+      }),
+    );
+    const linkArray = [...internalLinks, ...externalLinks];
 
     // Scale link distance by latency (min 80, max 300)
-    const maxLatency = Math.max(...topology.edges.map((e) => e.latency_ms), 1);
+    const allLatencies = [
+      ...topology.edges.map((e) => e.latency_ms),
+      ...validExternalEdges.map((e) => e.latency_ms),
+    ];
+    const maxLatency = Math.max(...allLatencies, 1);
 
     const sim = forceSimulation<ForceNode>(nodeArray)
       .force(
         "link",
         forceLink<ForceNode, SimulationLinkDatum<ForceNode>>(linkArray)
           .distance((_, i) => {
-            const edge = topology.edges[i];
-            return edge ? 80 + (edge.latency_ms / maxLatency) * 220 : 150;
+            // linkArray is internal edges then external edges; index past the
+            // internal edges into the external set, else fall back to default.
+            const internalCount = topology.edges.length;
+            const lat =
+              i < internalCount
+                ? topology.edges[i]?.latency_ms
+                : validExternalEdges[i - internalCount]?.latency_ms;
+            return lat != null ? 80 + (lat / maxLatency) * 220 : 150;
           })
           .strength(0.4),
       )

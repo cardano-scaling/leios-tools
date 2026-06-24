@@ -1,0 +1,31 @@
+# Use case 1 — single observer against the Leios dev testnet.
+#
+# One of our nodes (Red team) attaches to the dev relay (Blue team) and
+# chain-tracks it. We never produce blocks (rb_generation_probability = 0)
+# so the observer can't pollute the live testnet.
+#
+#   cargo build -p net-node
+#   cargo run -p net-cluster -- \
+#     --config net-cluster/configs/external-observe.toml \
+#     --net-node-bin target/debug/net-node
+#
+# Then open net-ui: one red circle joined to a blue diamond relay.
+
+base_config = "net-node/configs/leios-dev.toml"   # network_magic 164, leios on
+base_port = 30000
+seed = 1
+aggregator_port = 9100
+stats_interval_secs = 5
+
+# Observer: never produce against the live testnet.
+rb_generation_probability = 0.0
+
+[topology_random]
+num_nodes = 1
+degree = 0
+
+[[external_nodes]]
+id = "dev-relay"
+address = "leios-node.play.dev.cardano.org:3001"
+[external_nodes.connect]
+kind = "all"

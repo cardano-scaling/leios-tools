@@ -245,15 +245,19 @@ impl NodeImpl for LinearLeiosNode {
             Message::AnnounceVote(_) | Message::RequestVote(_) | Message::Vote(_) => {
                 unreachable!("linear_leios.rs does not exchange per-vote messages");
             }
-            // EB-tx fetch triplet is shared-consensus-only.  `linear_leios.rs`
-            // delivers tx bodies via the inline `Message::EB` payload
-            // and falls back to normal tx diffusion for the missing
-            // set, so these variants don't reach this dispatch.
-            Message::AnnounceEBTxs(_)
-            | Message::RequestEBTxs(_, _)
-            | Message::EBTxs(_, _) => {
-                unreachable!("linear_leios.rs does not exchange EB-tx fetch messages");
+            // EB-tx fetch.  For `LinearWithTxReferences` an EB only carries tx
+            // ids on the wire, so a node that receives an EB referencing txs it
+            // lacks actively fetches the bodies from the EB sender (which holds
+            // them in `eb.txs`).  Mirrors shared-consensus and the Haskell
+            // LeiosFetch mini-protocol.  We request directly from the sender
+            // rather than gossiping availability, so AnnounceEBTxs is unused.
+            Message::AnnounceEBTxs(_) => {
+                unreachable!(
+                    "linear_leios.rs requests EB-txs directly from the sender; it does not gossip availability"
+                );
             }
+            Message::RequestEBTxs(id, bitmap) => self.receive_request_eb_txs(from, id, bitmap),
+            Message::EBTxs(id, txs) => self.receive_eb_txs(from, id, txs),
         }
         std::mem::take(&mut self.queued)
     }
@@ -571,6 +575,47 @@ impl LinearLeiosNode {
             .track_transaction_received(tx.id, from, self.id);
         self.queued
             .schedule_cpu_task(CpuTask::TransactionValidated(from, tx));
+    }
+
+    /// A peer asked for the bodies of some txs referenced by an EB we hold.
+    /// Every node that received the EB has the bodies in `eb.txs`, so pull the
+    /// bitmap-addressed entries straight out and reply with `EBTxs`.
+    fn receive_request_eb_txs(
+        &mut self,
+        from: NodeId,
+        id: EndorserBlockId,
+        bitmap: BTreeMap<u16, u64>,
+    ) {
+        let Some(EndorserBlockView::Received { eb, .. }) = self.leios.ebs.get(&id) else {
+            return;
+        };
+        let bodies: Vec<Arc<Transaction>> = shared_consensus::bitmap::iter_indices(&bitmap)
+            .filter_map(|i| eb.txs.get(i as usize).cloned())
+            .collect();
+        if bodies.is_empty() {
+            return;
+        }
+        self.queued.send_to(from, Message::EBTxs(id, bodies));
+    }
+
+    /// Bodies for an EB's referenced txs arrived.  Feed each through the normal
+    /// tx-validation pipeline (exactly like `receive_tx`): `propagate_tx` admits
+    /// them, re-announces to peers (closing the gap for other stuck nodes), and
+    /// `acknowledge_tx` releases any EB that was gated on them.
+    fn receive_eb_txs(&mut self, from: NodeId, _id: EndorserBlockId, txs: Vec<Arc<Transaction>>) {
+        for tx in txs {
+            // Skip bodies we already hold — they may have arrived via normal
+            // diffusion between our request and this reply.  Mirrors
+            // shared_consensus::receive_eb_txs; avoids a redundant
+            // TransactionValidated task and a spurious "received" event.
+            if self.has_tx(tx.id) {
+                continue;
+            }
+            self.tracker
+                .track_transaction_received(tx.id, from, self.id);
+            self.queued
+                .schedule_cpu_task(CpuTask::TransactionValidated(from, tx));
+        }
     }
 
     fn generate_tx(&mut self, tx: Arc<Transaction>) {
@@ -1128,13 +1173,18 @@ impl LinearLeiosNode {
             return;
         }
         let seen = self.clock.now();
-        let missing_txs = if matches!(self.sim_config.variant, LeiosVariant::Linear) {
+        // Indices (into `eb.txs`) of referenced bodies we don't yet hold.  The
+        // inline `Linear` variant carries bodies in the EB, so nothing is ever
+        // missing there.  Computed once and reused for both the gate-tracking
+        // map and the RequestEBTxs bitmap below.
+        let missing_indices: Vec<u32> = if matches!(self.sim_config.variant, LeiosVariant::Linear) {
             vec![]
         } else {
             eb.txs
                 .iter()
-                .map(|tx| tx.id)
-                .filter(|id| !self.has_tx(*id))
+                .enumerate()
+                .filter(|(_, tx)| !self.has_tx(tx.id))
+                .map(|(i, _)| i as u32)
                 .collect()
         };
         self.leios.ebs.insert(
@@ -1142,14 +1192,14 @@ impl LinearLeiosNode {
             EndorserBlockView::Received {
                 eb: eb.clone(),
                 seen,
-                all_txs_seen: missing_txs.is_empty(),
+                all_txs_seen: missing_indices.is_empty(),
                 validated: false,
             },
         );
 
         let should_propagate_now = match self.sim_config.linear_eb_propagation_criteria {
             EBPropagationCriteria::EbReceived => true,
-            EBPropagationCriteria::TxsReceived => missing_txs.is_empty(),
+            EBPropagationCriteria::TxsReceived => missing_indices.is_empty(),
             EBPropagationCriteria::FullyValid => false,
         };
         if should_propagate_now {
@@ -1161,17 +1211,25 @@ impl LinearLeiosNode {
             }
         }
 
-        if missing_txs.is_empty() {
+        if missing_indices.is_empty() {
             self.queued
                 .schedule_cpu_task(CpuTask::EBBlockValidated(eb.clone(), seen));
         } else {
-            for tx_id in missing_txs {
+            // Record which EB each missing tx gates, then actively fetch the
+            // bodies from the EB sender.  It forwarded us the EB, so it holds
+            // every body in `eb.txs`; one RequestEBTxs resolves the set.
+            // Without this the referenced txs are never re-requested and the
+            // MissingTX gate in `should_vote_for` never clears.
+            for &idx in &missing_indices {
                 self.leios
                     .missing_txs
-                    .entry(tx_id)
+                    .entry(eb.txs[idx as usize].id)
                     .or_default()
                     .push(eb.id());
             }
+            let bitmap = shared_consensus::bitmap::from_indices(&missing_indices);
+            self.queued
+                .send_to(from, Message::RequestEBTxs(eb.id(), bitmap));
         }
 
         if matches!(

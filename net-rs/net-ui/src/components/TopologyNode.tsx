@@ -32,7 +32,10 @@ function borderColor(selected: boolean, flash: FlashType): string {
   if (flash === "vote-produced") return "#ce93d8";
   if (flash === "vote-received") return "#ba68c8";
   if (selected) return "#90caf9";
-  return "#616161";
+  // Steady-state: our nodes are "Red team" — a red border distinguishes them
+  // from the Blue-team external relays (event flashes above still take
+  // priority, and selection stays blue).
+  return "#ef5350";
 }
 
 function bgColor(_selected: boolean, flash: FlashType, attacking: boolean): string {
