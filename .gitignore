@@ -2,6 +2,10 @@
 /target
 **/target/
 
+# Generated behaviour-tree configs (built on demand from the private
+# leios-adversarial-tools repo; never committed)
+sim-rs/parameters/behaviours/
+
 # Local experiment artifacts (do not commit)
 *.jsonl
 *.leakcheck.txt

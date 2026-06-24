@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Rust implementation of the Cardano mini-protocol network stack for Praos and Leios protocols. This is a greenfield project — see `plans/masterplan.md` for the full vision.
+Rust implementation of the Cardano mini-protocol network stack for Praos and Leios protocols.
+
+This public workspace contains the reusable networking crates: `net-codec` (Cardano ledger-object CBOR), `net-core` (protocol logic), and `net-cli` (testing/demo CLI). The live-network tooling (test node, cluster orchestrator, web UI) lives in a separate private repository.
 
 ### Goals
 
 - Network prototyping and simulation
-- Adversarial node support
 - Fast Leios on-ramp for downstream tools (Acropolis, Dolos, Ogmios)
 - Reference design for node implementors
 
@@ -39,51 +40,6 @@ cargo run -p net-cli -- multi-follow --host 127.0.0.1:9999 --leios  # follow wit
 RUST_LOG=debug cargo run -p net-cli -- multi-follow --host 127.0.0.1:9999 --host 127.0.0.1:9999 --leios  # multi-peer Leios dedup (two connections, observe dedup/routing logs)
 ```
 
-### Test node (net-node)
-
-The test node is a configurable Leios node for local network simulation. It uses TOML config files layered left-to-right, with `--set key=value` for individual overrides.
-
-```sh
-# Two-node local test network (two terminals):
-RUST_LOG=info cargo run -p net-node -- --config net-node/configs/mainnet.toml --config net-node/configs/node0.toml
-RUST_LOG=info cargo run -p net-node -- --config net-node/configs/mainnet.toml --config net-node/configs/node1.toml
-
-# Fast slots for quick testing:
-cargo run -p net-node -- --config net-node/configs/mainnet.toml --config net-node/configs/node0.toml --set slot_duration_ms=200
-
-# Check JSONL telemetry output:
-cat node0-events.jsonl | python3 -m json.tool
-```
-
-Config layering: base config (shared genesis, magic, protocol params) + per-node overlay (node_id, listen_address, peers, stake, telemetry). See `net-node/configs/` for examples.
-
-### Test cluster (net-cluster)
-
-The cluster orchestrator spawns multiple net-node instances with auto-generated random topology, receives their telemetry via HTTP, and produces a merged time-ordered JSONL event log.
-
-```sh
-# Build the net-node binary first (net-cluster spawns it as child processes):
-cargo build -p net-node
-
-# Run a 5-node cluster with sample config:
-RUST_LOG=info cargo run -p net-cluster -- --config net-cluster/configs/sample-cluster.toml --net-node-bin target/debug/net-node
-
-# Override settings:
-cargo run -p net-cluster -- --config net-cluster/configs/sample-cluster.toml --net-node-bin target/debug/net-node --set num_nodes=10 --set degree=3
-
-# Ctrl-C to stop. Check merged event output:
-cat cluster-events.jsonl | python3 -m json.tool --no-ensure-ascii | head
-
-# Node logs are in logs/node-{i}.log
-
-# Live per-node tip/lag summary (hits the aggregator HTTP API):
-scripts/cluster-status.sh              # defaults to port 9100
-scripts/cluster-status.sh 9200         # custom aggregator port
-LAG_THRESHOLD=5 scripts/cluster-status.sh  # override "stuck" threshold
-```
-
-Cluster config fields: `num_nodes`, `degree` (peers per node), `min_latency_ms`/`max_latency_ms` (random edge delays), `base_config` (shared net-node config), `base_port`, `seed`, `output_events`, `ordering_window_secs`, `aggregator_port`, `stake_distribution`, `stats_interval_secs`, `external_peers`. See `net-cluster/configs/sample-cluster.toml`.
-
 ### Test vector workflow
 
 When implementing a new protocol or changing CBOR encoding:
@@ -94,17 +50,6 @@ When implementing a new protocol or changing CBOR encoding:
 4. This ensures wire compatibility with the live network, not just self-consistency
 
 Test data notes are in `net-core/test_data/README.md`.
-
-### Security audit at end of each phase
-
-Before marking a phase complete, audit every path where untrusted remote data enters the system:
-
-1. **Allocation bounds**: every length field read from the wire (CBOR map/array lengths, segment payload_len, string lengths) must be checked against a maximum before allocating. A malicious peer must not be able to trigger unbounded allocation.
-2. **Buffer bounds**: every accumulation buffer (codec recv buffer, ingress buffers) must have a hard cap. Exceeding it must return an error, not block or grow.
-3. **No blocking on untrusted input**: the demuxer must never block waiting for a slow protocol consumer (use `try_send`, not `send().await`). A single slow/malicious protocol must not stall others.
-4. **Timeout coverage**: every state where we wait for remote data must have a timeout. Verify no path can wait forever.
-5. **Error propagation**: every error must result in clean connection teardown. Verify no error is silently swallowed leaving the connection in a broken state.
-6. **No panics**: `grep` for `unwrap()`, `expect()`, `panic!`, indexing without bounds checks in non-test code.
 
 ## Code Standards
 
@@ -196,40 +141,6 @@ net-rs/
       serve.rs          -- `serve` command (fake server via coordinator with Poisson block generation)
       submit.rs         -- `submit` command (tx submission with Poisson generation)
       peershare.rs      -- `peer-share` command (request peers from a node)
-  net-node/             -- binary crate (configurable test node for network simulation)
-    configs/            -- sample TOML configs (mainnet.toml base + per-node overlays)
-    src/
-      main.rs           -- CLI (clap), config loading, main event loop
-      config.rs         -- TOML config structs (serde), figment layering, CLI overrides
-      clock.rs          -- slot clock: wall-clock -> slot mapping, aligned tick stream
-      network.rs        -- coordinator wrapper: config translation, peer setup, delay injection
-      production.rs     -- VRF lottery (from sim-rs), fake Shelley+ block/EB/vote building
-      consensus.rs      -- longest-chain selection, Leios EB/vote fetch decisions
-      chain_tree.rs     -- fork-tracking tree structure for block headers, UI snapshots
-      validation.rs     -- fake validation with configurable timed delays
-      mempool.rs        -- tx pool + fake Poisson tx generation
-      telemetry.rs      -- EventSink/StatsSink traits, JSONL file sink, HTTP sinks, peer stats
-  net-cluster/          -- binary crate (cluster orchestrator for multi-node test networks)
-    configs/            -- sample cluster TOML configs
-    src/
-      main.rs           -- CLI (clap), orchestration flow, signal handling
-      config.rs         -- ClusterConfig, figment loading
-      topology.rs       -- random graph generation, port allocation, edge delays, stake
-      overlay.rs        -- per-node TOML overlay generation, temp file management
-      process.rs        -- child process spawning, shutdown, log piping
-      server.rs         -- axum HTTP server: POST /events, POST /stats (telemetry receiver)
-      aggregator.rs     -- time-ordered event merge, watermark flushing, JSONL output
-      types.rs          -- StatsSnapshot (Deserialize), IngestedEvent, event parsing
-  net-ui/               -- web UI (React + Vite, real-time cluster visualization)
-    src/
-      main.tsx          -- React entry point, MUI theme setup
-      App.tsx           -- main app layout, polling orchestration
-      api.ts            -- HTTP client for cluster API
-      store.ts          -- Zustand state management
-      types.ts          -- TypeScript type definitions
-      theme.ts          -- Material-UI theme configuration
-      components/       -- TopologyGraph, ChainTreeView, AggregateCharts, EventLog, InspectorPanel
-      hooks/            -- usePolling, useForceLayout, useEventStream
 ```
 
 ## Key Design Decisions
@@ -266,7 +177,6 @@ The coordinator event loop uses `.send().await` on the `network_events` channel 
 - `docs/implementation-pallas-v1.md` — how pallas-network v1 implements them: facade API, multiplexer, codec patterns, design assessment with strengths/weaknesses for our use case
 - `docs/implementation-pallas-v2.md` — how pallas-network2 redesigns them: Interface/Behavior/Manager layering, pure state machines, visitor pattern, promotion system, comparison tables
 - `docs/leios-changes.md` — CIP-0164 Leios additions: new protocols (LeiosNotify, LeiosFetch), modified Praos headers/blocks, new data types (EB, votes, certificates, BLS), QoS/priority requirements, and structural implications for net-rs
-- `plans/implementation-plan.md` — Phase 1 plan: workspace structure, layer design (bearer, mux, codec, protocol framework, handshake), implementation order, verification strategy
 
 ## References
 

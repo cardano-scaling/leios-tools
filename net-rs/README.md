@@ -1,6 +1,8 @@
 # net-rs
 
-Rust implementation of the Cardano node-to-node (N2N) network stack, covering both Praos and Leios (CIP-0164) protocols. Built for network prototyping, simulation, adversarial testing, and as a reference design for node implementors.
+Rust implementation of the Cardano node-to-node (N2N) network stack, covering both Praos and Leios (CIP-0164) protocols. Built for network prototyping, simulation, and as a reference design for node implementors.
+
+> Live-network tooling (the test node, cluster orchestrator, and web UI) lives in a separate private repository. This workspace provides the reusable networking crates — `net-codec`, `net-core`, and the `net-cli` testing/demo tool.
 
 ## Features
 
@@ -29,38 +31,9 @@ Rust implementation of the Cardano node-to-node (N2N) network stack, covering bo
 - Accept loop for inbound connections
 - Exponential-backoff reconnection for outbound peers
 
-**Test node** — configurable Leios-capable node for local network simulation:
-- VRF-based block production (stake-weighted lottery ported from sim-rs)
-- Longest-chain consensus with configurable fake validation delays
-- Leios RB/EB/vote production at stage boundaries
-- Per-peer network delay injection for topology simulation
-- Telemetry: sim-rs-compatible JSONL events, per-peer bandwidth tracking, HTTP + file sinks
-- TOML config with layering (base + per-node overlays + CLI overrides)
-- Fork-aware chain tree for tracking and visualizing competing branches
+**Security hardened** — allocation bounds on all wire-read lengths, buffer caps, timeouts on all remote waits, clean error propagation, no panics in library code.
 
-**Cluster orchestrator** — spawn and manage multi-node test networks:
-- Two topology modes, selected by `topology_source = "random" | "yaml"`:
-  `"random"` reads `[topology_random]` (random connected graph with
-  configurable degree and edge delays); `"yaml"` reads `[topology_yaml]`
-  (load a `data/simulation/pseudo-mainnet/topology-v*.yaml` file — same
-  schema as `sim-rs` and `topology-checker`).  Only the selected mode's
-  section is read, and each section rejects unknown keys at parse time.
-- Stake distribution: `"equal"` or `"mainnet-shaped"` (random mode) /
-  YAML's per-node `stake` field (YAML mode)
-- HTTP telemetry aggregation from all nodes
-- Time-ordered event merge with watermark flushing to JSONL
-- Per-node log capture
-
-**Web UI** — real-time cluster visualization (React + Vite):
-- Force-directed topology graph with per-node status
-- Chain tree view showing forks and block propagation
-- Aggregate charts (block rates, bandwidth, latency)
-- Event log with collapsible overlay
-- Inspector panel for node/edge details
-
-**[Security hardened](docs/security-audit.md)** — allocation bounds on all wire-read lengths, buffer caps, timeouts on all remote waits, clean error propagation, no panics in library code.
-
-**406 tests** — unit tests, codec round-trips, protocol state machines, integration tests with in-memory bearers, and test vectors captured from the live Cardano mainnet.
+**Comprehensive test suite** — unit tests, codec round-trips, protocol state machines, integration tests with in-memory bearers, and test vectors captured from the live Cardano mainnet.
 
 ## Architecture
 
@@ -127,6 +100,8 @@ graph TD
 
 ```
 net-rs/
+├── net-codec/         # Library crate — Cardano ledger-object CBOR (headers, blocks, EBs)
+│   └── src/           # Point, Tip, WrappedHeader, BlockBody, overflow-EB manifest codec
 ├── net-core/          # Library crate — all protocol logic
 │   └── src/
 │       ├── bearer/      # Transport trait + TCP/memory implementations
@@ -138,24 +113,13 @@ net-rs/
 │       └── multi_peer/  # Multi-peer coordinator, application interface
 ├── net-cli/           # Binary crate — CLI tool for testing and demos
 │   └── src/           # Subcommands: handshake, follow, serve, submit, ...
-├── net-node/          # Binary crate — configurable test node
-│   ├── configs/       # Sample TOML configs (mainnet base + node overlays)
-│   └── src/           # Node logic: config, clock, production, consensus, telemetry
-├── net-cluster/       # Binary crate — cluster orchestrator
-│   ├── configs/       # Sample cluster TOML configs
-│   └── src/           # Topology generation, process management, event aggregation
-├── net-ui/            # Web UI — real-time cluster visualization (React + Vite)
-│   └── src/           # Topology graph, chain tree, charts, event log
-├── docs/              # Protocol references and implementation notes
-└── plans/             # Design documents
+└── docs/              # Protocol references and implementation notes
 ```
 
 See individual crate READMEs for detailed documentation:
+- **[net-codec](net-codec/)** — Cardano ledger-object CBOR codec
 - **[net-core](net-core/)** — library API, module structure, protocol state machines with Mermaid diagrams and agency tables
 - **[net-cli](net-cli/)** — CLI commands and usage examples
-- **[net-node](net-node/)** — configurable test node for local network simulation
-- **[net-cluster](net-cluster/)** — cluster orchestrator for multi-node test networks
-- **[net-ui](net-ui/)** — real-time web UI for cluster visualization
 
 ## Building
 
@@ -163,12 +127,10 @@ Requires stable Rust (no nightly features).
 
 ```sh
 cargo build            # build all crates
-cargo test             # run all 406 tests
+cargo test             # run all tests
 cargo clippy           # lint
 cargo fmt --check      # format check
 ```
-
-A Docker image is also available — see [`docker/README.md`](docker/README.md) for the build and run contract (`piranha-relay`, single passive relay, env-driven peers and listen port).
 
 ## CLI Usage
 
@@ -210,14 +172,6 @@ cargo run -p net-cli -- multi-follow \
   --listen 0.0.0.0:8888
 ```
 
-### Sample Execution
-
-```
-RUST_LOG=info cargo run -p net-cluster -- \
-  --config net-cluster/configs/sample-cluster.toml \
-  --net-node-bin target/debug/net-node
-```
-
 ### Leios simulation
 
 ```sh
@@ -233,45 +187,6 @@ RUST_LOG=debug cargo run -p net-cli -- multi-follow \
   --host 127.0.0.1:9999 \
   --leios
 ```
-
-### Test node
-
-The `net-node` binary is a configurable test node for local network simulation. It uses TOML config files layered left-to-right.
-
-```sh
-# Two-node test network (run in separate terminals):
-RUST_LOG=info cargo run -p net-node -- \
-  --config net-node/configs/mainnet.toml \
-  --config net-node/configs/node0.toml
-
-RUST_LOG=info cargo run -p net-node -- \
-  --config net-node/configs/mainnet.toml \
-  --config net-node/configs/node1.toml
-
-# Override individual values:
-cargo run -p net-node -- \
-  --config net-node/configs/mainnet.toml \
-  --config net-node/configs/node0.toml \
-  --set slot_duration_ms=200
-```
-
-Both nodes produce blocks (500 stake each out of 1000 total), exchange them via ChainSync, and generate Leios EBs/votes at stage boundaries. Node 1 has a 50ms simulated delay on events from node 0.
-
-Telemetry output (`node0-events.jsonl`) uses sim-rs-compatible JSONL format:
-
-```json
-{"time_s":62969194.0,"message":{"type":"RBGenerated","node":"node-0","slot":125938388,"size_bytes":401}}
-{"time_s":62969194.5,"message":{"type":"EBGenerated","node":"node-0","slot":125938390}}
-```
-
-Periodic stats (logged and/or POSTed to HTTP endpoint) include per-peer bandwidth:
-
-```
-periodic stats node=node-0 slot=100 tip=Some(50) produced=5 received=45 peers=1
-  peer stats peer=peer-0 address=127.0.0.1:30001 mode=Duplex rtt_ms=None delay_ms=0 sent=1024 received=2048
-```
-
-See `net-node/configs/` for the full config schema with comments.
 
 ### Scheduler selection
 
@@ -306,12 +221,9 @@ Minimal and C-free:
 | `thiserror` | Error type derivation |
 | `tracing` | Structured logging |
 | `blake2b_simd` | Blake2b-256 block header hashing |
-| `clap` | CLI argument parsing (net-cli, net-node, net-cluster) |
-| `rand` | Synthetic data generation, topology generation |
-| `figment` | Config layering with TOML (net-node, net-cluster) |
+| `clap` | CLI argument parsing (net-cli) |
+| `rand` | Synthetic data generation |
 | `serde` / `serde_json` | Serialization for config and telemetry |
-| `reqwest` | HTTP client for telemetry posting (net-node) |
-| `axum` | HTTP server for telemetry collection (net-cluster) |
 
 ## Future Work
 

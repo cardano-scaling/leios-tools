@@ -8,12 +8,19 @@ with full per-directory git history preserved.
 
 This repository contains three independent Cargo workspaces:
 
-- **`shared-rs/`** — shared crates (`consensus`, `tcp-model`) used by the other two.
-- **`net-rs/`** — networking simulator (`net-core`, `net-cli`, `net-node`, `net-cluster`).
+- **`shared-rs/`** — shared crates (`consensus`, including the behaviour-tree
+  engine + actuators, and `tcp-model`) used by the other two.
+- **`net-rs/`** — networking building blocks (`net-codec`, `net-core`, `net-cli`).
 - **`sim-rs/`** — the Rust Leios simulator (`sim-core`, `sim-cli`).
 
 `net-rs` and `sim-rs` depend on `shared-rs` via relative `../../shared-rs/...`
 path dependencies, so the directory layout above must be preserved.
+
+> **Live-network / adversarial tooling** (`net-node`, `net-cluster`, `net-ui`)
+> and the behaviour-tree definitions (`behaviours/`) live in the separate,
+> private **`leios-adversarial-tools`** repository. The simulator here is safe:
+> it never connects to a real network. Behaviour-tree `*.toml` configs are
+> generated on demand from that private repo and are never committed here.
 
 ## Supporting files
 
@@ -24,8 +31,7 @@ A few files outside the workspaces are kept, with their original paths intact:
   these via `../../data/simulation/...`, so the relative layout must be kept.
 - **`data/simulation/pseudo-mainnet/topology-v*`** — the pseudo-mainnet
   topology family used as simulator inputs.
-- **`.github/workflows/sim-rs.yaml`**, **`net-node-docker.yaml`** — CI for the
-  sim-rs build and the net-node docker image.
+- **`.github/workflows/sim-rs.yaml`** — CI for the sim-rs build.
 
 ## Building
 
