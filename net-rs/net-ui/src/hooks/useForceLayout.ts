@@ -62,10 +62,14 @@ export function useForceLayout() {
         target: e.to,
       }),
     );
-    const externalLinks: SimulationLinkDatum<ForceNode>[] = externalEdges.map(
+    // Drop external edges whose `to` doesn't resolve to a known node rather
+    // than silently linking them to internal node 0. Used everywhere below
+    // (links, latency lookup) so positional indices stay aligned.
+    const validExternalEdges = externalEdges.filter((e) => idToIndex.has(e.to));
+    const externalLinks: SimulationLinkDatum<ForceNode>[] = validExternalEdges.map(
       (e) => ({
         source: e.from,
-        target: idToIndex.get(e.to) ?? 0,
+        target: idToIndex.get(e.to)!,
       }),
     );
     const linkArray = [...internalLinks, ...externalLinks];
@@ -73,7 +77,7 @@ export function useForceLayout() {
     // Scale link distance by latency (min 80, max 300)
     const allLatencies = [
       ...topology.edges.map((e) => e.latency_ms),
-      ...externalEdges.map((e) => e.latency_ms),
+      ...validExternalEdges.map((e) => e.latency_ms),
     ];
     const maxLatency = Math.max(...allLatencies, 1);
 
@@ -88,7 +92,7 @@ export function useForceLayout() {
             const lat =
               i < internalCount
                 ? topology.edges[i]?.latency_ms
-                : externalEdges[i - internalCount]?.latency_ms;
+                : validExternalEdges[i - internalCount]?.latency_ms;
             return lat != null ? 80 + (lat / maxLatency) * 220 : 150;
           })
           .strength(0.4),

@@ -499,6 +499,7 @@ pub fn load(
     }
 
     normalize_external_peers(&mut config);
+    validate_external_ids(&config.external_nodes)?;
 
     Ok(config)
 }
@@ -525,6 +526,33 @@ pub fn normalize_external_peers(config: &mut ClusterConfig) {
             inbound_delay_ms: 0,
         });
     }
+}
+
+/// Validate external-node display ids before topology generation.
+///
+/// Ids become graph node ids in net-ui, so they must be unique and must not
+/// collide with the internal `node-{i}` namespace. Synthesised ids (`ext-{i}`,
+/// used when `id` is omitted) follow the same index scheme as
+/// `topology::inject_external_nodes`, so this check matches what the graph
+/// will actually render.
+pub fn validate_external_ids(
+    externals: &[ExternalNodeConfig],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut seen = std::collections::HashSet::new();
+    for (i, ext) in externals.iter().enumerate() {
+        let id = ext.id.clone().unwrap_or_else(|| format!("ext-{i}"));
+        if id.starts_with("node-") {
+            return Err(format!(
+                "external node id {id:?} uses the reserved \"node-\" prefix \
+                 (reserved for internal nodes)"
+            )
+            .into());
+        }
+        if !seen.insert(id.clone()) {
+            return Err(format!("duplicate external node id {id:?}").into());
+        }
+    }
+    Ok(())
 }
 
 /// Read node-level config defaults from the base net-node config file.
@@ -658,6 +686,23 @@ indices = [0, 2]
             &config.external_nodes[1].connect,
             ExternalConnectSpec::Nodes { indices } if indices == &[0, 2]
         ));
+    }
+
+    #[test]
+    fn external_id_validation_rejects_duplicates_and_reserved_prefix() {
+        let ext = |id: Option<&str>| ExternalNodeConfig {
+            id: id.map(str::to_string),
+            address: "1.2.3.4:3001".to_string(),
+            connect: ExternalConnectSpec::All,
+            inbound_delay_ms: 0,
+        };
+        // Unique explicit ids, and synthesised ids (unique by index): ok.
+        validate_external_ids(&[ext(Some("relay-eu")), ext(Some("relay-us"))]).unwrap();
+        validate_external_ids(&[ext(None), ext(None)]).unwrap();
+        // Duplicate explicit ids: rejected.
+        assert!(validate_external_ids(&[ext(Some("relay")), ext(Some("relay"))]).is_err());
+        // Collision with the internal `node-{i}` namespace: rejected.
+        assert!(validate_external_ids(&[ext(Some("node-0"))]).is_err());
     }
 
     #[test]

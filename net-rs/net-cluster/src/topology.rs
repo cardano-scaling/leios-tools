@@ -220,7 +220,15 @@ fn inject_external_nodes(
         let targets: Vec<usize> = match &ext.connect {
             ExternalConnectSpec::All => (0..n).collect(),
             ExternalConnectSpec::Nodes { indices } => {
-                indices.iter().copied().filter(|&j| j < n).collect()
+                // Dedup while preserving order: duplicate indices would push
+                // duplicate peer links (repeat dials to the same relay) and
+                // duplicate external edges in the UI.
+                let mut seen = std::collections::HashSet::new();
+                indices
+                    .iter()
+                    .copied()
+                    .filter(|&j| j < n && seen.insert(j))
+                    .collect()
             }
             ExternalConnectSpec::Random { count } => {
                 let mut all: Vec<usize> = (0..n).collect();
