@@ -34,6 +34,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = EchoToSource.contribute(&ctx, &mut out);

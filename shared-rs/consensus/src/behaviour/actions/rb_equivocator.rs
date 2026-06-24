@@ -42,6 +42,15 @@ impl LeafAction for RbHeaderEquivocator {
         };
         Status::Running
     }
+
+    fn set_param(&mut self, field: &str, value: &toml::Value) {
+        if field == "ways" {
+            if let Some(v) = value.as_integer() {
+                // Same clamp as `new`: 1 degenerates to honest.
+                self.ways = v.clamp(2, u8::MAX as i64) as u8;
+            }
+        }
+    }
 }
 
 /// Deterministic peer-to-bucket assignment: `blake2b_8(seed || peer) % ways`,
@@ -72,6 +81,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);
@@ -102,6 +112,31 @@ mod tests {
         assert_eq!(
             out.praos.production,
             RbProductionStrategy::Equivocate { ways: 2 }
+        );
+    }
+
+    #[test]
+    fn set_param_overrides_ways_with_clamp() {
+        let mut a = RbHeaderEquivocator::new(2, 0);
+        a.set_param("ways", &toml::Value::Integer(5));
+        assert_eq!(
+            run(&mut a, 1).1.praos.production,
+            RbProductionStrategy::Equivocate { ways: 5 }
+        );
+        // Clamps to >= 2.
+        a.set_param("ways", &toml::Value::Integer(1));
+        assert_eq!(
+            run(&mut a, 1).1.praos.production,
+            RbProductionStrategy::Equivocate { ways: 2 }
+        );
+        // Set a known-good baseline, then confirm two no-op cases leave it intact:
+        // an unknown field, and the right field with a wrong-typed value.
+        a.set_param("ways", &toml::Value::Integer(3));
+        a.set_param("nope", &toml::Value::Integer(9)); // unknown field → ignored
+        a.set_param("ways", &toml::Value::Boolean(true)); // wrong type → ignored
+        assert_eq!(
+            run(&mut a, 1).1.praos.production,
+            RbProductionStrategy::Equivocate { ways: 3 } // still the baseline
         );
     }
 

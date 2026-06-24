@@ -55,6 +55,18 @@ impl LeafAction for DropInboundPeers {
         }
         Status::Running
     }
+
+    fn set_param(&mut self, field: &str, value: &toml::Value) {
+        if field == "probability" {
+            // Accept a float or an integer; clamp to [0, 1] as `new` does.
+            let p = value
+                .as_float()
+                .or_else(|| value.as_integer().map(|i| i as f64));
+            if let Some(p) = p {
+                self.probability = p.clamp(0.0, 1.0);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +84,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);

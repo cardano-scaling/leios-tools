@@ -37,6 +37,27 @@ impl LeafAction for T22 {
         };
         Status::Running
     }
+
+    fn set_param(&mut self, field: &str, value: &toml::Value) {
+        match field {
+            "vote_threshold" => {
+                if let Some(v) = value.as_integer() {
+                    self.vote_threshold = v.clamp(0, u8::MAX as i64) as u8;
+                }
+            }
+            "non_voting_threshold" => {
+                if let Some(v) = value.as_integer() {
+                    self.non_voting_threshold = v.clamp(0, u8::MAX as i64) as u8;
+                }
+            }
+            "hide_eb_tx_received" => {
+                if let Some(b) = value.as_bool() {
+                    self.hide_eb_tx_received = b;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -51,6 +72,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);

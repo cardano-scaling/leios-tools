@@ -29,6 +29,15 @@ pub enum EnvValue {
 /// it. `std` (not tokio) — this crate is sans-IO.
 pub type EnvHandle = Arc<RwLock<DynamicEnv>>;
 
+/// Runtime override store for Action-leaf parameters, keyed
+/// `"<behaviour_id>.<field>"`. A live coordinator/REST update writes it and the
+/// tick reads it (sans-IO — a guarded in-memory map, like [`EnvHandle`]). Values
+/// are TOML scalars so any leaf param round-trips, including signed integers
+/// (e.g. an `offset`) that [`EnvValue`] cannot hold. An absent key means "use the
+/// leaf's compiled default", so overriding one field preserves all other leaf
+/// state (counters, RNG progression) — only the named value changes.
+pub type ActionParamStore = Arc<RwLock<BTreeMap<String, toml::Value>>>;
+
 impl EnvValue {
     /// A human-readable type name, for validation error messages.
     pub fn type_name(&self) -> &'static str {
@@ -123,6 +132,29 @@ pub struct TickCtx<'a> {
     pub state: &'a NativeChainState,
     /// Root seed for deterministic leaf choices.
     pub seed: u64,
+    /// Optional live overrides for Action-leaf params, keyed `"<id>.<field>"`.
+    /// `None` (the default) means every leaf uses its compiled params.
+    pub action_params: Option<&'a ActionParamStore>,
+}
+
+impl<'a> TickCtx<'a> {
+    /// Build a context with no live action-param overrides.
+    pub fn new(env: &'a DynamicEnv, state: &'a NativeChainState, seed: u64) -> Self {
+        Self {
+            env,
+            state,
+            seed,
+            action_params: None,
+        }
+    }
+
+    /// A live override for `<behaviour_id>.<field>`, if one is set. Returns the
+    /// raw TOML scalar; the leaf coerces it to its own field type.
+    pub fn action_override(&self, behaviour_id: &str, field: &str) -> Option<toml::Value> {
+        let store = self.action_params?;
+        let map = store.read().ok()?;
+        map.get(&format!("{behaviour_id}.{field}")).cloned()
+    }
 }
 
 #[cfg(test)]
@@ -184,5 +216,32 @@ mod tests {
         assert_eq!(EnvValue::F64(1.0).type_name(), "float");
         assert_eq!(EnvValue::Str("x".into()).type_name(), "string");
         assert_eq!(EnvValue::Bool(true).type_name(), "bool");
+    }
+
+    #[test]
+    fn action_override_reads_store_by_id_and_field() {
+        let env = DynamicEnv::new();
+        let state = NativeChainState::default();
+        let store: ActionParamStore = Arc::new(RwLock::new(BTreeMap::from([(
+            "equivocate.ways".to_string(),
+            toml::Value::Integer(4),
+        )])));
+        let ctx = TickCtx {
+            env: &env,
+            state: &state,
+            seed: 0,
+            action_params: Some(&store),
+        };
+        assert_eq!(
+            ctx.action_override("equivocate", "ways"),
+            Some(toml::Value::Integer(4))
+        );
+        assert_eq!(ctx.action_override("equivocate", "missing"), None);
+        assert_eq!(ctx.action_override("other", "ways"), None);
+        // No store → never an override.
+        assert_eq!(
+            TickCtx::new(&env, &state, 0).action_override("equivocate", "ways"),
+            None
+        );
     }
 }

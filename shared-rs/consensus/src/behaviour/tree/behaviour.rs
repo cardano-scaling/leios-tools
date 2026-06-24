@@ -119,7 +119,13 @@ impl Behaviour {
                     Status::Failure
                 }
             }
-            BehaviourKind::Action(action) => action.contribute(ctx, out),
+            BehaviourKind::Action(action) => {
+                // Apply any live param overrides addressed to this leaf's id
+                // before it contributes, so a running attack retunes in place
+                // (leaf counters/RNG are preserved — only named fields change).
+                apply_action_overrides(&self.id, action.as_mut(), ctx);
+                action.contribute(ctx, out)
+            }
         }
     }
 
@@ -150,6 +156,24 @@ impl Behaviour {
             }
             BehaviourKind::Condition(_) => {}
             BehaviourKind::Action(action) => action.reset(),
+        }
+    }
+}
+
+/// Apply any live overrides addressed to `id` (store keys `"<id>.<field>"`) to
+/// `action` before it contributes. No-op when no store is present or nothing
+/// matches; the leaf coerces each TOML scalar to its field type via `set_param`.
+fn apply_action_overrides(id: &BehaviourId, action: &mut dyn LeafAction, ctx: &TickCtx) {
+    let Some(store) = ctx.action_params else {
+        return;
+    };
+    let Ok(map) = store.read() else {
+        return;
+    };
+    let prefix = format!("{}.", id.0);
+    for (key, value) in map.iter() {
+        if let Some(field) = key.strip_prefix(&prefix) {
+            action.set_param(field, value);
         }
     }
 }
@@ -359,6 +383,7 @@ mod tests {
             env: &env,
             state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = node.tick(&ctx, &mut out);
@@ -374,6 +399,7 @@ mod tests {
             env,
             state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = node.tick(&ctx, &mut out);
@@ -686,8 +712,58 @@ mod tests {
             env: &env,
             state: &state,
             seed: 42,
+            action_params: None,
         });
         assert_eq!(s, Status::Success);
         assert_eq!(out, ControlSignal::default());
+    }
+
+    /// A leaf with one tunable param, observable via `praos.reorg_depth`.
+    #[derive(Debug)]
+    struct Tunable(i64);
+    impl LeafAction for Tunable {
+        fn contribute(&mut self, _ctx: &TickCtx, out: &mut ControlSignal) -> Status {
+            out.praos.reorg_depth = Some(self.0 as u64);
+            Status::Running
+        }
+        fn set_param(&mut self, field: &str, value: &toml::Value) {
+            if field == "v" {
+                if let Some(v) = value.as_integer() {
+                    self.0 = v;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tick_applies_action_param_overrides_by_id() {
+        use crate::behaviour::tree::env::ActionParamStore;
+        use std::collections::BTreeMap;
+        use std::sync::RwLock;
+
+        let mut node = Behaviour::new("p", BehaviourKind::Action(Box::new(Tunable(1))));
+        let env = DynamicEnv::new();
+        let state = NativeChainState::default();
+
+        // No store → the leaf's compiled default.
+        let mut out = ControlSignal::default();
+        node.tick(&TickCtx::new(&env, &state, 0), &mut out);
+        assert_eq!(out.praos.reorg_depth, Some(1));
+
+        // An override addressed to this node's id is applied before contribute;
+        // an override for a different id is ignored.
+        let store: ActionParamStore = Arc::new(RwLock::new(BTreeMap::from([
+            ("p.v".to_string(), toml::Value::Integer(9)),
+            ("other.v".to_string(), toml::Value::Integer(7)),
+        ])));
+        let ctx = TickCtx {
+            env: &env,
+            state: &state,
+            seed: 0,
+            action_params: Some(&store),
+        };
+        let mut out = ControlSignal::default();
+        node.tick(&ctx, &mut out);
+        assert_eq!(out.praos.reorg_depth, Some(9));
     }
 }
