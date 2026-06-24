@@ -1,7 +1,2 @@
-# rb-header-equivocator.bt — produce N RB variants per won slot, route per peer.
-run {
-  name = "rb-header-equivocator"
-  seed = 1234567
-}
-
-root [ Action("rb-header-equivocator", ways = 2) ]
+# rb-header-equivocator — produce `ways` RB variants per won slot, route one per peer bucket.
+Action "rb-header-equivocator" ("rb-header-equivocator", ways = 2)

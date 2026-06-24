@@ -1,0 +1,4 @@
+# t22 attack — selective EB-processing withholding. Defined inline (not published
+# as a base behaviour in lib/).
+run { name = "t22", seed = 0 }
+root [ Action("t22", vote_threshold = 80, non_voting_threshold = 60, hide_eb_tx_received = false) ]

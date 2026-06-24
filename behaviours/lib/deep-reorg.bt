@@ -1,7 +1,2 @@
-# deep-reorg.bt — every `every_slots` slots, roll back `depth` blocks and fork.
-run {
-  name = "deep-reorg"
-  seed = 1
-}
-
-root [ Action("deep-reorg", every_slots = 100, depth = 5) ]
+# deep-reorg — every `every_slots` slots, roll the adopted chain back `depth` blocks and fork.
+Action "deep-reorg" ("deep-reorg", every_slots = 100, depth = 5)

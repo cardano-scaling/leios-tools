@@ -231,19 +231,44 @@ class Parser:
         return bid
 
     def child(self, path):
-        """A child slot: a reference (bare name / string) or an inline behaviour."""
+        """A child slot: a reference (bare name / string, with optional param
+        overrides) or an inline behaviour."""
         self.ws()
         c = self.peek()
         if c == '"':
-            return self.string()  # reference
+            return self._reference(self.string(), path)
         if c and _IDENT_START.match(c):
             save = self.i
             word = self.ident()
             if word in KINDS:
                 self.i = save  # rewind; it's an inline behaviour
                 return self.behaviour(path)
-            return word  # bare reference
+            return self._reference(word, path)
         self.fail("expected a child (reference or behaviour)")
+
+    def _reference(self, name, path):
+        """A bare-name reference. With a trailing `(k = v, …)` it carries param
+        overrides for the named behaviour: register a `Ref` node (specialised at
+        `--resolve` into a concrete copy of the target with the overrides merged
+        into its action spec)."""
+        self.ws()
+        if self.peek() != "(":
+            return name
+        self.eat("(")
+        overrides = {}
+        self.ws()
+        if self.peek() != ")":
+            while True:
+                key = self.ident()
+                self.eat("=")
+                overrides[key] = self.value()
+                if not self.try_eat(","):
+                    break
+        self.eat(")")
+        if path in self.behaviours:
+            self.fail(f"duplicate behaviour id {path!r}")
+        self.behaviours[path] = {"type": "Ref", "target": name, "overrides": overrides}
+        return path
 
     def block(self):
         """A `{ key = value ... }` block (run / env). Returns a dict."""
@@ -410,6 +435,16 @@ def write_toml(doc):
             parts = [f"kind = {_toml_scalar(spec['kind'])}"]
             parts += [f"{k} = {_toml_scalar(v)}" for k, v in spec.items() if k != "kind"]
             out.append("spec = { " + ", ".join(parts) + " }")
+        elif node["type"] == "Ref":
+            # Intermediate form only: a reference + param overrides, resolved
+            # away by `--resolve` (specialize_refs). The engine never sees it.
+            out.append(f'target = {_toml_scalar(node["target"])}')
+            ov = node.get("overrides", {})
+            if ov:
+                parts = ", ".join(f"{_toml_key(k)} = {_toml_scalar(v)}" for k, v in ov.items())
+                out.append("overrides = { " + parts + " }")
+            else:
+                out.append("overrides = {}")
     return "\n".join(out) + "\n"
 
 
@@ -484,9 +519,15 @@ def write_bt(doc):
         raise BtError(f"unknown type {t!r}")
 
     def emit_child(bid, ind):
-        """A child slot at level `ind`: inline behaviour or bare-name reference."""
+        """A child slot at level `ind`: inline behaviour, override-reference, or
+        bare-name reference."""
         if bid in behaviours and inline(bid):
-            return f"{behaviours[bid]['type']}{emit_body(bid, ind)}"
+            node = behaviours[bid]
+            if node["type"] == "Ref":
+                ov = node.get("overrides", {})
+                inner = ", ".join(f"{k} = {_bt_value(v)}" for k, v in ov.items())
+                return f'"{node["target"]}"({inner})'
+            return f"{node['type']}{emit_body(bid, ind)}"
         return f'"{bid}"'  # reference
 
     out = []
@@ -562,7 +603,12 @@ def resolve(path, include_paths, stack=()):
     if path in stack:
         raise BtError("include cycle: " + " -> ".join(stack + (path,)))
     doc = _parse_any(path, _read_file(path))
-    dirs = [os.path.dirname(path) or "." if path != "-" else "."] + include_paths
+    # Search the explicit --include-path dirs (the behaviour library) FIRST, then
+    # the including file's own directory as a fallback. Library-first means an
+    # attack that `include`s "honest.bt" resolves to lib/honest.bt, not to a
+    # same-named sibling attack (which would be a self-include cycle).
+    own = "." if path == "-" else (os.path.dirname(path) or ".")
+    dirs = include_paths + [own]
     env, beh = {}, {}
     for inc in doc["includes"]:
         sub = resolve(_find_include(inc, dirs), include_paths, stack + (path,))
@@ -572,6 +618,50 @@ def resolve(path, include_paths, stack=()):
     beh.update(doc["behaviours"])
     return {"run": doc["run"], "env": env, "behaviours": beh,
             "root": doc["root"], "includes": []}
+
+
+def specialize_refs(doc):
+    """Replace `Ref` nodes (a reference carrying param overrides) with a concrete
+    copy of the target behaviour, the overrides merged into its action spec.
+    Build-time (`--resolve`) only — the engine only ever sees concrete configs."""
+    beh = doc["behaviours"]
+    for bid, node in list(beh.items()):
+        if node.get("type") != "Ref":
+            continue
+        target, overrides = node["target"], node.get("overrides", {})
+        tgt = beh.get(target)
+        if tgt is None:
+            raise BtError(f"override target {target!r} not found (from {bid!r})")
+        if tgt["type"] != "Action":
+            if overrides:
+                raise BtError(
+                    f"cannot override params on non-Action behaviour {target!r} (from {bid!r})"
+                )
+            beh[bid] = dict(tgt)  # bare copy of a non-leaf behaviour
+            continue
+        spec = dict(tgt["spec"])
+        spec.update(overrides)  # overrides win; unlisted params keep the behaviour's defaults
+        beh[bid] = {"type": "Action", "spec": spec}
+
+
+def prune_unreachable(doc):
+    """Drop behaviours not reachable from the root — e.g. a base behaviour left
+    orphaned once an override reference to it was specialised into its own node."""
+    if doc["root"] is None:
+        return
+    beh = doc["behaviours"]
+    reachable, stack = set(), [doc["root"]]
+    while stack:
+        bid = stack.pop()
+        if bid in reachable or bid not in beh:
+            continue
+        reachable.add(bid)
+        node = beh[bid]
+        if node["type"] in COMPOSITES:
+            stack += node["children"]
+        elif node["type"] == "ForTicks":
+            stack.append(node["child"])
+    doc["behaviours"] = {b: n for b, n in beh.items() if b in reachable}
 
 
 def validate_refs(doc):
@@ -610,6 +700,8 @@ def main(argv=None):
     try:
         if args.resolve:
             doc = resolve(args.file, args.include_path)
+            specialize_refs(doc)
+            prune_unreachable(doc)
             validate_refs(doc)
             sys.stdout.write(write_toml(doc))
             return 0

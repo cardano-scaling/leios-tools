@@ -1,0 +1,4 @@
+# lazy-voter attack — every assigned node abstains from voting.
+include [ "lazy-voter.bt" ]
+run { name = "lazy-voter", seed = 0 }
+root [ "lazy-voter" ]

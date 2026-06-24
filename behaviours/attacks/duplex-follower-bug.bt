@@ -1,0 +1,12 @@
+# duplex-follower bug — a size-zero EB offer reflected back to its source. Composes
+# two base behaviours under a Join: echo-to-source (opens the no-echo gate) and
+# lie-about-eb-size overridden to scale_num = 0 (size-zero). They write distinct
+# LeiosControl fields, so order doesn't matter.
+include [ "echo-to-source.bt", "lie-about-eb-size.bt" ]
+run { name = "duplex-follower-bug", seed = 0 }
+root [
+  Join[
+    "echo-to-source",
+    "lie-about-eb-size"(scale_num = 0)
+  ]
+]

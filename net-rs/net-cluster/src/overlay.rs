@@ -283,7 +283,6 @@ mod tests {
         // self-contained and compile via the engine (catches schema drift).
         use shared_consensus::behaviour::tree::BtConfig;
         for (name, text) in [
-            ("honest", include_str!("../behaviours/honest.toml")),
             ("lazy-voter", include_str!("../behaviours/lazy-voter.toml")),
             ("rb-equivocator", include_str!("../behaviours/rb-equivocator.toml")),
             ("t22", include_str!("../behaviours/t22.toml")),

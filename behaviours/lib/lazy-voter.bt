@@ -1,7 +1,2 @@
-# lazy-voter.bt — never casts a vote (always abstains).
-run {
-  name = "lazy-voter"
-  seed = 0
-}
-
-root [ Action("lazy-voter", reason = "declined") ]
+# lazy-voter — abstain from every CIP-0164 vote.
+Action "lazy-voter" ("lazy-voter", reason = "declined")

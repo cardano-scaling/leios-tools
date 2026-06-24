@@ -41,25 +41,23 @@ bless-resolve:
 	@echo "blessed $(RESOLVE_GOLDEN)"
 
 # --- Generated consumer configs ------------------------------------------------
-# The runnable lib/*.bt files are the SOURCE OF TRUTH for the behaviour-tree
+# The runnable attacks/*.bt files are the SOURCE OF TRUTH for the behaviour-tree
 # configs the node + simulator load. `make configs` resolves each (includes
-# expanded, self-contained) and writes it to the consumer path(s) with a
-# generated-from header. Workflow: edit the .bt source, `make configs`, commit
-# both. `make check-configs` (run in CI) fails if a committed config has drifted
-# from its source.
+# expanded, base-behaviour references + overrides applied, self-contained) and
+# writes it to the consumer path(s) with a generated-from header. Workflow: edit
+# the attack (and/or its lib/ behaviours), `make configs`, commit both.
+# `make check-configs` (run in CI) fails if a committed config has drifted.
 #
-# Mapping below is `<lib source>:<consumer destination>` (one per line; the same
-# source may feed several consumers). The honest leaf is the `Action("honest")`
-# .bt syntax (resolves to the engine's `type = "HonestAction"`).
+# Mapping below is `<attack source>:<consumer destination>` (one per line; the
+# same source may feed several consumers).
 NET_BEH = ../net-rs/net-cluster/behaviours
 SIM_BEH = ../sim-rs/parameters/behaviours
 CONFIG_MAP = \
-  lib/honest.bt:$(NET_BEH)/honest.toml \
-  lib/lazy-voter.bt:$(NET_BEH)/lazy-voter.toml \
-  lib/lazy-voter.bt:$(SIM_BEH)/lazy-voter.toml \
-  lib/rb-header-equivocator.bt:$(NET_BEH)/rb-equivocator.toml \
-  lib/t22.bt:$(NET_BEH)/t22.toml \
-  lib/duplex-follower-bug.bt:$(NET_BEH)/duplex-follower-bug.toml
+  attacks/lazy-voter.bt:$(NET_BEH)/lazy-voter.toml \
+  attacks/lazy-voter.bt:$(SIM_BEH)/lazy-voter.toml \
+  attacks/rb-equivocator.bt:$(NET_BEH)/rb-equivocator.toml \
+  attacks/t22.bt:$(NET_BEH)/t22.toml \
+  attacks/duplex-follower-bug.bt:$(NET_BEH)/duplex-follower-bug.toml
 
 configs:
 	@for pair in $(CONFIG_MAP); do \
