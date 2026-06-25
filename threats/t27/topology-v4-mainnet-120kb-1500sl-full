@@ -1,6 +1,8 @@
 ➜  cargo run --release ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml -s 1500 \
   -p ./sim-cli/configs/mainnet.yaml -p parameters/t27-steady.yaml
-    Finished `release` profile [optimized + debuginfo] target(s) in 0.06s
+   Compiling sim-core v2.0.1 (/Users/x/workspace/leios-tools/sim-rs/sim-core)
+   Compiling sim-cli v2.0.1 (/Users/x/workspace/leios-tools/sim-rs/sim-cli)
+    Finished `release` profile [optimized + debuginfo] target(s) in 14.02s
      Running `target/release/sim-cli ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml -s 1500 -p ./sim-cli/configs/mainnet.yaml -p parameters/t27-steady.yaml`
  INFO sim_core::sim: using sequential DES engine
  INFO sim_core::sharding: shard assignment strategy=ZeroLatencyClusters shard_sizes=[448, 448, 448, 447, 447, 447]
@@ -394,7 +396,7 @@
   Each transaction took an average of 9.298s (stddev 7.877) to be included in an EB.
   Each transaction took an average of 52.803s (stddev 15.420) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 180:
-  25766137 TX message(s) were sent. 25765954 of them were received (99.999%).
+  25766137 TX message(s) were sent. 25765955 of them were received (99.999%).
   16104 EB message(s) were sent. 16104 of them were received (100.000%).
   14525808 Vote message(s) were sent. 14525808 of them were received (100.000%).
  INFO sim_core::sim::linear_leios: Memory stats at slot 180 (node 0, x2685 nodes):
@@ -532,7 +534,7 @@
   Each transaction took an average of 30.440s (stddev 28.680) to be included in an EB.
   Each transaction took an average of 75.142s (stddev 31.594) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 240:
-  38649341 TX message(s) were sent. 38649169 of them were received (100.000%).
+  38649341 TX message(s) were sent. 38649170 of them were received (100.000%).
   18788 EB message(s) were sent. 18788 of them were received (100.000%).
   14528492 Vote message(s) were sent. 14528492 of them were received (100.000%).
  INFO sim_cli::events: Slot 241 has begun.
@@ -658,7 +660,7 @@
   Each transaction took an average of 26.289s (stddev 26.322) to be included in an EB.
   Each transaction took an average of 73.347s (stddev 32.679) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 300:
-  51532545 TX message(s) were sent. 51532376 of them were received (100.000%).
+  51532545 TX message(s) were sent. 51532377 of them were received (100.000%).
   32208 EB message(s) were sent. 32208 of them were received (100.000%).
   29051616 Vote message(s) were sent. 29051616 of them were received (100.000%).
  INFO sim_cli::events: Slot 301 has begun.
@@ -685,7 +687,7 @@
  INFO sim_cli::events: Slot 317 has begun.
  INFO sim_cli::events: Slot 318 has begun.
  INFO sim_cli::events: Slot 319 has begun.
- INFO sim_cli::events: Slot 320 has begun.
+         INFO sim_cli::events: Slot 320 has begun.
  INFO sim_cli::events: Slot 321 has begun.
  INFO sim_cli::events: Slot 322 has begun.
  INFO sim_cli::events: Slot 323 has begun.
@@ -784,7 +786,7 @@
   Each transaction took an average of 23.424s (stddev 25.249) to be included in an EB.
   Each transaction took an average of 69.524s (stddev 33.721) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 360:
-  64415740 TX message(s) were sent. 64415565 of them were received (100.000%).
+  64415740 TX message(s) were sent. 64415566 of them were received (100.000%).
   42944 EB message(s) were sent. 42944 of them were received (100.000%).
   36317204 Vote message(s) were sent. 36317204 of them were received (100.000%).
  INFO sim_cli::events: Slot 361 has begun.
@@ -907,7 +909,7 @@
   Each transaction took an average of 22.179s (stddev 23.722) to be included in an EB.
   Each transaction took an average of 63.745s (stddev 32.047) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 420:
-  77296256 TX message(s) were sent. 77296075 of them were received (100.000%).
+  77296256 TX message(s) were sent. 77296076 of them were received (100.000%).
   48312 EB message(s) were sent. 48312 of them were received (100.000%).
   41159140 Vote message(s) were sent. 41159140 of them were received (100.000%).
  INFO sim_cli::events: Slot 421 has begun.
@@ -1029,7 +1031,7 @@
   Each transaction took an average of 25.801s (stddev 24.796) to be included in an EB.
   Each transaction took an average of 64.923s (stddev 31.732) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 480:
-  90176829 TX message(s) were sent. 90176683 of them were received (100.000%).
+  90176829 TX message(s) were sent. 90176684 of them were received (100.000%).
   53680 EB message(s) were sent. 53680 of them were received (100.000%).
   43582792 Vote message(s) were sent. 43582792 of them were received (100.000%).
  INFO sim_cli::events: Slot 481 has begun.
@@ -1155,7 +1157,7 @@
   Each transaction took an average of 24.933s (stddev 23.793) to be included in an EB.
   Each transaction took an average of 69.604s (stddev 31.696) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 540:
-  103065346 TX message(s) were sent. 103065182 of them were received (100.000%).
+  103065346 TX message(s) were sent. 103065183 of them were received (100.000%).
   64350 EB message(s) were sent. 64350 of them were received (100.000%).
   50816172 Vote message(s) were sent. 50816172 of them were received (100.000%).
  INFO sim_cli::events: Slot 541 has begun.
@@ -1272,7 +1274,7 @@
   Each transaction took an average of 24.933s (stddev 23.793) to be included in an EB.
   Each transaction took an average of 69.604s (stddev 31.696) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 600:
-  115948542 TX message(s) were sent. 115948376 of them were received (100.000%).
+  115948542 TX message(s) were sent. 115948377 of them were received (100.000%).
   64350 EB message(s) were sent. 64350 of them were received (100.000%).
   50816172 Vote message(s) were sent. 50816172 of them were received (100.000%).
  INFO sim_cli::events: Slot 601 has begun.
@@ -1392,7 +1394,7 @@
   Each transaction took an average of 26.426s (stddev 23.731) to be included in an EB.
   Each transaction took an average of 74.054s (stddev 32.351) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 660:
-  128831741 TX message(s) were sent. 128831578 of them were received (100.000%).
+  128831741 TX message(s) were sent. 128831579 of them were received (100.000%).
   67034 EB message(s) were sent. 67034 of them were received (100.000%).
   53237140 Vote message(s) were sent. 53237140 of them were received (100.000%).
  INFO sim_cli::events: Slot 661 has begun.
@@ -1478,6 +1480,26 @@
   liveness.ibs: 0 entries
   liveness.ebs: 17 entries
   liveness.queue: 0 entries
+ INFO sim_core::sim::linear_leios: Memory stats at slot 720 (node 0, x2685 nodes):
+  txs:                 52799 entries  ~    7.2 MB  (received: 52799)
+  mempool:              2717 entries  ~    4.3 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           32 entries  ~    0.1 MB  (tx_refs: 960)
+  ledger_states:           1 entries  ~    0.7 MB  (spent_inputs: 44323)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 2082)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 50)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           28 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 12.4 MB  (x 2685 = ~ 31757.3 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 9286 active
+  queued messages: 114652
+  queued bytes: 0.0 MB
  INFO leios: sim_cli::events: Protocol stats at slot 720:
   The average age of the pending transactions is 17.025s (stddev 9.808).
   29 EB(s) were generated; on average there were 0.040 EB(s) per slot.
@@ -1499,29 +1521,9 @@
   Each transaction took an average of 27.203s (stddev 23.591) to be included in an EB.
   Each transaction took an average of 77.283s (stddev 32.774) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 720:
-  141712240 TX message(s) were sent. 141712068 of them were received (100.000%).
+  141712240 TX message(s) were sent. 141712069 of them were received (100.000%).
   77770 EB message(s) were sent. 77770 of them were received (100.000%).
   58084444 Vote message(s) were sent. 58084444 of them were received (100.000%).
- INFO sim_core::sim::linear_leios: Memory stats at slot 720 (node 0, x2685 nodes):
-  txs:                 52799 entries  ~    7.2 MB  (received: 52799)
-  mempool:              2717 entries  ~    4.3 MB  (backlog: 0/0 local, 0/0 peer)
-  praos.blocks:           32 entries  ~    0.1 MB  (tx_refs: 960)
-  ledger_states:           1 entries  ~    0.7 MB  (spent_inputs: 44323)
-  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 2082)
-  leios.votes:           902 entries  ~    0.1 MB
-  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
-  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 50)
-  leios.ebs_by_rb:         1 entries
-  leios.endorsed:          0 entries
-  leios.pruned:           28 entries
-  leios.missing_txs:       0 entries
-  ---
-  Estimated total: ~ 12.4 MB  (x 2685 = ~ 31757.3 MB)
-  Process RSS: 0 MB
- INFO sim_core::sim::linear_leios: Network queue stats (all shards):
-  connections: 30414 total, 9286 active
-  queued messages: 114652
-  queued bytes: 0.0 MB
  INFO sim_cli::events: Slot 721 has begun.
  INFO sim_cli::events: Slot 722 has begun.
  INFO sim_cli::events: Slot 723 has begun.
@@ -1643,7 +1645,7 @@
   Each transaction took an average of 26.232s (stddev 23.400) to be included in an EB.
   Each transaction took an average of 75.456s (stddev 33.274) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 780:
-  154598147 TX message(s) were sent. 154597973 of them were received (100.000%).
+  154598147 TX message(s) were sent. 154597974 of them were received (100.000%).
   85822 EB message(s) were sent. 85822 of them were received (100.000%).
   65347348 Vote message(s) were sent. 65347348 of them were received (100.000%).
  INFO sim_cli::events: Slot 781 has begun.
@@ -1763,7 +1765,7 @@
   Each transaction took an average of 27.375s (stddev 23.490) to be included in an EB.
   Each transaction took an average of 76.263s (stddev 32.720) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 840:
-  167481339 TX message(s) were sent. 167481174 of them were received (100.000%).
+  167481339 TX message(s) were sent. 167481175 of them were received (100.000%).
   88506 EB message(s) were sent. 88506 of them were received (100.000%).
   67768316 Vote message(s) were sent. 67768316 of them were received (100.000%).
  INFO sim_cli::events: Slot 841 has begun.
@@ -1839,6 +1841,26 @@
   liveness.ibs: 0 entries
   liveness.ebs: 19 entries
   liveness.queue: 0 entries
+ INFO sim_core::sim::linear_leios: Memory stats at slot 900 (node 0, x2685 nodes):
+  txs:                 67200 entries  ~    9.1 MB  (received: 67200)
+  mempool:             12242 entries  ~   19.5 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           36 entries  ~    0.1 MB  (tx_refs: 1080)
+  ledger_states:           1 entries  ~    0.8 MB  (spent_inputs: 49199)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 6002)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           32 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 29.7 MB  (x 2685 = ~ 75997.1 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 9307 active
+  queued messages: 107694
+  queued bytes: 0.0 MB
  INFO leios: sim_cli::events: Protocol stats at slot 900:
   The average age of the pending transactions is 76.550s (stddev 44.175).
   33 EB(s) were generated; on average there were 0.037 EB(s) per slot.
@@ -1860,29 +1882,9 @@
   Each transaction took an average of 27.375s (stddev 23.490) to be included in an EB.
   Each transaction took an average of 76.263s (stddev 32.720) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 900:
-  180364547 TX message(s) were sent. 180364384 of them were received (100.000%).
+  180364547 TX message(s) were sent. 180364385 of them were received (100.000%).
   88506 EB message(s) were sent. 88506 of them were received (100.000%).
   67768316 Vote message(s) were sent. 67768316 of them were received (100.000%).
- INFO sim_core::sim::linear_leios: Memory stats at slot 900 (node 0, x2685 nodes):
-  txs:                 67200 entries  ~    9.1 MB  (received: 67200)
-  mempool:             12242 entries  ~   19.5 MB  (backlog: 0/0 local, 0/0 peer)
-  praos.blocks:           36 entries  ~    0.1 MB  (tx_refs: 1080)
-  ledger_states:           1 entries  ~    0.8 MB  (spent_inputs: 49199)
-  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 6002)
-  leios.votes:           902 entries  ~    0.1 MB
-  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
-  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 49)
-  leios.ebs_by_rb:         1 entries
-  leios.endorsed:          0 entries
-  leios.pruned:           32 entries
-  leios.missing_txs:       0 entries
-  ---
-  Estimated total: ~ 29.7 MB  (x 2685 = ~ 75997.1 MB)
-  Process RSS: 0 MB
- INFO sim_core::sim::linear_leios: Network queue stats (all shards):
-  connections: 30414 total, 9307 active
-  queued messages: 107694
-  queued bytes: 0.0 MB
  INFO sim_cli::events: Slot 901 has begun.
  INFO sim_cli::events: Slot 902 has begun.
  INFO sim_cli::events: Slot 903 has begun.
@@ -1997,7 +1999,7 @@
   Each transaction took an average of 27.375s (stddev 23.490) to be included in an EB.
   Each transaction took an average of 76.263s (stddev 32.720) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 960:
-  193247753 TX message(s) were sent. 193247592 of them were received (100.000%).
+  193247753 TX message(s) were sent. 193247593 of them were received (100.000%).
   88506 EB message(s) were sent. 88506 of them were received (100.000%).
   67768316 Vote message(s) were sent. 67768316 of them were received (100.000%).
  INFO sim_cli::events: Slot 961 has begun.
@@ -2122,7 +2124,7 @@
   Each transaction took an average of 37.588s (stddev 36.152) to be included in an EB.
   Each transaction took an average of 93.668s (stddev 49.324) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1020:
-  206125626 TX message(s) were sent. 206125470 of them were received (100.000%).
+  206125626 TX message(s) were sent. 206125471 of them were received (100.000%).
   96558 EB message(s) were sent. 96558 of them were received (100.000%).
   75031220 Vote message(s) were sent. 75031220 of them were received (100.000%).
  INFO sim_cli::events: Slot 1021 has begun.
@@ -2209,26 +2211,6 @@
   liveness.ibs: 0 entries
   liveness.ebs: 24 entries
   liveness.queue: 0 entries
- INFO sim_core::sim::linear_leios: Memory stats at slot 1080 (node 0, x2685 nodes):
-  txs:                 81600 entries  ~   11.1 MB  (received: 81600)
-  mempool:              4340 entries  ~    6.9 MB  (backlog: 0/0 local, 0/0 peer)
-  praos.blocks:           44 entries  ~    0.1 MB  (tx_refs: 1380)
-  ledger_states:           1 entries  ~    1.1 MB  (spent_inputs: 71501)
-  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 2984)
-  leios.votes:           902 entries  ~    0.1 MB
-  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
-  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 50)
-  leios.ebs_by_rb:         1 entries
-  leios.endorsed:          0 entries
-  leios.pruned:           40 entries
-  leios.missing_txs:       0 entries
-  ---
-  Estimated total: ~ 19.4 MB  (x 2685 = ~ 49616.0 MB)
-  Process RSS: 0 MB
- INFO sim_core::sim::linear_leios: Network queue stats (all shards):
-  connections: 30414 total, 9222 active
-  queued messages: 108226
-  queued bytes: 0.0 MB
  INFO leios: sim_cli::events: Protocol stats at slot 1080:
   The average age of the pending transactions is 27.163s (stddev 15.661).
   41 EB(s) were generated; on average there were 0.038 EB(s) per slot.
@@ -2250,9 +2232,29 @@
   Each transaction took an average of 36.428s (stddev 35.635) to be included in an EB.
   Each transaction took an average of 93.067s (stddev 47.582) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1080:
-  219014144 TX message(s) were sent. 219013975 of them were received (100.000%).
+  219014144 TX message(s) were sent. 219013976 of them were received (100.000%).
   109978 EB message(s) were sent. 109978 of them were received (100.000%).
   87136060 Vote message(s) were sent. 87136060 of them were received (100.000%).
+ INFO sim_core::sim::linear_leios: Memory stats at slot 1080 (node 0, x2685 nodes):
+  txs:                 81600 entries  ~   11.1 MB  (received: 81600)
+  mempool:              4340 entries  ~    6.9 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           44 entries  ~    0.1 MB  (tx_refs: 1380)
+  ledger_states:           1 entries  ~    1.1 MB  (spent_inputs: 71501)
+  leios.ebs:               1 entries  ~    0.0 MB  (tx_refs: 2984)
+  leios.votes:           902 entries  ~    0.1 MB
+  leios.votes_by_eb:       1 entries  ~    0.0 MB  (voters: 902)
+  leios.eb_announce:       1 entries  ~    0.0 MB  (peers: 50)
+  leios.ebs_by_rb:         1 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           40 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 19.4 MB  (x 2685 = ~ 49616.0 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 9222 active
+  queued messages: 108226
+  queued bytes: 0.0 MB
  INFO sim_cli::events: Slot 1081 has begun.
  INFO sim_cli::events: Slot 1082 has begun.
  INFO sim_cli::events: Slot 1083 has begun.
@@ -2370,7 +2372,7 @@
   Each transaction took an average of 36.521s (stddev 34.846) to be included in an EB.
   Each transaction took an average of 93.099s (stddev 46.735) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1140:
-  231894650 TX message(s) were sent. 231894477 of them were received (100.000%).
+  231894650 TX message(s) were sent. 231894478 of them were received (100.000%).
   112662 EB message(s) were sent. 112662 of them were received (100.000%).
   87138744 Vote message(s) were sent. 87138744 of them were received (100.000%).
  INFO sim_cli::events: Slot 1141 has begun.
@@ -2457,6 +2459,26 @@
   liveness.ibs: 0 entries
   liveness.ebs: 28 entries
   liveness.queue: 0 entries
+ INFO sim_core::sim::linear_leios: Memory stats at slot 1200 (node 0, x2685 nodes):
+  txs:                 91200 entries  ~   12.4 MB  (received: 91200)
+  mempool:              4716 entries  ~    7.5 MB  (backlog: 0/0 local, 0/0 peer)
+  praos.blocks:           50 entries  ~    0.1 MB  (tx_refs: 1620)
+  ledger_states:           1 entries  ~    1.3 MB  (spent_inputs: 80725)
+  leios.ebs:               5 entries  ~    0.1 MB  (tx_refs: 11950)
+  leios.votes:          4510 entries  ~    0.4 MB
+  leios.votes_by_eb:       5 entries  ~    0.1 MB  (voters: 4510)
+  leios.eb_announce:       5 entries  ~    0.0 MB  (peers: 247)
+  leios.ebs_by_rb:         5 entries
+  leios.endorsed:          0 entries
+  leios.pruned:           42 entries
+  leios.missing_txs:       0 entries
+  ---
+  Estimated total: ~ 21.9 MB  (x 2685 = ~ 56134.6 MB)
+  Process RSS: 0 MB
+ INFO sim_core::sim::linear_leios: Network queue stats (all shards):
+  connections: 30414 total, 9170 active
+  queued messages: 108207
+  queued bytes: 0.0 MB
  INFO leios: sim_cli::events: Protocol stats at slot 1200:
   The average age of the pending transactions is 29.512s (stddev 17.017).
   47 EB(s) were generated; on average there were 0.039 EB(s) per slot.
@@ -2478,29 +2500,9 @@
   Each transaction took an average of 35.331s (stddev 34.695) to be included in an EB.
   Each transaction took an average of 90.198s (stddev 46.567) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1200:
-  244780550 TX message(s) were sent. 244780382 of them were received (100.000%).
+  244780550 TX message(s) were sent. 244780383 of them were received (100.000%).
   126082 EB message(s) were sent. 126082 of them were received (100.000%).
   101661868 Vote message(s) were sent. 101661868 of them were received (100.000%).
- INFO sim_core::sim::linear_leios: Memory stats at slot 1200 (node 0, x2685 nodes):
-  txs:                 91200 entries  ~   12.4 MB  (received: 91200)
-  mempool:              4716 entries  ~    7.5 MB  (backlog: 0/0 local, 0/0 peer)
-  praos.blocks:           50 entries  ~    0.1 MB  (tx_refs: 1620)
-  ledger_states:           1 entries  ~    1.3 MB  (spent_inputs: 80725)
-  leios.ebs:               5 entries  ~    0.1 MB  (tx_refs: 11950)
-  leios.votes:          4510 entries  ~    0.4 MB
-  leios.votes_by_eb:       5 entries  ~    0.1 MB  (voters: 4510)
-  leios.eb_announce:       5 entries  ~    0.0 MB  (peers: 247)
-  leios.ebs_by_rb:         5 entries
-  leios.endorsed:          0 entries
-  leios.pruned:           42 entries
-  leios.missing_txs:       0 entries
-  ---
-  Estimated total: ~ 21.9 MB  (x 2685 = ~ 56134.6 MB)
-  Process RSS: 0 MB
- INFO sim_core::sim::linear_leios: Network queue stats (all shards):
-  connections: 30414 total, 9170 active
-  queued messages: 108207
-  queued bytes: 0.0 MB
  INFO sim_cli::events: Slot 1201 has begun.
  INFO sim_cli::events: Slot 1202 has begun.
  INFO sim_cli::events: Slot 1203 has begun.
@@ -2598,7 +2600,7 @@
   Each transaction took an average of 34.822s (stddev 34.462) to be included in an EB.
   Each transaction took an average of 88.663s (stddev 46.471) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1260:
-  257663735 TX message(s) were sent. 257663564 of them were received (100.000%).
+  257663735 TX message(s) were sent. 257663565 of them were received (100.000%).
   128766 EB message(s) were sent. 128766 of them were received (100.000%).
   104082836 Vote message(s) were sent. 104082836 of them were received (100.000%).
  INFO sim_core::sim::linear_leios: Memory stats at slot 1260 (node 0, x2685 nodes):
@@ -2720,7 +2722,7 @@
   Each transaction took an average of 34.607s (stddev 33.773) to be included in an EB.
   Each transaction took an average of 88.543s (stddev 45.929) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1320:
-  270544288 TX message(s) were sent. 270544129 of them were received (100.000%).
+  270544288 TX message(s) were sent. 270544130 of them were received (100.000%).
   134134 EB message(s) were sent. 134134 of them were received (100.000%).
   108924772 Vote message(s) were sent. 108924772 of them were received (100.000%).
  INFO sim_core::sim::linear_leios: Memory stats at slot 1320 (node 0, x2685 nodes):
@@ -2845,7 +2847,7 @@
   Each transaction took an average of 33.637s (stddev 32.962) to be included in an EB.
   Each transaction took an average of 87.322s (stddev 44.262) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1380:
-  283430154 TX message(s) were sent. 283429993 of them were received (100.000%).
+  283430154 TX message(s) were sent. 283429994 of them were received (100.000%).
   142186 EB message(s) were sent. 142186 of them were received (100.000%).
   113769392 Vote message(s) were sent. 113769392 of them were received (100.000%).
  INFO sim_core::sim::linear_leios: Memory stats at slot 1380 (node 0, x2685 nodes):
@@ -2977,7 +2979,7 @@
   Each transaction took an average of 32.483s (stddev 32.710) to be included in an EB.
   Each transaction took an average of 85.656s (stddev 44.085) to be included in a block.
  INFO network: sim_cli::events: Network stats at slot 1440:
-  296313349 TX message(s) were sent. 296313182 of them were received (100.000%).
+  296313349 TX message(s) were sent. 296313183 of them were received (100.000%).
   160974 EB message(s) were sent. 160974 of them were received (100.000%).
   128297884 Vote message(s) were sent. 128297884 of them were received (100.000%).
  INFO sim_core::sim::linear_leios: Memory stats at slot 1440 (node 0, x2685 nodes):
@@ -3158,6 +3160,5 @@
   Each transaction took an average of 31.621s (stddev 32.481) to be included in an EB.
   Each transaction took an average of 84.101s (stddev 43.693) to be included in a block.
  INFO network: sim_cli::events: Final network stats:
-  309196548 TX message(s) were sent. 309196386 of them were received (100.000%).
+  309196548 TX message(s) were sent. 309196387 of them were received (100.000%).
   171710 EB message(s) were sent. 171710 of them were received (100.000%).
-  140400040 Vote message(s) were sent. 140400040 of them were received (100.000%).

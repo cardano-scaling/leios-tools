@@ -57,10 +57,16 @@ def main():
     axes[0].annotate("partition\nwindow", xy=((w0 + w1) / 2, axes[0].get_ylim()[1] * 0.85),
                      ha="center", fontsize=8, color="#a00")
     axes[-1].set_xlabel("slot")
-    fig.suptitle("T27 §S2 — complete EU isolation vs baseline (1500 slots)", fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    fig.suptitle("T27 — complete EU isolation vs baseline (1500 slots)", fontsize=12)
+    # Stamp the source files onto the figure so the chart is self-documenting.
+    fig.text(0.5, 0.008,
+             f"baseline: {args.full_csv}   |   partition: {args.partition_csv}",
+             ha="center", fontsize=7, color="#888")
+    fig.tight_layout(rect=[0, 0.022, 1, 0.98])
     fig.savefig(args.out, dpi=130)
     print(f"wrote {args.out}")
+    print(f"  baseline:  {args.full_csv}")
+    print(f"  partition: {args.partition_csv}")
 
 
 if __name__ == "__main__":

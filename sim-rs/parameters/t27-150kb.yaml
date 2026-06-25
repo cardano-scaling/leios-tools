@@ -1,0 +1,15 @@
+# T27 load override — 150 kB/s offered. Layer LAST after sim-cli/configs/mainnet.yaml.
+#
+# Load math: rate = 1000 / value(ms) tx/s, each tx tx-size bytes (1500 B).
+#   10 ms -> 100 tx/s x 1500 B = 150 kB/s offered
+#
+# NOTE: 150 kB/s is near the top of the estimated certification ceiling
+# (~107-160 kB/s), so the baseline may not sit in clean steady state. If the
+# baseline mempool / pending age climbs even without a partition, the cut's
+# effect can't be cleanly separated from chain saturation. Use t27-steady.yaml
+# (120 kB/s) for the clean A/B; this file probes behaviour nearer the ceiling.
+
+tx-generation-distribution:
+  distribution: constant
+  value: 10.0            # 100 tx/s  ->  150 kB/s offered
+tx-stop-time: 1500       # generate for the whole 1500-slot run

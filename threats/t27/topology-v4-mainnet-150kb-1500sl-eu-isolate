@@ -1,0 +1,4 @@
+➜  python3 scripts/gen-partition.py \
+    ../data/simulation/pseudo-mainnet/topology-v4-mainnet.yaml \
+    --from EU --isolate --name eu-isolate --start 300 --stop 500 \
+    -o ../threats/t27/eu-isolate-300-500.yaml
