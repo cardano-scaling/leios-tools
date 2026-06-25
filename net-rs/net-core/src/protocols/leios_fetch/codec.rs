@@ -131,7 +131,7 @@ fn encode_tx_list<W: minicbor::encode::Write>(
 ) -> Result<(), EncodeError<W::Error>> {
     e.array(txs.len() as u64)?;
     for tx in txs {
-        encode_raw(e, tx.get_slice())?;
+        e.bytes(tx.get_slice())?;
     }
     Ok(())
 }
@@ -146,6 +146,20 @@ fn encode_raw<W: minicbor::encode::Write>(
 
 // --- Decode helpers ---
 
+fn check_max_size(
+    raw: &[u8],
+    max_size: usize,
+    name: &str,
+) -> Result<(), DecodeError> {
+    if raw.len() > max_size {
+        return Err(DecodeError::message(format!(
+            "{name} is {} bytes, maximum is {max_size}",
+            raw.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Capture the next CBOR value's raw bytes verbatim (opaque pass-through),
 /// enforcing a size bound.
 fn decode_raw_bounded(
@@ -156,13 +170,14 @@ fn decode_raw_bounded(
     let start = d.position();
     d.skip()?;
     let raw = &d.input()[start..d.position()];
-    if raw.len() > max_size {
-        return Err(DecodeError::message(format!(
-            "{name} is {} bytes, maximum is {max_size}",
-            raw.len()
-        )));
-    }
+    check_max_size(raw, max_size, name)?;
     Ok(raw.to_vec())
+}
+
+fn decode_raw_tx_body(d: &mut Decoder<'_>) -> Result<TxBody, DecodeError> {
+    let raw = d.bytes()?;
+    check_max_size(raw, MAX_TRANSACTION_SIZE, "transaction body")?;
+    Ok(TxBody::new_with_slice(raw))
 }
 
 /// Decode a tx list, capturing each tx's raw CBOR (count- and
@@ -179,11 +194,7 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<TxBody>, DecodeError> {
             }
             let mut items = Vec::with_capacity(n);
             for _ in 0..n {
-                items.push(TxBody::new_with_vec(decode_raw_bounded(
-                    d,
-                    MAX_TRANSACTION_SIZE,
-                    "transaction",
-                )?));
+                items.push(decode_raw_tx_body(d)?);
             }
             Ok(items)
         }
@@ -199,11 +210,7 @@ fn decode_tx_list(d: &mut Decoder<'_>) -> Result<Vec<TxBody>, DecodeError> {
                         "transaction list exceeds maximum of {MAX_TRANSACTIONS}"
                     )));
                 }
-                items.push(TxBody::new_with_vec(decode_raw_bounded(
-                    d,
-                    MAX_TRANSACTION_SIZE,
-                    "transaction",
-                )?));
+                items.push(decode_raw_tx_body(d)?);
             }
             Ok(items)
         }
