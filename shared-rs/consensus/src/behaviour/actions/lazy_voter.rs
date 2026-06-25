@@ -49,6 +49,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);

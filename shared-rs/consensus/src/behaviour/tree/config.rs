@@ -598,6 +598,7 @@ type = "HonestAction"
             env: &env,
             state: &state,
             seed: tree.seed(),
+            action_params: None,
         })
     }
 
@@ -908,6 +909,7 @@ spec = { kind = "lie-about-eb-size", scale_num = 0, scale_den = 1, offset = 0 }
             env: &env,
             state: &state,
             seed: 1,
+            action_params: None,
         });
         assert_eq!(s, Status::Running);
         assert!(out.leios.echo_to_source);
@@ -939,6 +941,7 @@ spec = { kind = "lazy-voter" }
             env: &env,
             state: &state,
             seed: 1,
+            action_params: None,
         });
         assert_eq!(out.leios.vote, VotePolicy::Abstain(NoVoteReason::Declined));
     }
