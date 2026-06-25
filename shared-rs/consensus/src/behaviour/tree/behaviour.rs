@@ -167,14 +167,21 @@ fn apply_action_overrides(id: &BehaviourId, action: &mut dyn LeafAction, ctx: &T
     let Some(store) = ctx.action_params else {
         return;
     };
-    let Ok(map) = store.read() else {
-        return;
-    };
     let prefix = format!("{}.", id.0);
-    for (key, value) in map.iter() {
-        if let Some(field) = key.strip_prefix(&prefix) {
-            action.set_param(field, value);
-        }
+    // Collect this leaf's overrides under the lock (a `BTreeMap` prefix range —
+    // no full scan), then release the guard before calling into leaf code so we
+    // never hold the read lock across `set_param`.
+    let overrides: Vec<(String, toml::Value)> = {
+        let Ok(map) = store.read() else {
+            return;
+        };
+        map.range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k[prefix.len()..].to_string(), v.clone()))
+            .collect()
+    };
+    for (field, value) in &overrides {
+        action.set_param(field, value);
     }
 }
 

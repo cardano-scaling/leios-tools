@@ -46,7 +46,9 @@ impl LeafAction for RbHeaderEquivocator {
     fn set_param(&mut self, field: &str, value: &toml::Value) {
         if field == "ways" {
             if let Some(v) = value.as_integer() {
-                // Same clamp as `new`: 1 degenerates to honest.
+                // Clamp to >= 2, same as `new`: a value < 2 wouldn't equivocate,
+                // so this action can't be tuned down to honest (use a Selector
+                // with an honest leaf for that).
                 self.ways = v.clamp(2, u8::MAX as i64) as u8;
             }
         }
