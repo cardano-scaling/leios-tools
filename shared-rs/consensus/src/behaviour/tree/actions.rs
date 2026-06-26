@@ -30,6 +30,14 @@ pub trait LeafAction: std::fmt::Debug + Send {
 
     /// Stop contributing and reset progress. Default: nothing to reset.
     fn reset(&mut self) {}
+
+    /// Apply a live override to one tunable parameter, coercing the TOML scalar
+    /// to the field's type. Called by the tick (before [`contribute`]) for each
+    /// override addressed to this leaf, so a running attack can be retuned
+    /// without rebuilding the tree — all other leaf state (counters, RNG) is
+    /// preserved. Default: ignore (a leaf with no tunable params, or an unknown
+    /// field). [`contribute`]: LeafAction::contribute
+    fn set_param(&mut self, _field: &str, _value: &toml::Value) {}
 }
 
 /// The honest leaf: contributes nothing (leaves `ControlSignal` at default) and
@@ -93,6 +101,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 7,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);

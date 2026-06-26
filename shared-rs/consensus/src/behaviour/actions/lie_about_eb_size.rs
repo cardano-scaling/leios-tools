@@ -47,6 +47,19 @@ impl LeafAction for LieAboutEbSize {
         out.leios.offer_eb_size = self.policy();
         Status::Running
     }
+
+    fn set_param(&mut self, field: &str, value: &toml::Value) {
+        let Some(v) = value.as_integer() else {
+            return;
+        };
+        match field {
+            "scale_num" => self.scale_num = v.clamp(0, u32::MAX as i64) as u32,
+            // Same clamp as `new`: a 0 denominator is interpreted as 1.
+            "scale_den" => self.scale_den = v.clamp(1, u32::MAX as i64) as u32,
+            "offset" => self.offset = v.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +74,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);

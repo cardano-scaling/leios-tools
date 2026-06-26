@@ -30,7 +30,7 @@ pub use control::{
     ControlSignal, EbSizePolicy, LeiosControl, MempoolControl, OutboundControl, PraosControl,
     TxFilterPolicy, VotePolicy,
 };
-pub use env::{DynamicEnv, EnvHandle, EnvValue, NativeChainState, TickCtx};
+pub use env::{ActionParamStore, DynamicEnv, EnvHandle, EnvValue, NativeChainState, TickCtx};
 pub use variants::{EquivocationVariants, RbVariant};
 
 /// The status a behaviour returns when ticked (spec FR-001).

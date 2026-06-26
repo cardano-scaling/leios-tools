@@ -57,6 +57,18 @@ impl LeafAction for DeepReorg {
         // on before being halted.
         self.last_fired = u64::MAX;
     }
+
+    fn set_param(&mut self, field: &str, value: &toml::Value) {
+        // Only the named field changes; `last_fired` (run-state) is preserved.
+        if let Some(v) = value.as_integer() {
+            let v = v.max(0) as u64;
+            match field {
+                "every_slots" => self.every_slots = v.max(1),
+                "depth" => self.depth = v,
+                _ => {}
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,6 +86,7 @@ mod tests {
             env: &env,
             state: &state,
             seed: 0,
+            action_params: None,
         };
         let mut out = ControlSignal::default();
         let s = action.contribute(&ctx, &mut out);
@@ -105,5 +118,19 @@ mod tests {
         let mut a = DeepReorg::new(1, 5);
         assert_eq!(reorg_at(&mut a, 0), None);
         assert_eq!(reorg_at(&mut a, 1), Some(5));
+    }
+
+    #[test]
+    fn set_param_changes_depth_preserving_fire_state() {
+        let mut a = DeepReorg::new(50, 10);
+        assert_eq!(reorg_at(&mut a, 50), Some(10)); // fires; last_fired = 50
+        a.set_param("depth", &toml::Value::Integer(20));
+        // Same slot must NOT re-fire — run-state (last_fired) is preserved.
+        assert_eq!(reorg_at(&mut a, 50), None);
+        // The next due slot fires with the new depth.
+        assert_eq!(reorg_at(&mut a, 100), Some(20));
+        // every_slots is retunable too, clamped to >= 1.
+        a.set_param("every_slots", &toml::Value::Integer(0));
+        assert_eq!(reorg_at(&mut a, 101), Some(20));
     }
 }
