@@ -123,8 +123,7 @@ fn encode_bitmap<W: minicbor::encode::Write>(
     Ok(())
 }
 
-/// Encode a tx list `[ tx, ... ]`, splicing each tx's raw CBOR verbatim
-/// (txs are opaque pass-through — `tx.tx` may be any CBOR shape).
+/// Encode a tx list `[ tx, ... ]`, encoding each tx into CBOR bytes string.
 fn encode_tx_list<W: minicbor::encode::Write>(
     e: &mut Encoder<W>,
     txs: &[TxBody],
@@ -368,9 +367,9 @@ mod tests {
         }
     }
 
-    /// A single CBOR value used as an opaque tx in tests (uint).
+    /// A single value used as an opaque tx in tests (uint).
     fn tx(n: u8) -> TxBody {
-        TxBody::new_with_vec(vec![n]) // 0..=23 encode as a 1-byte CBOR uint
+        TxBody::new_with_vec(vec![n])
     }
 
     fn block_txs_round_trip_impl(
@@ -505,9 +504,9 @@ mod tests {
         non_cbor_decode_leios_block(&mut d, &mut ())
     }
 
-    /// This test emulates a bug, which quickly degrades performance of netwok.
-    /// The bug by itself is in inconsistent data representation inside TxBody: half of code
-    /// considered it as CBOR-encoded, another half considered it as raw bytes.
+    /// This test emulates a bug that quickly degrades network performance. The bug is
+    /// caused by inconsistent data representation inside `TxBody`: half the code
+    /// treats it as CBOR-encoded, while the other half treats it as raw bytes.
     ///
     /// There were two traditional ways of CBOR decoding:
     /// (a) as some incorrect TxBody, which is decoded from CBOR --- but there is no way to check,
