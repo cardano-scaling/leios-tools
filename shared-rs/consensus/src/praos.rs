@@ -1442,6 +1442,37 @@ impl PraosState {
         }
     }
 
+    /// The leading contiguous run of not-yet-held blocks in an ordered
+    /// (ancestor→tip) replay: skip any already-held prefix, take missing
+    /// blocks until the first held block, then stop.
+    ///
+    /// `BlockFetch` returns the whole `[from..to]` span inclusive, so a fetch
+    /// range that spans already-held blocks re-streams them. When a peer's
+    /// missing set is sparse — which happens under multi-peer sync, where
+    /// blocks arrive out of order and leave scattered gaps — a flat
+    /// `[first_missing..last_missing]` range re-fetches every held block in the
+    /// gaps, an order-of-magnitude bandwidth amplification that stalls deep
+    /// catch-up. Restricting each fetch to the leading gap-free run keeps every
+    /// issued range tight; the remaining runs are fetched on subsequent ticks,
+    /// and as blocks arrive in order the run grows contiguous (matching the
+    /// efficient single-peer case).
+    fn leading_missing_run(&self, replay: &[(Point, [u8; 32])]) -> Vec<Point> {
+        let mut run = Vec::new();
+        let mut started = false;
+        for (p, h) in replay {
+            let held = self.validated.contains(h) || self.block_cache.contains_key(h);
+            if held {
+                if started {
+                    break; // end of the leading missing run
+                }
+            } else {
+                started = true;
+                run.push(p.clone());
+            }
+        }
+        run
+    }
+
     /// One pass of Haskell-aligned chain selection.  Pure: does not
     /// mutate state.  Tests call this directly to assert classification.
     pub fn select_chain_once(&self, skip: &HashSet<PeerId>) -> SelectionDecision {
@@ -1609,11 +1640,7 @@ impl PraosState {
             .map(|e| (e.point.clone(), e.hash))
             .collect();
 
-        let missing: Vec<Point> = replay
-            .iter()
-            .filter(|(_, h)| !self.validated.contains(h) && !self.block_cache.contains_key(h))
-            .map(|(p, _)| p.clone())
-            .collect();
+        let missing: Vec<Point> = self.leading_missing_run(&replay);
 
         let anchor_point = candidate.anchor().and_then(|a| {
             let oldest_prev = candidate.iter().next().and_then(|e| e.prev_hash);
@@ -1973,9 +2000,18 @@ impl PraosState {
         // whole not-yet-validated backlog; during deep catch-up (a follower
         // thousands of blocks behind a live peer) that amplifies block
         // traffic super-linearly.
+        // Fetch the first contiguous in-flight-free run: skip any leading
+        // in-flight blocks, then take until the next in-flight block (issue
+        // #34). A plain `.filter()` would drop in-flight blocks from the
+        // *middle* of the run, leaving a gap that the issued `[from..to]` range
+        // spans — so BlockFetch re-streams the in-flight block. Skipping a
+        // leading in-flight prefix is safe (those blocks sit below `from`, not
+        // inside the range); only a middle gap causes over-fetch. The remainder
+        // beyond the next in-flight block follows on a later tick.
         let to_fetch: Vec<Point> = missing
             .iter()
-            .filter(|p| !self.in_flight.contains_key(p))
+            .skip_while(|p| self.in_flight.contains_key(p))
+            .take_while(|p| !self.in_flight.contains_key(p))
             .cloned()
             .collect();
         if to_fetch.is_empty() {
@@ -2920,6 +2956,40 @@ mod tests {
             }
             other => panic!("expected WaitingForBlocks, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn leading_missing_run_stops_at_first_held_block() {
+        // A sparse missing set (held block in the middle) must not be fetched
+        // as one gap-spanning BlockFetch range — that re-streams the held
+        // blocks in the gaps. The leading run stops at the first held block.
+        let mut s = fresh();
+        // Hold blocks 1 (prefix) and 3 (the gap); 2, 4, 5 are missing.
+        install_validated_block(&mut s, 100, 1, 1, None);
+        install_validated_block(&mut s, 102, 3, 3, Some(2));
+        let replay = vec![
+            (pt(100, 1), h(1)), // held prefix — skipped
+            (pt(101, 2), h(2)), // missing — start of run
+            (pt(102, 3), h(3)), // HELD — run ends here
+            (pt(103, 4), h(4)), // missing — NOT included (would span block 3)
+            (pt(104, 5), h(5)),
+        ];
+        assert_eq!(
+            s.leading_missing_run(&replay),
+            vec![pt(101, 2)],
+            "must fetch only the leading gap-free run, not the full sparse set"
+        );
+
+        // Fully contiguous missing → whole run (single-peer case, unchanged).
+        let replay2 = vec![(pt(101, 2), h(2)), (pt(103, 4), h(4)), (pt(104, 5), h(5))];
+        assert_eq!(
+            s.leading_missing_run(&replay2),
+            vec![pt(101, 2), pt(103, 4), pt(104, 5)]
+        );
+
+        // All held → empty (drives the Switched branch, not WaitingForBlocks).
+        let replay3 = vec![(pt(100, 1), h(1)), (pt(102, 3), h(3))];
+        assert!(s.leading_missing_run(&replay3).is_empty());
     }
 
     #[test]
