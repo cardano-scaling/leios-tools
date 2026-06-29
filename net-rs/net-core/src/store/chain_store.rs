@@ -42,6 +42,17 @@ pub struct StoredBlock {
     pub body: BlockBody,
 }
 
+/// Outcome of resolving a ChainSync follower's read cursor against the current
+/// (possibly eviction-renumbered) store. See [`ChainStore::resolve_read_cursor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadCursor {
+    /// Cursor is servable at this index (`None` = Origin, serve from the front;
+    /// `Some(i)` = the cursor point's current index). Serve forward.
+    At(Option<usize>),
+    /// Cursor point is no longer in the store — the follower must be rolled back.
+    Gone,
+}
+
 struct ChainStoreInner {
     blocks: VecDeque<StoredBlock>,
     capacity: usize,
@@ -211,6 +222,30 @@ impl ChainStore {
             return None;
         }
         inner.blocks.iter().position(|b| b.point == *point)
+    }
+
+    /// Re-resolve a ChainSync follower's read cursor (the last point we served
+    /// it) to a current index.
+    ///
+    /// A follower's position must be tracked by *point*, not a cached absolute
+    /// index: capacity eviction `pop_front`s the oldest blocks and renumbers
+    /// the rest, so a cached index goes stale even though the cursor's block is
+    /// still present. Resolving by point keeps the cursor valid across eviction
+    /// instead of mistaking the renumber for a rollback.
+    pub fn resolve_read_cursor(&self, read_point: &Option<Point>) -> ReadCursor {
+        let inner = self.inner.lock().unwrap();
+        match read_point {
+            // Origin: before the first block — serve from the front.
+            None => ReadCursor::At(None),
+            Some(p) if *p == Point::Origin => ReadCursor::At(None),
+            Some(p) => match inner.blocks.iter().position(|b| b.point == *p) {
+                // Still present (possibly renumbered by eviction).
+                Some(i) => ReadCursor::At(Some(i)),
+                // Genuinely gone: real rollback/truncation, or the follower
+                // fell so far behind its cursor was evicted past the window.
+                None => ReadCursor::Gone,
+            },
+        }
     }
 
     /// Get blocks after the given index (exclusive).
@@ -434,6 +469,44 @@ mod tests {
         assert!(store.index_of(&make_point(1)).is_none());
         // Block 3 is first.
         assert_eq!(store.index_of(&make_point(3)), Some(0));
+    }
+
+    #[test]
+    fn resolve_read_cursor_survives_eviction_renumber() {
+        // Regression (ChainSync server / us-as-relay): capacity eviction
+        // renumbers indices but a still-present cursor must stay valid, not be
+        // mistaken for a rollback (which spuriously sent followers to Origin).
+        let (store, _rx) = ChainStore::new(3);
+        for slot in 1..=3 {
+            let (p, h, b) = make_block(slot);
+            store.append_block(p, h, b, slot);
+        }
+        // Follower caught up to block 2 (index 1).
+        let cursor = Some(make_point(2));
+        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::At(Some(1)));
+
+        // Append block 4: evicts block 1, so block 2 shifts from index 1 -> 0.
+        let (p, h, b) = make_block(4);
+        store.append_block(p, h, b, 4);
+        assert!(store.index_of(&make_point(1)).is_none(), "block 1 evicted");
+        // Cursor (block 2) is still present, renumbered to index 0 — servable,
+        // NOT a rollback. This is the case the old index check got wrong.
+        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::At(Some(0)));
+
+        // Origin cursor always serves from the front.
+        assert_eq!(store.resolve_read_cursor(&None), ReadCursor::At(None));
+        assert_eq!(
+            store.resolve_read_cursor(&Some(Point::Origin)),
+            ReadCursor::At(None)
+        );
+
+        // Append two more (5, 6): evicts blocks 2 and 3. The cursor's block 2
+        // is now genuinely gone -> Gone -> caller rolls the follower back.
+        for slot in 5..=6 {
+            let (p, h, b) = make_block(slot);
+            store.append_block(p, h, b, slot);
+        }
+        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::Gone);
     }
 
     #[test]
