@@ -145,6 +145,14 @@ pub enum PraosEffect {
     /// Submit a rollback to the ledger validator
     /// (`LedgerCommand::Rollback`).
     ValidatorRollback { target: Point },
+    /// A received RB's header announces an endorser block (CIP-0164); fetch
+    /// it. The announcement (unlike a LeiosNotify offer) is the only trigger
+    /// available during historical sync, where EBs are not gossiped. The EB's
+    /// point is `(announcing-RB-slot, announced-eb-hash)` — the same slot
+    /// convention as the certificate path. `peers` is the
+    /// [`BlockFetchPolicy`]'s pick among connected upstreams (any of which is
+    /// on this chain); the I/O wrapper issues a Leios block fetch to them.
+    FetchAnnouncedEb { eb_point: Point, peers: Vec<PeerId> },
 }
 
 // ---------------------------------------------------------------------------
@@ -944,6 +952,26 @@ impl PraosState {
             eb_certified = certified_eb,
             "block received and cached"
         );
+        // CIP-0164: if this RB announces an EB, fetch it. During historical
+        // sync EBs are not gossiped over LeiosNotify, so the RB-header
+        // announcement is the only fetch trigger — without this, a syncing
+        // node gets EB cert references but never the EB bodies. The EB's point
+        // is (this RB's slot, announced hash); fetch from the lowest-RTT
+        // connected upstream (any of them carries this chain). `on_block_received`
+        // already dedups re-delivery, so this fires once per announced EB.
+        if let Some(eb_hash) = announced_eb_hash {
+            let eb_point = Point::Specific {
+                slot,
+                hash: eb_hash,
+            };
+            let candidates: Vec<PeerId> = self.peer_chains.keys().copied().collect();
+            let peers = self
+                .block_policy
+                .pick(&eb_point, &candidates, self.rtt.as_ref());
+            if !peers.is_empty() {
+                fx.push(PraosEffect::FetchAnnouncedEb { eb_point, peers });
+            }
+        }
         self.try_switch_and_execute_internal(hash, &mut fx);
         fx
     }
@@ -2820,6 +2848,64 @@ mod tests {
             .any(|e| matches!(e, PraosEffect::ValidatorApply { .. })));
         assert!(s.block_cache.contains_key(&h(1)));
         assert_eq!(s.chain_tree.block_number(&h(1)), Some(1));
+    }
+
+    #[test]
+    fn on_block_received_announced_eb_emits_fetch() {
+        // CIP-0164: an RB whose header announces an EB must trigger a fetch
+        // for it, at point (this RB's slot, announced hash), from a connected
+        // upstream — the only EB-fetch trigger during historical sync.
+        let mut s = fresh();
+        let pid = PeerId(7);
+        // A connected upstream (populates peer_chains → fetch candidate).
+        s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
+
+        let eb_hash = [0xEE; 32];
+        let mut info = hi(2, 101, Some(1));
+        info.announced_eb_hash = Some(eb_hash);
+        let fx = s.on_block_received(
+            pt(101, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(info),
+            ParsedBodyInfo::default(),
+        );
+
+        let fetched = fx.iter().find_map(|e| match e {
+            PraosEffect::FetchAnnouncedEb { eb_point, peers } => {
+                Some((eb_point.clone(), peers.clone()))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            fetched,
+            Some((
+                Point::Specific {
+                    slot: 101,
+                    hash: eb_hash
+                },
+                vec![pid]
+            )),
+            "announced EB must be fetched at (RB slot, EB hash) from the connected peer"
+        );
+    }
+
+    #[test]
+    fn on_block_received_no_announced_eb_no_fetch() {
+        // An RB with no announced EB must not emit a fetch.
+        let mut s = fresh();
+        let pid = PeerId(7);
+        s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
+        let fx = s.on_block_received(
+            pt(101, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(2, 101, Some(1))), // announced_eb_hash = None
+            ParsedBodyInfo::default(),
+        );
+        assert!(!fx
+            .iter()
+            .any(|e| matches!(e, PraosEffect::FetchAnnouncedEb { .. })));
     }
 
     #[test]
