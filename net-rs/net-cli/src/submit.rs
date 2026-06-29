@@ -38,25 +38,17 @@ fn generate_random_tx(rng: &mut StdRng, min_size: usize, max_size: usize) -> Pen
         rng.gen_range(min_size..=max_size)
     };
 
-    // TxId: random 32 bytes encoded as CBOR bytes.
+    // TxId: random 32 bytes.
     let mut hash = [0u8; 32];
     rng.fill(&mut hash);
 
-    // TODO: do we really need CBOR-encoded TxId here? And TxBody as well?
-    //let mut id_buf = Vec::new();
-    //let mut enc = minicbor::Encoder::new(&mut id_buf);
-    //enc.bytes(&hash).expect("CBOR encode tx id");
-
-    // TxBody: random bytes of the desired size, encoded as CBOR bytes.
+    // TxBody: random bytes of the desired size.
     let mut payload = vec![0u8; size];
     rng.fill(payload.as_mut_slice());
-    let mut body_buf = Vec::new();
-    let mut enc = minicbor::Encoder::new(&mut body_buf);
-    enc.bytes(&payload).expect("CBOR encode tx body");
 
     PendingTx {
         tx_id: TxId::new_with_array(hash),
-        body: TxBody::new_with_vec(body_buf),
+        body: TxBody::new_with_vec(payload),
         size: size as u32,
     }
 }
