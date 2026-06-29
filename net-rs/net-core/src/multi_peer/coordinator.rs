@@ -5,7 +5,7 @@
 //! all peer tasks via a shared fan-in channel and sends commands to
 //! individual peers via per-peer channels.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -243,6 +243,13 @@ struct Coordinator {
     /// coordinator's `.send().await` blocks; per-protocol mux ingress
     /// channels back up; the mux tears down with `IngressOverflow`.
     leios_offer_dedup: OfferDedup,
+    /// Outbound peer addresses this node refuses to dial.  Set via
+    /// `NetworkCommand::SetPeerBlocklist` (cluster-driven partitions).
+    /// Enforced at three points — `AddPeer` (refuse), reconnection
+    /// (park, don't drop), and on update (disconnect any currently
+    /// connected match).  Empty in the common no-partition case, so the
+    /// `contains`/`is_empty` checks are off the data path and free.
+    blocklist: HashSet<String>,
 }
 
 impl Coordinator {
@@ -277,6 +284,7 @@ impl Coordinator {
             peer_provider: Arc::new(|_| Vec::new()),
             pending_removals: Vec::new(),
             leios_offer_dedup: OfferDedup::new(dedup_window),
+            blocklist: HashSet::new(),
         }
     }
 
@@ -723,7 +731,12 @@ impl Coordinator {
     async fn handle_network_command(&mut self, command: NetworkCommand) -> bool {
         match command {
             NetworkCommand::AddPeer { address } => {
-                if self.peers.len() >= self.config.max_peers {
+                if self.blocklist.contains(&address) {
+                    // Blocklisted (active partition): refuse the dial. Also
+                    // catches addresses surfaced by peer discovery, not just
+                    // statically configured peers.
+                    tracing::debug!(%address, "AddPeer refused: address is blocklisted");
+                } else if self.peers.len() >= self.config.max_peers {
                     tracing::warn!(
                         "max peers ({}) reached, ignoring AddPeer",
                         self.config.max_peers
@@ -973,6 +986,34 @@ impl Coordinator {
                 }
             }
 
+            NetworkCommand::SetPeerBlocklist { addresses } => {
+                // Full replace; an empty set heals the partition.
+                self.blocklist = addresses.into_iter().collect();
+
+                // Disconnect any currently connected peer whose address is
+                // now blocklisted.  These are outbound dials, so the normal
+                // `remove_peer` path re-queues them for reconnection — and
+                // `process_reconnections` parks (does not drop) blocklisted
+                // addresses, so the link stays cut until the blocklist is
+                // cleared, at which point the parked entry reconnects on its
+                // own with normal backoff.  A duplex socket carries both
+                // directions, so dropping the dialer cuts the link both ways.
+                let to_drop: Vec<PeerId> = self
+                    .peers
+                    .iter()
+                    .filter(|(_, p)| self.blocklist.contains(&p.address))
+                    .map(|(id, _)| *id)
+                    .collect();
+                tracing::info!(
+                    blocklist_len = self.blocklist.len(),
+                    disconnecting = to_drop.len(),
+                    "SetPeerBlocklist: applying outbound peer blocklist"
+                );
+                for peer_id in to_drop {
+                    self.send_peer_command(peer_id, PeerCommand::Disconnect);
+                }
+            }
+
             NetworkCommand::Shutdown => {
                 // Disconnect all peers.
                 let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
@@ -1063,7 +1104,15 @@ impl Coordinator {
         self.reconnect_queue = still_pending;
 
         for (address, next_backoff) in ready {
-            if self.peers.len() >= self.config.max_peers {
+            if self.blocklist.contains(&address) {
+                // Active partition: park the reconnection instead of dropping
+                // it.  Re-queued at the same (un-escalated) backoff so it
+                // keeps the link cut while blocklisted and reconnects on its
+                // own once the blocklist is cleared (heal) — no separate
+                // bookkeeping needed.
+                self.reconnect_queue
+                    .push((address, Instant::now() + next_backoff, next_backoff));
+            } else if self.peers.len() >= self.config.max_peers {
                 // Re-queue — we're at capacity.
                 self.reconnect_queue
                     .push((address, Instant::now() + next_backoff, next_backoff));
@@ -1940,6 +1989,99 @@ mod tests {
         // A new peer should have been added.
         assert_eq!(coordinator.peers.len(), 1);
         // Reconnect queue should be empty now.
+        assert!(coordinator.reconnect_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_peer_blocklist_disconnects_match_and_refuses_dial() {
+        let (mut coordinator, _net_rx) = make_fragment_coordinator();
+        let blocked = PeerId(0);
+        let mut blocked_cmds = insert_peer(&mut coordinator, blocked, None);
+        let blocked_addr = "test-0:3001".to_string(); // matches insert_peer's scheme
+
+        // Applying a blocklist containing the peer's address must
+        // disconnect it and record the blocklist.
+        coordinator
+            .handle_network_command(NetworkCommand::SetPeerBlocklist {
+                addresses: vec![blocked_addr.clone()],
+            })
+            .await;
+        assert!(coordinator.blocklist.contains(&blocked_addr));
+        assert!(
+            matches!(blocked_cmds.try_recv(), Ok(PeerCommand::Disconnect)),
+            "blocklisted peer should receive Disconnect"
+        );
+
+        // A blocklisted address must be refused by AddPeer (covers both
+        // configured peers and addresses surfaced via discovery).
+        let before = coordinator.peers.len();
+        coordinator
+            .handle_network_command(NetworkCommand::AddPeer {
+                address: blocked_addr.clone(),
+            })
+            .await;
+        assert_eq!(
+            coordinator.peers.len(),
+            before,
+            "blocked dial must be refused"
+        );
+
+        // A non-blocklisted address is still dialled normally.  (Assert by
+        // address rather than count: the test's manual insert_peer reuses
+        // PeerId(0) without bumping next_peer_id, so add_peer overwrites that
+        // slot — presence-by-address is the artifact-free check.)
+        coordinator
+            .handle_network_command(NetworkCommand::AddPeer {
+                address: "allowed:3001".to_string(),
+            })
+            .await;
+        assert!(
+            coordinator
+                .peers
+                .values()
+                .any(|p| p.address == "allowed:3001"),
+            "non-blocklisted dial must be accepted"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_reconnections_parks_blocklisted_then_heals_on_clear() {
+        let (mut coordinator, _net_rx) = make_fragment_coordinator();
+        let addr = "blocked:3001".to_string();
+
+        // A due reconnection for a blocklisted address must be parked (kept
+        // in the queue), not spawned and not dropped — this is what holds a
+        // partition open against the auto-reconnect machinery.
+        coordinator.blocklist.insert(addr.clone());
+        coordinator.reconnect_queue.push((
+            addr.clone(),
+            Instant::now() - Duration::from_secs(1),
+            Duration::from_secs(1),
+        ));
+        coordinator.process_reconnections();
+        assert!(
+            coordinator.peers.is_empty(),
+            "blocklisted address must not reconnect"
+        );
+        assert_eq!(
+            coordinator.reconnect_queue.len(),
+            1,
+            "parked entry must remain queued for the eventual heal"
+        );
+
+        // Clearing the blocklist (heal) lets the parked entry reconnect on
+        // the next due tick with no extra bookkeeping.
+        coordinator
+            .handle_network_command(NetworkCommand::SetPeerBlocklist { addresses: vec![] })
+            .await;
+        assert!(coordinator.blocklist.is_empty());
+        coordinator.reconnect_queue[0].1 = Instant::now() - Duration::from_secs(1);
+        coordinator.process_reconnections();
+        assert_eq!(
+            coordinator.peers.len(),
+            1,
+            "heal must reconnect the parked peer"
+        );
         assert!(coordinator.reconnect_queue.is_empty());
     }
 
