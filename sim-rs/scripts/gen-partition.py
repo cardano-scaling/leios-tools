@@ -127,6 +127,13 @@ def emit_yaml(args, from_names, to_names):
     return "\n".join(lines) + "\n"
 
 
+def parse_group_codes(s):
+    """Split a comma-separated --from/--to value into a set of upper-cased
+    codes, tolerating surrounding whitespace and empty tokens (e.g.
+    "EU, NA" or a trailing comma "EU,")."""
+    return {tok.strip() for tok in s.upper().split(",") if tok.strip()}
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Emit a partition-scenarios overlay from topology cc metadata.",
@@ -152,8 +159,8 @@ def main():
     p.add_argument("-o", "--out", help="write to file (default: stdout)")
     args = p.parse_args()
 
-    from_set = set(args.from_group.upper().split(","))
-    to_set = set(args.to_group.upper().split(",")) if not args.isolate else set()
+    from_set = parse_group_codes(args.from_group)
+    to_set = parse_group_codes(args.to_group) if not args.isolate else set()
     if from_set & to_set:
         sys.exit(f"error: --from and --to overlap: {from_set & to_set}")
 

@@ -122,7 +122,13 @@ pub struct PeerInfo {
 }
 
 /// Commands sent from the application to the coordinator.
+///
+/// `#[non_exhaustive]`: new command variants are added as the protocol
+/// grows (e.g. `SetPeerBlocklist`), so downstream matches must carry a
+/// wildcard arm rather than enumerate every variant — keeps adding a
+/// variant a non-breaking change.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NetworkCommand {
     /// Add a peer by address. The coordinator will connect and manage it.
     AddPeer { address: String },
