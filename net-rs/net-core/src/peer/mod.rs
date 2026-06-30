@@ -29,10 +29,14 @@ pub enum DownstreamState {
 
 impl DownstreamState {
     pub fn from_u8(v: u8) -> Self {
+        // The flag only ever climbs (writers use `fetch_max`), so clamp any
+        // unexpected high value (a future state added without updating this
+        // match, say) to the highest known state rather than dropping it to
+        // Cold — reporting a regression would be more misleading than saturating.
         match v {
-            2 => Self::Hot,
+            0 => Self::Cold,
             1 => Self::Warm,
-            _ => Self::Cold,
+            _ => Self::Hot,
         }
     }
     pub fn as_str(&self) -> &'static str {
@@ -113,6 +117,17 @@ mod downstream_tests {
         // Never downgrades: a late warm signal can't undo hot.
         mark_downstream_warm(&f);
         assert_eq!(read(&f), DownstreamState::Hot);
+    }
+
+    #[test]
+    fn downstream_state_from_u8_clamps_unknown_to_hot() {
+        assert_eq!(DownstreamState::from_u8(0), DownstreamState::Cold);
+        assert_eq!(DownstreamState::from_u8(1), DownstreamState::Warm);
+        assert_eq!(DownstreamState::from_u8(2), DownstreamState::Hot);
+        // Out-of-range values saturate to the highest known state, not Cold —
+        // the flag only climbs, so an unknown-high value is "more than Hot".
+        assert_eq!(DownstreamState::from_u8(3), DownstreamState::Hot);
+        assert_eq!(DownstreamState::from_u8(255), DownstreamState::Hot);
     }
 
     #[test]
