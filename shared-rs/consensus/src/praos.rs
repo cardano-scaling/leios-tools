@@ -999,9 +999,19 @@ impl PraosState {
                 );
             }
         }
-        // (2) Immutable certifier: this block certifies its parent's announced
-        //     EB; fetch it if that parent (the announcer) is immutable.
-        if let Some((eb_slot, eb_hash)) = self.parent_announced_eb_for_cert(&point) {
+        // (2) Certifier: this block certifies an EB; fetch it if the announcer
+        //     (the parent RB) is immutable. Prefer the decoded body
+        //     certificate's (slot, hash) — authoritative and needs no parent
+        //     lookup, so it's robust to out-of-order body delivery (certifier
+        //     received before announcer). Fall back to resolving via the
+        //     parent's announced EB for the `array(0)` "pending" placeholder
+        //     cert, which carries no hash (still needs the parent cached).
+        let cert_eb = parsed_body
+            .eb_certificate
+            .as_ref()
+            .map(|c| (c.eb_slot, c.eb_hash))
+            .or_else(|| self.parent_announced_eb_for_cert(&point));
+        if let Some((eb_slot, eb_hash)) = cert_eb {
             let announcer_bn = block_no.saturating_sub(1);
             if announcer_bn <= immutable_max_bn {
                 self.push_eb_fetch(
@@ -3037,6 +3047,49 @@ mod tests {
                 hash: eb_p
             }),
             "certifying block must fetch its parent's announced EB at (parent slot, EB hash)"
+        );
+    }
+
+    #[test]
+    fn on_block_received_cert_via_body_cert_fetched_out_of_order() {
+        // Out-of-order delivery: a certifier arrives before its announcer
+        // (parent NOT in the cache). With a real decoded body certificate the
+        // EB is still fetched, at the cert's own (slot, hash) — no parent
+        // lookup needed. This is what the body-cert path buys over resolving
+        // via the parent's announced EB (which would fail here).
+        let mut s = fresh();
+        let pid = PeerId(7);
+        s.record_peer_tip(pid, pt(9000, 9), 1000, 1000, h(9), 9000, None);
+
+        let eb_hash = [0xAB; 32];
+        let body = ParsedBodyInfo {
+            eb_certificate: Some(LeiosCertSummary {
+                eb_slot: 5000,
+                eb_hash,
+            }),
+            ..ParsedBodyInfo::default()
+        };
+        // Certifier at block 501 (announcer bn 500 <= immutable_max 900), with
+        // NO parent cached. prev_hash is irrelevant: the body cert resolves the
+        // EB directly, short-circuiting the parent-announced fallback.
+        let fx = s.on_block_received(
+            pt(5001, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(501, 5001, None)),
+            body,
+        );
+        let fetched = fx.iter().find_map(|e| match e {
+            PraosEffect::FetchAnnouncedEb { eb_point, .. } => Some(eb_point.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            fetched,
+            Some(Point::Specific {
+                slot: 5000,
+                hash: eb_hash
+            }),
+            "real body cert must fetch the EB by its own (slot, hash) without the parent cached"
         );
     }
 
