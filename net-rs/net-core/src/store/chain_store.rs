@@ -42,13 +42,19 @@ pub struct StoredBlock {
     pub body: BlockBody,
 }
 
-/// Outcome of resolving a ChainSync follower's read cursor against the current
-/// (possibly eviction-renumbered) store. See [`ChainStore::resolve_read_cursor`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadCursor {
-    /// Cursor is servable at this index (`None` = Origin, serve from the front;
-    /// `Some(i)` = the cursor point's current index). Serve forward.
-    At(Option<usize>),
+/// The block to serve a ChainSync follower next, resolved against the current
+/// (possibly eviction-renumbered) store under a single lock. See
+/// [`ChainStore::next_after_cursor`].
+// Returned by value and matched immediately (one per ChainSync request), never
+// stored or moved through collections — the large `Next` variant is fine, and
+// boxing it would only add a needless allocation on the serve hot path.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum NextForCursor {
+    /// Serve this block — the one immediately after the follower's cursor.
+    Next(StoredBlock),
+    /// Cursor is valid but no block exists past it yet — caller awaits.
+    AtTip,
     /// Cursor point is no longer in the store — the follower must be rolled back.
     Gone,
 }
@@ -224,27 +230,52 @@ impl ChainStore {
         inner.blocks.iter().position(|b| b.point == *point)
     }
 
-    /// Re-resolve a ChainSync follower's read cursor (the last point we served
-    /// it) to a current index.
+    /// Resolve a ChainSync follower's read cursor (the last point we served it)
+    /// and return the block to serve next — **atomically, under one lock**.
     ///
     /// A follower's position must be tracked by *point*, not a cached absolute
     /// index: capacity eviction `pop_front`s the oldest blocks and renumbers
     /// the rest, so a cached index goes stale even though the cursor's block is
     /// still present. Resolving by point keeps the cursor valid across eviction
     /// instead of mistaking the renumber for a rollback.
-    pub fn resolve_read_cursor(&self, read_point: &Option<Point>) -> ReadCursor {
+    ///
+    /// Resolving the cursor and fetching the successor in a *single* lock is
+    /// load-bearing: doing them as two calls (resolve → index, then fetch by
+    /// index) lets a concurrent `append_block` eviction shift indices between
+    /// them, skipping or duplicating a header.
+    pub fn next_after_cursor(&self, read_point: &Option<Point>) -> NextForCursor {
         let inner = self.inner.lock().unwrap();
-        match read_point {
-            // Origin: before the first block — serve from the front.
-            None => ReadCursor::At(None),
-            Some(p) if *p == Point::Origin => ReadCursor::At(None),
+        // Index of the cursor point (None ⇒ Origin ⇒ before the first block);
+        // the block to serve is the one immediately after it.
+        let after = match read_point {
+            None => 0,
+            Some(p) if *p == Point::Origin => 0,
             Some(p) => match inner.blocks.iter().position(|b| b.point == *p) {
                 // Still present (possibly renumbered by eviction).
-                Some(i) => ReadCursor::At(Some(i)),
-                // Genuinely gone: real rollback/truncation, or the follower
-                // fell so far behind its cursor was evicted past the window.
-                None => ReadCursor::Gone,
+                Some(i) => i + 1,
+                // Genuinely gone: real rollback/truncation, or the follower fell
+                // so far behind its cursor was evicted past the window.
+                None => return NextForCursor::Gone,
             },
+        };
+        match inner.blocks.get(after) {
+            Some(b) => NextForCursor::Next(b.clone()),
+            None => NextForCursor::AtTip,
+        }
+    }
+
+    /// A rollback target that is guaranteed servable: the last recorded
+    /// rollback target if it is Origin or still present in the store, else
+    /// `Origin`. Capacity eviction never updates `last_rollback_target`, so it
+    /// can point at a since-evicted block; rolling a follower back to an
+    /// unservable point would re-resolve to `Gone` forever. Origin always
+    /// resolves (serve from the front), so it is the safe fallback.
+    pub fn servable_rollback_target(&self) -> Point {
+        let inner = self.inner.lock().unwrap();
+        match &inner.last_rollback_target {
+            Some(p) if *p == Point::Origin => Point::Origin,
+            Some(p) if inner.blocks.iter().any(|b| b.point == *p) => p.clone(),
+            _ => Point::Origin,
         }
     }
 
@@ -472,41 +503,86 @@ mod tests {
     }
 
     #[test]
-    fn resolve_read_cursor_survives_eviction_renumber() {
+    fn next_after_cursor_survives_eviction_renumber() {
         // Regression (ChainSync server / us-as-relay): capacity eviction
-        // renumbers indices but a still-present cursor must stay valid, not be
-        // mistaken for a rollback (which spuriously sent followers to Origin).
+        // renumbers indices but a still-present cursor must stay valid (and
+        // resolve+fetch atomically), not be mistaken for a rollback (which
+        // spuriously sent followers to Origin).
+        let next_point = |n: NextForCursor| match n {
+            NextForCursor::Next(b) => Some(b.point),
+            _ => None,
+        };
         let (store, _rx) = ChainStore::new(3);
         for slot in 1..=3 {
             let (p, h, b) = make_block(slot);
             store.append_block(p, h, b, slot);
         }
-        // Follower caught up to block 2 (index 1).
+        // Follower caught up to block 2 → next block to serve is block 3.
         let cursor = Some(make_point(2));
-        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::At(Some(1)));
+        assert_eq!(
+            next_point(store.next_after_cursor(&cursor)),
+            Some(make_point(3))
+        );
 
-        // Append block 4: evicts block 1, so block 2 shifts from index 1 -> 0.
+        // Append block 4: evicts block 1, so block 2 shifts index 1 -> 0.
         let (p, h, b) = make_block(4);
         store.append_block(p, h, b, 4);
         assert!(store.index_of(&make_point(1)).is_none(), "block 1 evicted");
-        // Cursor (block 2) is still present, renumbered to index 0 — servable,
-        // NOT a rollback. This is the case the old index check got wrong.
-        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::At(Some(0)));
-
-        // Origin cursor always serves from the front.
-        assert_eq!(store.resolve_read_cursor(&None), ReadCursor::At(None));
+        // Cursor (block 2) is still present (renumbered) — still resolves to its
+        // successor, block 3. This is the case the old stale-index path got wrong.
         assert_eq!(
-            store.resolve_read_cursor(&Some(Point::Origin)),
-            ReadCursor::At(None)
+            next_point(store.next_after_cursor(&cursor)),
+            Some(make_point(3))
         );
 
-        // Append two more (5, 6): evicts blocks 2 and 3. The cursor's block 2
-        // is now genuinely gone -> Gone -> caller rolls the follower back.
+        // Origin cursor serves from the front (now block 2 after eviction).
+        assert_eq!(
+            next_point(store.next_after_cursor(&None)),
+            Some(make_point(2))
+        );
+        // Cursor at the tip (block 4) → nothing after → AtTip.
+        assert!(matches!(
+            store.next_after_cursor(&Some(make_point(4))),
+            NextForCursor::AtTip
+        ));
+
+        // Append two more (5, 6): evicts blocks 2 and 3. The cursor's block 2 is
+        // now genuinely gone -> Gone -> caller rolls the follower back.
         for slot in 5..=6 {
             let (p, h, b) = make_block(slot);
             store.append_block(p, h, b, slot);
         }
-        assert_eq!(store.resolve_read_cursor(&cursor), ReadCursor::Gone);
+        assert!(matches!(
+            store.next_after_cursor(&cursor),
+            NextForCursor::Gone
+        ));
+    }
+
+    #[test]
+    fn servable_rollback_target_falls_back_to_origin_when_evicted() {
+        // Copilot #2/#3: a Gone-on-eviction must not roll the follower back to a
+        // since-evicted rollback target (that loops Gone forever). The target is
+        // returned only if still present; otherwise Origin (always servable).
+        let (store, _rx) = ChainStore::new(3);
+        for slot in 1..=3 {
+            let (p, h, b) = make_block(slot);
+            store.append_block(p, h, b, slot);
+        }
+        // No genuine rollback recorded → Origin.
+        assert_eq!(store.servable_rollback_target(), Point::Origin);
+
+        // A real rollback to block 2 records it as the target; it's present.
+        store.rollback_to(&make_point(2));
+        assert_eq!(store.servable_rollback_target(), make_point(2));
+
+        // Re-grow past capacity until block 2 is evicted; the stale target must
+        // now fall back to Origin rather than an unservable point.
+        for slot in 3..=6 {
+            let (p, h, b) = make_block(slot);
+            store.append_block(p, h, b, slot);
+        }
+        assert!(store.index_of(&make_point(2)).is_none(), "block 2 evicted");
+        assert_eq!(store.servable_rollback_target(), Point::Origin);
     }
 
     #[test]

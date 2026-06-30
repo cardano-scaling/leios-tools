@@ -39,7 +39,7 @@ use crate::protocols::{Role, Runner};
 
 use super::types::PeerEvent;
 use super::PeerId;
-use crate::store::chain_store::{ChainStore, ReadCursor};
+use crate::store::chain_store::{ChainStore, NextForCursor};
 use crate::store::leios_store::LeiosStore;
 
 /// Serve ChainSync for one connection.
@@ -61,7 +61,7 @@ pub async fn serve_chainsync(
 ) {
     let mut runner = Runner::<ChainSync>::new(Role::Server, cs_send, cs_recv);
     // The follower's position is tracked solely by point; the index is
-    // re-resolved per request (`resolve_read_cursor`) because capacity eviction
+    // re-resolved per request (`next_after_cursor`) because capacity eviction
     // renumbers the store.
     let mut read_point: Option<Point> = None;
     let mut subscription = store.subscribe();
@@ -111,10 +111,12 @@ pub async fn serve_chainsync(
                 // cursor must not be mistaken for a rollback — only a
                 // genuinely-absent cursor point (real rollback / truncation, or
                 // eviction past the window) is one.
-                match store.resolve_read_cursor(&read_point) {
-                    ReadCursor::Gone => {
-                        // Roll back to the fork point (where the chain was truncated).
-                        let rollback_target = store.last_rollback_target().unwrap_or(Point::Origin);
+                match store.next_after_cursor(&read_point) {
+                    NextForCursor::Gone => {
+                        // Roll back to a servable target — never an evicted one,
+                        // which would re-resolve to Gone forever (see
+                        // `servable_rollback_target`).
+                        let rollback_target = store.servable_rollback_target();
                         let tip = store.tip();
                         read_point = Some(rollback_target.clone());
                         let _ = runner
@@ -124,64 +126,59 @@ pub async fn serve_chainsync(
                             })
                             .await;
                     }
-                    ReadCursor::At(idx) => {
-                        let pending = store.blocks_after(idx);
-                        if let Some(block) = pending.first() {
-                            read_point = Some(block.point.clone());
-                            let tip = store.tip();
-                            send_roll_forward(
-                                &mut runner,
-                                block.header.clone(),
-                                &block.point,
-                                tip,
-                                peer,
-                                controls.as_ref(),
-                            )
-                            .await;
-                        } else {
-                            tracing::info!(
-                                peer = peer.0,
-                                "chainsync: sending MsgAwaitReply (entering StMustReply — no chain past downstream's intersection)"
-                            );
-                            let _ = runner.send(&CsMsg::MsgAwaitReply).await;
+                    NextForCursor::Next(block) => {
+                        read_point = Some(block.point.clone());
+                        let tip = store.tip();
+                        send_roll_forward(
+                            &mut runner,
+                            block.header,
+                            &block.point,
+                            tip,
+                            peer,
+                            controls.as_ref(),
+                        )
+                        .await;
+                    }
+                    NextForCursor::AtTip => {
+                        tracing::info!(
+                            peer = peer.0,
+                            "chainsync: sending MsgAwaitReply (entering StMustReply — no chain past downstream's intersection)"
+                        );
+                        let _ = runner.send(&CsMsg::MsgAwaitReply).await;
 
-                            loop {
-                                if subscription.changed().await.is_err() {
-                                    return;
+                        loop {
+                            if subscription.changed().await.is_err() {
+                                return;
+                            }
+                            // After waking, re-resolve atomically (see above).
+                            match store.next_after_cursor(&read_point) {
+                                NextForCursor::Gone => {
+                                    let rollback_target = store.servable_rollback_target();
+                                    let tip = store.tip();
+                                    read_point = Some(rollback_target.clone());
+                                    let _ = runner
+                                        .send(&CsMsg::MsgRollBackward {
+                                            point: rollback_target,
+                                            tip,
+                                        })
+                                        .await;
+                                    break;
                                 }
-                                // After waking, re-resolve by point (see above).
-                                match store.resolve_read_cursor(&read_point) {
-                                    ReadCursor::Gone => {
-                                        let rollback_target =
-                                            store.last_rollback_target().unwrap_or(Point::Origin);
-                                        let tip = store.tip();
-                                        read_point = Some(rollback_target.clone());
-                                        let _ = runner
-                                            .send(&CsMsg::MsgRollBackward {
-                                                point: rollback_target,
-                                                tip,
-                                            })
-                                            .await;
-                                        break;
-                                    }
-                                    ReadCursor::At(idx) => {
-                                        let pending = store.blocks_after(idx);
-                                        if let Some(block) = pending.first() {
-                                            read_point = Some(block.point.clone());
-                                            let tip = store.tip();
-                                            send_roll_forward(
-                                                &mut runner,
-                                                block.header.clone(),
-                                                &block.point,
-                                                tip,
-                                                peer,
-                                                controls.as_ref(),
-                                            )
-                                            .await;
-                                            break;
-                                        }
-                                    }
+                                NextForCursor::Next(block) => {
+                                    read_point = Some(block.point.clone());
+                                    let tip = store.tip();
+                                    send_roll_forward(
+                                        &mut runner,
+                                        block.header,
+                                        &block.point,
+                                        tip,
+                                        peer,
+                                        controls.as_ref(),
+                                    )
+                                    .await;
+                                    break;
                                 }
+                                NextForCursor::AtTip => {}
                             }
                         }
                     }
