@@ -115,11 +115,13 @@ pub(crate) async fn run_duplex_task(config: DuplexTaskConfig) {
         "peer connected (duplex)"
     );
 
+    let downstream = super::new_downstream_flag();
     let _ = event_sender
         .send((
             peer_id,
             PeerEvent::Connected {
                 mux_stats: conn.running.stats.clone(),
+                downstream: downstream.clone(),
             },
         ))
         .await;
@@ -136,6 +138,7 @@ pub(crate) async fn run_duplex_task(config: DuplexTaskConfig) {
             event_sender: config.event_sender,
             command_receiver: config.command_receiver,
             outbound_controls: config.outbound_controls,
+            downstream,
         },
     )
     .await;
@@ -147,11 +150,13 @@ pub(crate) async fn run_accepted_duplex_task(config: AcceptedDuplexTaskConfig) {
     let event_sender = config.event_sender.clone();
     let conn = config.connection;
 
+    let downstream = super::new_downstream_flag();
     let _ = event_sender
         .send((
             peer_id,
             PeerEvent::Connected {
                 mux_stats: conn.running.stats.clone(),
+                downstream: downstream.clone(),
             },
         ))
         .await;
@@ -168,6 +173,7 @@ pub(crate) async fn run_accepted_duplex_task(config: AcceptedDuplexTaskConfig) {
             event_sender: config.event_sender,
             command_receiver: config.command_receiver,
             outbound_controls: config.outbound_controls,
+            downstream,
         },
     )
     .await;
@@ -184,6 +190,7 @@ struct DuplexProtocolParams {
     event_sender: mpsc::Sender<(PeerId, PeerEvent)>,
     command_receiver: mpsc::Receiver<PeerCommand>,
     outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
+    downstream: super::DownstreamFlag,
 }
 
 /// Shared protocol wiring for duplex connections (both outbound and accepted).
@@ -198,6 +205,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         event_sender,
         mut command_receiver,
         outbound_controls,
+        downstream,
     } = params;
     // --- Initiator (client) sub-tasks ---
     let mut init_channels = conn.initiator_channels.into_iter();
@@ -290,6 +298,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         chain_store.clone(),
         peer_id,
         outbound_controls.clone(),
+        downstream.clone(),
     ));
     let bf_server = tokio::spawn(server_handlers::serve_blockfetch(
         bf_srv_send,
@@ -297,6 +306,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         chain_store.clone(),
         peer_id,
         outbound_controls.clone(),
+        downstream.clone(),
     ));
     let ts_server = tokio::spawn(server_handlers::serve_txsubmission(
         ts_srv_send,
@@ -314,6 +324,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         ka_srv_send,
         ka_srv_recv,
         peer_id,
+        downstream.clone(),
     ));
 
     // Conditionally spawn Leios server sub-tasks.

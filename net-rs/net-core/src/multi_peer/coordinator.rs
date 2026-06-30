@@ -171,6 +171,9 @@ struct PeerState {
     inbound_delay: Duration,
     /// Shared byte counters from this peer's mux connection.
     mux_stats: Option<Arc<crate::mux::MuxStats>>,
+    /// Shared downstream-promotion flag (cold/warm/hot) from this peer's
+    /// responder handlers; read at snapshot time. `None` until `Connected`.
+    downstream: Option<crate::peer::DownstreamFlag>,
     /// Last rollback point this peer was notified to, for dedup: we
     /// refuse to forward consecutive `RolledBack` events with the same
     /// point so a chatty peer can't flood the consensus channel.
@@ -404,6 +407,7 @@ impl Coordinator {
                 reconnect_backoff,
                 inbound_delay,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -420,7 +424,10 @@ impl Coordinator {
     /// Handle an event from a peer task.
     async fn handle_peer_event(&mut self, peer_id: PeerId, event: PeerEvent) {
         match event {
-            PeerEvent::Connected { mux_stats } => {
+            PeerEvent::Connected {
+                mux_stats,
+                downstream,
+            } => {
                 // The peer task's Connected event can race with our
                 // own remove_peer (which clears self.peers and aborts
                 // the task) — the buffered Connected message gets
@@ -432,6 +439,7 @@ impl Coordinator {
                     return;
                 };
                 peer.mux_stats = Some(mux_stats);
+                peer.downstream = Some(downstream);
                 let address = peer.address.clone();
                 self.emit_event(NetworkEvent::PeerConnected { peer_id, address });
             }
@@ -915,6 +923,15 @@ impl Coordinator {
                     .map(|(id, p)| {
                         let (bytes_sent, bytes_received) =
                             p.mux_stats.as_ref().map(|s| s.snapshot()).unwrap_or((0, 0));
+                        let downstream_state = p
+                            .downstream
+                            .as_ref()
+                            .map(|f| {
+                                crate::peer::DownstreamState::from_u8(
+                                    f.load(std::sync::atomic::Ordering::Relaxed),
+                                )
+                            })
+                            .unwrap_or(crate::peer::DownstreamState::Cold);
                         super::types::PeerInfo {
                             peer_id: *id,
                             address: p.address.clone(),
@@ -924,6 +941,7 @@ impl Coordinator {
                             inbound_delay: p.inbound_delay,
                             bytes_sent,
                             bytes_received,
+                            downstream_state,
                         }
                     })
                     .collect();
@@ -1111,6 +1129,7 @@ impl Coordinator {
                 reconnect_backoff: Duration::from_secs(0), // accepted peers don't reconnect
                 inbound_delay,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -1529,6 +1548,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -1621,6 +1641,7 @@ mod tests {
                     reconnect_backoff: Duration::from_secs(1),
                     inbound_delay: Duration::ZERO,
                     mux_stats: None,
+                    downstream: None,
                     last_rolled_back_to: None,
                 },
             );
@@ -1724,6 +1745,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -1793,6 +1815,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -1887,6 +1910,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -1940,6 +1964,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -2489,6 +2514,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
@@ -2937,6 +2963,7 @@ mod tests {
                 reconnect_backoff: Duration::from_secs(1),
                 inbound_delay: Duration::ZERO,
                 mux_stats: None,
+                downstream: None,
                 last_rolled_back_to: None,
             },
         );
