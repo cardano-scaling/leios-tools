@@ -701,12 +701,14 @@ pub(crate) async fn run_peer_task(mut config: PeerTaskConfig) {
         "peer connected"
     );
 
-    // Report successful connection.
+    // Report successful connection. Initiator-only peers run no responder
+    // protocols, so they can never be promoted — a Cold flag that stays cold.
     let _ = event_sender
         .send((
             peer_id,
             PeerEvent::Connected {
                 mux_stats: conn.running.stats.clone(),
+                downstream: super::new_downstream_flag(),
             },
         ))
         .await;

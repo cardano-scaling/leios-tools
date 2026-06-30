@@ -25,8 +25,13 @@ use std::sync::Arc;
 /// events. Used by both initiator and responder peer tasks.
 #[derive(Debug)]
 pub enum PeerEvent {
-    /// Connection established and handshake completed.
-    Connected { mux_stats: Arc<MuxStats> },
+    /// Connection established and handshake completed. `downstream` is the
+    /// shared per-connection promotion flag the responder handlers escalate
+    /// (cold→warm→hot); the coordinator reads it at snapshot time.
+    Connected {
+        mux_stats: Arc<MuxStats>,
+        downstream: super::DownstreamFlag,
+    },
 
     /// ChainSync: intersection found during `find_intersection`.
     IntersectionFound { point: Point },
