@@ -30,10 +30,12 @@
 //! [`MempoolState::admit_validated`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Display;
 use std::sync::Arc;
 use tracing::info;
 
 use crate::peer::PeerId;
+use crate::types::hex_prefix;
 
 /// Slot-window retention for EB-pinned bodies.  Holds wide enough that
 /// every active voting / certification window stays serveable; pruned
@@ -47,6 +49,21 @@ pub const DEFAULT_EB_RETENTION_SLOTS: u64 = 100;
 pub struct EbKey {
     pub slot: u64,
     pub hash: [u8; 32],
+}
+
+impl Display for EbKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.slot, hex_prefix(&self.hash))
+    }
+}
+
+impl EbKey {
+    pub fn new(slot: u64, hash: [u8; 32]) -> Self {
+        Self {
+            slot,
+            hash,
+        }
+    }
 }
 
 /// Opaque transaction identifier.  Conventionally Blake2b-256 of the
@@ -319,23 +336,30 @@ impl MempoolState {
     /// A block was applied — the listed txs are now on-chain.  Drops
     /// them from the mempool (their inputs are spent).  No-op for ids
     /// not in the mempool.
-    pub fn on_block_applied(&mut self, included_tx_ids: &[TxId]) {
+    pub fn on_block_applied(&mut self, eb_key: &EbKey, included_tx_ids: &[TxId]) {
         if included_tx_ids.is_empty() {
+            info!("Applying EB {eb_key}: empty EB, {} remaining txs in mempool", self.txs.len());
             return;
         }
+
         let included: BTreeSet<&TxId> = included_tx_ids.iter().collect();
         let before = self.txs.len();
         self.txs.retain(|tx| !included.contains(&tx.tx_id));
-        if self.txs.len() == before {
-            return;
+        let after = self.txs.len();
+        if after != before {
+            for tx_id in included_tx_ids {
+                self.tx_index.remove(tx_id);
+            }
+            self.total_bytes = self.txs.iter().map(|tx| tx.size as usize).sum();
+            for tx_id in included_tx_ids {
+                self.prune_from_peer_sets(tx_id);
+            }
         }
-        for tx_id in included_tx_ids {
-            self.tx_index.remove(tx_id);
-        }
-        self.total_bytes = self.txs.iter().map(|tx| tx.size as usize).sum();
-        for tx_id in included_tx_ids {
-            self.prune_from_peer_sets(tx_id);
-        }
+        info!(
+            "Applying EB {eb_key}: has {} txs, removed {} txs from mempool, {after} remaining txs",
+            included_tx_ids.len(),
+            before as i64 - after as i64
+        );
     }
 
     /// A block was rolled back.  Mempool entries that were dropped on
@@ -582,6 +606,7 @@ impl MempoolState {
         for tx in drained {
             self.eb_pinned.entry(tx.tx_id.clone()).or_insert(tx);
         }
+        info!("Inserting (locally produced) manifest {eb_key} with {} txs", manifest.len());
         self.eb_manifests.insert(eb_key, manifest.clone());
         let fx = self.bump_eb_slot(eb_key.slot);
         (manifest, fx)
@@ -924,7 +949,7 @@ mod tests {
             TxId::new_with_slice(&[1u8; 32]),
             TxId::new_with_slice(&[3u8; 32]),
         ];
-        s.on_block_applied(&included);
+        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &included);
         assert_eq!(s.len(), 1);
         assert_eq!(
             s.txs.front().unwrap().tx_id,
@@ -937,7 +962,7 @@ mod tests {
     fn on_block_applied_empty_is_noop() {
         let mut s = MempoolState::new(10);
         admit(&mut s, 1, 100);
-        s.on_block_applied(&[]);
+        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[]);
         assert_eq!(s.len(), 1);
     }
 
@@ -945,7 +970,7 @@ mod tests {
     fn on_block_applied_unknown_ids_is_noop() {
         let mut s = MempoolState::new(10);
         admit(&mut s, 1, 100);
-        s.on_block_applied(&[TxId::new_with_slice(&[99u8; 32])]);
+        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[TxId::new_with_slice(&[99u8; 32])]);
         assert_eq!(s.len(), 1);
     }
 
@@ -1057,7 +1082,7 @@ mod tests {
         admit(&mut s, 2, 100);
         let peer = pid(0);
         let _ = s.peek_unannounced_for_peer(peer, 10);
-        s.on_block_applied(&[TxId::new_with_slice(&[1u8; 32])]);
+        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[TxId::new_with_slice(&[1u8; 32])]);
         let advertised = s.peer_advertised.get(&peer).unwrap();
         assert!(!advertised.contains(&TxId::new_with_slice(&[1u8; 32])));
         assert!(advertised.contains(&TxId::new_with_slice(&[2u8; 32])));

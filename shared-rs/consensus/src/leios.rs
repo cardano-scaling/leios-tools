@@ -33,7 +33,7 @@ use crate::elections::{Elections, SlotEffect};
 use crate::fetch::{
     CandidateTracker, EbFetchPolicy, EbTxsFetchPolicy, LowestRttFirst, PeerRtt, UniformRtt,
 };
-use crate::mempool::{TxBody, TxId};
+use crate::mempool::{EbKey, TxBody, TxId};
 use crate::peer::PeerId;
 use crate::pipeline::PipelineConfig;
 use crate::types::Point;
@@ -222,6 +222,7 @@ pub enum LeiosEffect {
     RecordLeiosEbManifest {
         source: Option<PeerId>,
         point: Point,
+        eb_key: Option<EbKey>,
         tx_hashes: Vec<TxId>,
     },
 
@@ -899,7 +900,7 @@ impl LeiosState {
         &mut self,
         source: Option<PeerId>,
         point: Point,
-        manifest_hashes: Option<Vec<TxId>>,
+        manifest_hashes: Option<(Option<EbKey>, Vec<TxId>)>,
     ) -> Vec<LeiosEffect> {
         // EB-processing filter (t22 with `hide_eb_tx`): drop manifest + validate
         // processing for a filtered EB.
@@ -909,12 +910,13 @@ impl LeiosState {
         }
         self.in_flight.remove(&point);
         let mut fx = Vec::new();
-        if let (Some(hashes), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
-            self.eb_tx_hashes.insert(*hash, (*slot, hashes.clone()));
+        if let (Some((eb_key, tx_hashes)), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
+            self.eb_tx_hashes.insert(*hash, (*slot, tx_hashes.clone()));
             fx.push(LeiosEffect::RecordLeiosEbManifest {
                 source,
                 point: point.clone(),
-                tx_hashes: hashes,
+                eb_key,
+                tx_hashes,
             });
         }
         fx.push(LeiosEffect::ValidateEb { point });

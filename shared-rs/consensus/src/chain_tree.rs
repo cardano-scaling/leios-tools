@@ -38,7 +38,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
-
+use crate::mempool::EbKey;
 use crate::types::Point;
 
 /// A block entry in a chain tree snapshot, for UI display.
@@ -218,6 +218,16 @@ impl ChainTree {
     /// certify the EB this RB announced.
     pub fn announced_eb_hash_by(&self, hash: &[u8; 32]) -> Option<[u8; 32]> {
         self.nodes.get(hash).and_then(|n| n.announced_eb_hash)
+    }
+
+    /// Look up the EB Key (hash + slot) announced by the RB at `hash`, if any.
+    /// Drives the linear-Leios cert rule: the producer of the *next* RB can only
+    /// certify the EB this RB announced.
+    pub fn announced_eb_key_by(&self, hash: &[u8; 32]) -> Option<EbKey> {
+        self.nodes.get(hash).and_then(|n| Some(EbKey {
+            slot: n.slot,
+            hash: n.announced_eb_hash?
+        }))
     }
 
     /// Stash the tx-count of an EB once its manifest is known.  The

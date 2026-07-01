@@ -1719,6 +1719,9 @@ impl SharedConsensus {
                         out.schedule_cpu_task(CpuTask::RBBlockApplied(rb.clone()));
                     }
                 }
+                // Needed to update leios info for the certified EB. Sim does not use this path:
+                // the certified EB is applied through the RB-apply path.
+                PraosEffect::ApplyCertifiedLeiosBlock { .. } => {}
             }
         }
     }
