@@ -1570,7 +1570,7 @@ mod tests {
     fn on_eb_received_emits_record_and_validate() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
         let manifest = vec![tx_id(0xA0), tx_id(0xA1)];
-        let fx = state.on_eb_received(None, point(10, 1), Some(manifest.clone()));
+        let fx = state.on_eb_received(None, point(10, 1), Some((None, manifest.clone())));
         assert_eq!(fx.len(), 2);
         assert!(matches!(fx[0], LeiosEffect::RecordLeiosEbManifest { .. }));
         assert!(matches!(fx[1], LeiosEffect::ValidateEb { .. }));
@@ -1636,7 +1636,7 @@ mod tests {
         // hide_eb_tx + filtered (threshold 0) => on_eb_received produces nothing.
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
         with_tx_filter(&mut state, 0, 0, true);
-        let fx = state.on_eb_received(None, point(10, 1), Some(vec![tx_id(0xA0)]));
+        let fx = state.on_eb_received(None, point(10, 1), Some((None, vec![tx_id(0xA0)])));
         assert!(fx.is_empty());
     }
 

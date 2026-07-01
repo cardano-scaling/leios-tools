@@ -951,7 +951,7 @@ mod tests {
             TxId::new_with_slice(&[1u8; 32]),
             TxId::new_with_slice(&[3u8; 32]),
         ];
-        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &included);
+        s.on_block_applied(&Some(EbKey::new(0, [0u8; 32])), &included);
         assert_eq!(s.len(), 1);
         assert_eq!(
             s.txs.front().unwrap().tx_id,
@@ -964,7 +964,7 @@ mod tests {
     fn on_block_applied_empty_is_noop() {
         let mut s = MempoolState::new(10);
         admit(&mut s, 1, 100);
-        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[]);
+        s.on_block_applied(&Some(EbKey::new(0, [0u8; 32])), &[]);
         assert_eq!(s.len(), 1);
     }
 
@@ -972,7 +972,7 @@ mod tests {
     fn on_block_applied_unknown_ids_is_noop() {
         let mut s = MempoolState::new(10);
         admit(&mut s, 1, 100);
-        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[TxId::new_with_slice(&[99u8; 32])]);
+        s.on_block_applied(&Some(EbKey::new(0, [0u8; 32])), &[TxId::new_with_slice(&[99u8; 32])]);
         assert_eq!(s.len(), 1);
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
         admit(&mut s, 2, 100);
         let peer = pid(0);
         let _ = s.peek_unannounced_for_peer(peer, 10);
-        s.on_block_applied(&EbKey::new(0, [0u8; 32]), &[TxId::new_with_slice(&[1u8; 32])]);
+        s.on_block_applied(&Some(EbKey::new(0, [0u8; 32])), &[TxId::new_with_slice(&[1u8; 32])]);
         let advertised = s.peer_advertised.get(&peer).unwrap();
         assert!(!advertised.contains(&TxId::new_with_slice(&[1u8; 32])));
         assert!(advertised.contains(&TxId::new_with_slice(&[2u8; 32])));
