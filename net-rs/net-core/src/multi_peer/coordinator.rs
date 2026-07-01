@@ -101,6 +101,7 @@ use crate::peer::connect::{self, DuplexConnection};
 use crate::peer::duplex_task::{
     run_accepted_duplex_task, run_duplex_task, AcceptedDuplexTaskConfig, DuplexTaskConfig,
 };
+use crate::peer::server_handlers::TxDedup;
 use crate::peer::peer_task::{
     client_protocol_configs, run_peer_task, server_protocol_configs, PeerTaskConfig,
 };
@@ -109,6 +110,12 @@ use crate::peer::{ConnectionMode, PeerId};
 use crate::store::chain_store::ChainStore;
 use crate::store::leios_store::LeiosStore;
 use shared_consensus::mempool::{TxBody, TxId};
+
+/// Capacity of the node-wide tx-submission dedup set. Bounds the number of
+/// recently-seen tx ids retained to suppress cross-peer refetches; sized to
+/// comfortably exceed the distinct in-flight txs across every peer's
+/// acknowledgement window (each id is 32 bytes, so this is a few MB).
+const TX_DEDUP_CAP: usize = 131_072;
 
 /// Capacity of the per-peer command channel (coordinator → peer task).
 /// Large enough that a brief peer-task stall doesn't immediately force
@@ -250,6 +257,10 @@ struct Coordinator {
     /// connected match).  Empty in the common no-partition case, so the
     /// `contains`/`is_empty` checks are off the data path and free.
     blocklist: HashSet<String>,
+    /// Node-wide tx-submission dedup, shared into every peer's
+    /// `serve_txsubmission` so a tx pulled from one peer isn't re-fetched
+    /// (and re-hashed) from every other peer that offers it.
+    tx_dedup: Arc<Mutex<TxDedup>>,
 }
 
 impl Coordinator {
@@ -285,6 +296,7 @@ impl Coordinator {
             pending_removals: Vec::new(),
             leios_offer_dedup: OfferDedup::new(dedup_window),
             blocklist: HashSet::new(),
+            tx_dedup: Arc::new(Mutex::new(TxDedup::new(TX_DEDUP_CAP))),
         }
     }
 
@@ -369,6 +381,7 @@ impl Coordinator {
                 traffic_class_overrides: self.config.traffic_class_overrides.clone(),
                 scheduler_type: self.config.scheduler_type,
                 outbound_controls: self.config.outbound_controls.clone(),
+                tx_dedup: self.tx_dedup.clone(),
             };
             (
                 tokio::spawn(run_duplex_task(task_config)),
@@ -1150,6 +1163,7 @@ impl Coordinator {
             leios_enabled: self.config.leios_enabled,
             leios_store: self.leios_store.clone(),
             outbound_controls: self.config.outbound_controls.clone(),
+            tx_dedup: self.tx_dedup.clone(),
         };
 
         let task_handle = tokio::spawn(run_accepted_duplex_task(task_config));
