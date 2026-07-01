@@ -193,6 +193,31 @@ impl Protocol for TxSubmission {
 
 // --- Client helpers ---
 
+/// Acknowledge the oldest `ack` announced tx ids, dropping any of them that
+/// are still sitting in `pending_bodies`.
+///
+/// A tx leaves the flow-control window on ack. If the consumer acked it
+/// without ever requesting its body — the steady state for a deduplicating
+/// consumer that fetches each tx from a single peer and acks it on all the
+/// others — its body would otherwise be stranded in `pending_bodies` forever,
+/// an unbounded per-peer leak of `Arc<[u8]>` bodies. `announced` is a strict
+/// FIFO of the unacked window; `pending_bodies` is the not-yet-requested
+/// subset, so an acked id may or may not still be present.
+fn ack_and_prune(
+    announced: &mut VecDeque<PendingTx>,
+    pending_bodies: &mut VecDeque<PendingTx>,
+    ack: u16,
+) {
+    for _ in 0..ack {
+        let Some(acked) = announced.pop_front() else {
+            break;
+        };
+        if let Some(pos) = pending_bodies.iter().position(|p| p.tx_id == acked.tx_id) {
+            pending_bodies.remove(pos);
+        }
+    }
+}
+
 /// Run the client (tx provider) side of the TxSubmission protocol.
 ///
 /// Sends MsgInit, then responds to server requests by pulling transactions
@@ -217,10 +242,9 @@ pub async fn run_client(
 
         match msg {
             Message::MsgRequestTxIdsBlocking { ack, req } => {
-                // Acknowledge the first `ack` announced tx ids.
-                for _ in 0..ack {
-                    announced.pop_front();
-                }
+                // Acknowledge the first `ack` announced tx ids (and drop any
+                // acked-but-unrequested bodies — see `ack_and_prune`).
+                ack_and_prune(&mut announced, &mut pending_bodies, ack);
 
                 // Collect available txs from the channel + pending_bodies.
                 let mut new_txs: Vec<PendingTx> = Vec::new();
@@ -280,10 +304,9 @@ pub async fn run_client(
             }
 
             Message::MsgRequestTxIdsNonBlocking { ack, req } => {
-                // Acknowledge the first `ack` announced tx ids.
-                for _ in 0..ack {
-                    announced.pop_front();
-                }
+                // Acknowledge the first `ack` announced tx ids (and drop any
+                // acked-but-unrequested bodies — see `ack_and_prune`).
+                ack_and_prune(&mut announced, &mut pending_bodies, ack);
 
                 // Collect available txs (non-blocking).
                 let mut new_txs: Vec<PendingTx> = Vec::new();
@@ -538,6 +561,49 @@ mod tests {
             body: TxBody::new_with_vec(vec![id_byte; size]),
             size: size as u32,
         }
+    }
+
+    #[test]
+    fn ack_and_prune_drops_acked_unrequested_bodies() {
+        // Announce three txs; none requested yet.
+        let mut announced: VecDeque<PendingTx> = VecDeque::new();
+        let mut pending: VecDeque<PendingTx> = VecDeque::new();
+        for b in [1u8, 2, 3] {
+            let tx = make_test_tx(b, 64);
+            announced.push_back(tx.clone());
+            pending.push_back(tx);
+        }
+
+        // Consumer acks the first two WITHOUT requesting their bodies (the
+        // deduplicating-consumer steady state). Both must leave both queues —
+        // otherwise their bodies leak in `pending_bodies` forever.
+        ack_and_prune(&mut announced, &mut pending, 2);
+        assert_eq!(announced.len(), 1, "ack pops the window");
+        assert_eq!(
+            pending.len(),
+            1,
+            "acked-but-unrequested bodies must be pruned, not stranded"
+        );
+        assert_eq!(pending.front().unwrap().tx_id, make_test_tx(3, 64).tx_id);
+    }
+
+    #[test]
+    fn ack_and_prune_leaves_still_windowed_and_already_requested() {
+        let mut announced: VecDeque<PendingTx> = VecDeque::new();
+        let mut pending: VecDeque<PendingTx> = VecDeque::new();
+        for b in [1u8, 2] {
+            let tx = make_test_tx(b, 64);
+            announced.push_back(tx.clone());
+            pending.push_back(tx);
+        }
+        // Tx 1's body was already requested (removed from pending) before ack.
+        pending.pop_front();
+        // Ack tx 1: it's gone from pending already — prune is a no-op there,
+        // and tx 2 stays (still inside the unacked window).
+        ack_and_prune(&mut announced, &mut pending, 1);
+        assert_eq!(announced.len(), 1);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().unwrap().tx_id, make_test_tx(2, 64).tx_id);
     }
 
     #[tokio::test]
