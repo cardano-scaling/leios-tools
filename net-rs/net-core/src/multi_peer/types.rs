@@ -116,6 +116,9 @@ pub struct PeerInfo {
     pub inbound_delay: Duration,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// How far this (downstream) peer has promoted us as its upstream:
+    /// cold (connected) / warm (keepalive) / hot (pulling our chain).
+    pub downstream_state: crate::peer::DownstreamState,
 }
 
 /// Commands sent from the application to the coordinator.

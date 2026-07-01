@@ -146,6 +146,16 @@ pub enum PraosEffect {
     /// Submit a rollback to the ledger validator
     /// (`LedgerCommand::Rollback`).
     ValidatorRollback { target: Point },
+    /// Fetch an endorser block referenced by the RB chain (CIP-0164) — the
+    /// only trigger during historical sync, where EBs are not gossiped over
+    /// LeiosNotify. Emitted by `on_block_received` either on announcement (in
+    /// the volatile region, within `tip - k`) or on certification (in the
+    /// immutable region, where announced-but-uncertified EBs are skipped). The
+    /// EB's point is `(announcing-RB-slot, eb-hash)` — the same slot convention
+    /// as the certificate path. `peers` is the [`BlockFetchPolicy`]'s pick among
+    /// connected upstreams (any of which is on this chain); the I/O wrapper
+    /// issues a Leios block fetch to them.
+    FetchAnnouncedEb { eb_point: Point, peers: Vec<PeerId> },
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +330,13 @@ pub struct PraosState {
     /// (`apply_control`). Honest by default; actuators read it instead of
     /// calling behaviour hooks.
     pub control: crate::behaviour::tree::control::ControlSignal,
+
+    /// Highest producer tip (block number) any peer has reported via a
+    /// ChainSync RollForward `Tip` — i.e. our estimate of the network tip,
+    /// distinct from the sliding-window head in `peer_chains` (which tracks
+    /// our sync frontier during catch-up). Used to classify whether a block
+    /// is immutable (older than `tip - k`) for the EB-fetch trigger.
+    pub highest_tip_block_no: u64,
 }
 
 impl PraosState {
@@ -370,6 +387,7 @@ impl PraosState {
             block_policy,
             rtt,
             control: crate::behaviour::tree::control::ControlSignal::default(),
+            highest_tip_block_no: 0,
         }
     }
 
@@ -667,6 +685,12 @@ impl PraosState {
         header_slot: u64,
         header_prev_hash: Option<[u8; 32]>,
     ) {
+        // Track the network tip (highest producer tip seen). During catch-up
+        // the rolled-forward `header_block_no` is our sync frontier, but
+        // `tip_block_no` is the producer's actual tip — needed to tell whether
+        // a block is immutable (`tip - k`) for the EB-fetch trigger.
+        self.highest_tip_block_no = self.highest_tip_block_no.max(tip_block_no);
+
         // The announced header may be an ancestor of `tip` while a peer
         // catches up.  Use whichever pair matches.
         let (hash, point) = if header_block_no == tip_block_no {
@@ -958,6 +982,61 @@ impl PraosState {
             eb_certified = certified_eb,
             "block received and cached"
         );
+        // CIP-0164: fetch announced EBs (not gossiped over LeiosNotify during
+        // historical sync, so the RB chain is the only trigger). WHEN to fetch
+        // depends on chain region, because an EB can be announced and then
+        // dropped (never certified) — and a dropped EB has no historical use:
+        //   - Volatile region (within k of the network tip): fetch on
+        //     ANNOUNCEMENT — we can't yet tell which EBs will be certified, so
+        //     fetch every one.
+        //   - Immutable region (older than tip-k): fetch on CERTIFICATION only
+        //     — skip announced-but-dropped EBs. The certificate for an EB rides
+        //     in the *next* RB, so we fetch when a block certifies its parent's
+        //     announced EB.
+        // The decision is keyed on the *announcer's* region; a block can both
+        // announce its own EB and certify its parent's, so these are two
+        // independent checks. The EB point is (announcing-RB-slot, hash).
+        // `on_block_received` dedups re-delivery, and in_flight/cache dedup the
+        // fetch, so an EB is fetched at most once.
+        let immutable_max_bn = self
+            .highest_tip_block_no
+            .saturating_sub(self.security_param_k);
+        // (1) Volatile announcer: fetch this block's own announced EB now.
+        if let Some(eb_hash) = announced_eb_hash {
+            if block_no > immutable_max_bn {
+                self.push_eb_fetch(
+                    Point::Specific {
+                        slot,
+                        hash: eb_hash,
+                    },
+                    &mut fx,
+                );
+            }
+        }
+        // (2) Certifier: this block certifies an EB; fetch it if the announcer
+        //     (the parent RB) is immutable. Prefer the decoded body
+        //     certificate's (slot, hash) — authoritative and needs no parent
+        //     lookup, so it's robust to out-of-order body delivery (certifier
+        //     received before announcer). Fall back to resolving via the
+        //     parent's announced EB for the `array(0)` "pending" placeholder
+        //     cert, which carries no hash (still needs the parent cached).
+        let cert_eb = parsed_body
+            .eb_certificate
+            .as_ref()
+            .map(|c| (c.eb_slot, c.eb_hash))
+            .or_else(|| self.parent_announced_eb_for_cert(&point));
+        if let Some((eb_slot, eb_hash)) = cert_eb {
+            let announcer_bn = block_no.saturating_sub(1);
+            if announcer_bn <= immutable_max_bn {
+                self.push_eb_fetch(
+                    Point::Specific {
+                        slot: eb_slot,
+                        hash: eb_hash,
+                    },
+                    &mut fx,
+                );
+            }
+        }
         self.try_switch_and_execute_internal(hash, &mut fx);
         (fx, lx)
     }
@@ -2089,6 +2168,19 @@ impl PraosState {
         self.block_policy
             .pick(point, &candidates, self.rtt.as_ref())
     }
+
+    /// Push a `FetchAnnouncedEb` for `eb_point`, picking the fetch peer(s) by
+    /// RTT across connected upstreams (any of which is on this chain). No-op if
+    /// no peer is connected.
+    fn push_eb_fetch(&self, eb_point: Point, fx: &mut Vec<PraosEffect>) {
+        let candidates: Vec<PeerId> = self.peer_chains.keys().copied().collect();
+        let peers = self
+            .block_policy
+            .pick(&eb_point, &candidates, self.rtt.as_ref());
+        if !peers.is_empty() {
+            fx.push(PraosEffect::FetchAnnouncedEb { eb_point, peers });
+        }
+    }
 }
 
 /// Encode a 32-byte hash as a 64-char lowercase hex string with one
@@ -2834,6 +2926,185 @@ mod tests {
             .any(|e| matches!(e, PraosEffect::ValidatorApply { .. })));
         assert!(s.block_cache.contains_key(&h(1)));
         assert_eq!(s.chain_tree.block_number(&h(1)), Some(1));
+    }
+
+    #[test]
+    fn on_block_received_announced_eb_emits_fetch() {
+        // Volatile region (block within tip-k): an RB announcing an EB must
+        // trigger a fetch at (this RB's slot, announced hash) from a connected
+        // upstream. Here tip≈2, k=100 ⇒ boundary 0, so block 2 is volatile.
+        let mut s = fresh();
+        let pid = PeerId(7);
+        // A connected upstream (populates peer_chains → fetch candidate).
+        s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
+
+        let eb_hash = [0xEE; 32];
+        let mut info = hi(2, 101, Some(1));
+        info.announced_eb_hash = Some(eb_hash);
+        let fx = s.on_block_received(
+            pt(101, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(info),
+            ParsedBodyInfo::default(),
+        );
+
+        let fetched = fx.iter().find_map(|e| match e {
+            PraosEffect::FetchAnnouncedEb { eb_point, peers } => {
+                Some((eb_point.clone(), peers.clone()))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            fetched,
+            Some((
+                Point::Specific {
+                    slot: 101,
+                    hash: eb_hash
+                },
+                vec![pid]
+            )),
+            "announced EB must be fetched at (RB slot, EB hash) from the connected peer"
+        );
+    }
+
+    #[test]
+    fn on_block_received_no_announced_eb_no_fetch() {
+        // An RB with no announced EB must not emit a fetch.
+        let mut s = fresh();
+        let pid = PeerId(7);
+        s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
+        let fx = s.on_block_received(
+            pt(101, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(2, 101, Some(1))), // announced_eb_hash = None
+            ParsedBodyInfo::default(),
+        );
+        assert!(!fx
+            .iter()
+            .any(|e| matches!(e, PraosEffect::FetchAnnouncedEb { .. })));
+    }
+
+    #[test]
+    fn on_block_received_immutable_announced_eb_not_fetched_without_cert() {
+        // Immutable region (block older than tip-k): an announced-but-not-yet-
+        // certified EB must NOT be fetched — it may be a dropped EB with no
+        // historical use. Network tip 1000, k=100 ⇒ boundary 900; block 500 is
+        // immutable.
+        let mut s = fresh();
+        let pid = PeerId(7);
+        // Peer reports a network tip of 1000 (sets highest_tip_block_no).
+        s.record_peer_tip(pid, pt(9000, 9), 1000, 1000, h(9), 9000, None);
+
+        let mut info = hi(500, 5000, None);
+        info.announced_eb_hash = Some([0xEE; 32]); // announces, but not certified
+        let fx = s.on_block_received(
+            pt(5000, 5),
+            vec![0xAA],
+            vec![0xBB],
+            Some(info),
+            ParsedBodyInfo::default(),
+        );
+        assert!(
+            !fx.iter()
+                .any(|e| matches!(e, PraosEffect::FetchAnnouncedEb { .. })),
+            "immutable announced-but-uncertified EB must not be fetched"
+        );
+    }
+
+    #[test]
+    fn on_block_received_immutable_eb_fetched_on_certification() {
+        // Immutable region: an EB is fetched only when a later RB certifies it.
+        // Parent P (block 500, slot 5000) announces EB_p; child C (block 501)
+        // certifies it. The fetch fires on C, at (P.slot, EB_p hash).
+        let mut s = fresh();
+        let pid = PeerId(7);
+        s.record_peer_tip(pid, pt(9000, 9), 1000, 1000, h(9), 9000, None);
+
+        // P announces EB_p (immutable ⇒ no fetch on its own arrival).
+        let eb_p = [0xEE; 32];
+        let mut p_info = hi(500, 5000, None);
+        p_info.announced_eb_hash = Some(eb_p);
+        let fx_p = s.on_block_received(
+            pt(5000, 1),
+            vec![0xAA],
+            vec![0xBB],
+            Some(p_info),
+            ParsedBodyInfo::default(),
+        );
+        assert!(
+            !fx_p
+                .iter()
+                .any(|e| matches!(e, PraosEffect::FetchAnnouncedEb { .. })),
+            "immutable announcer must not fetch on announcement"
+        );
+
+        // C (child of P) certifies P's announced EB.
+        let mut c_info = hi(501, 5001, Some(1)); // prev = P (h(1))
+        c_info.certified_eb = true;
+        let fx_c = s.on_block_received(
+            pt(5001, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(c_info),
+            ParsedBodyInfo::default(),
+        );
+        let fetched = fx_c.iter().find_map(|e| match e {
+            PraosEffect::FetchAnnouncedEb { eb_point, .. } => Some(eb_point.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            fetched,
+            Some(Point::Specific {
+                slot: 5000,
+                hash: eb_p
+            }),
+            "certifying block must fetch its parent's announced EB at (parent slot, EB hash)"
+        );
+    }
+
+    #[test]
+    fn on_block_received_cert_via_body_cert_fetched_out_of_order() {
+        // Out-of-order delivery: a certifier arrives before its announcer
+        // (parent NOT in the cache). With a real decoded body certificate the
+        // EB is still fetched, at the cert's own (slot, hash) — no parent
+        // lookup needed. This is what the body-cert path buys over resolving
+        // via the parent's announced EB (which would fail here).
+        let mut s = fresh();
+        let pid = PeerId(7);
+        s.record_peer_tip(pid, pt(9000, 9), 1000, 1000, h(9), 9000, None);
+
+        let eb_hash = [0xAB; 32];
+        let body = ParsedBodyInfo {
+            eb_certificate: Some(LeiosCertSummary {
+                eb_slot: 5000,
+                eb_hash,
+            }),
+            ..ParsedBodyInfo::default()
+        };
+        // Certifier at block 501 (announcer bn 500 <= immutable_max 900), with
+        // NO parent cached. prev_hash is irrelevant: the body cert resolves the
+        // EB directly, short-circuiting the parent-announced fallback.
+        let fx = s.on_block_received(
+            pt(5001, 2),
+            vec![0xAA],
+            vec![0xBB],
+            Some(hi(501, 5001, None)),
+            body,
+        );
+        let fetched = fx.iter().find_map(|e| match e {
+            PraosEffect::FetchAnnouncedEb { eb_point, .. } => Some(eb_point.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            fetched,
+            Some(Point::Specific {
+                slot: 5000,
+                hash: eb_hash
+            }),
+            "real body cert must fetch the EB by its own (slot, hash) without the parent cached"
+        );
     }
 
     #[test]

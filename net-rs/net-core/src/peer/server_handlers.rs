@@ -39,7 +39,7 @@ use crate::protocols::{Role, Runner};
 
 use super::types::PeerEvent;
 use super::PeerId;
-use crate::store::chain_store::ChainStore;
+use crate::store::chain_store::{ChainStore, NextForCursor};
 use crate::store::leios_store::LeiosStore;
 
 /// Serve ChainSync for one connection.
@@ -58,9 +58,12 @@ pub async fn serve_chainsync(
     store: Arc<ChainStore>,
     peer: PeerId,
     controls: Option<OutboundControls>,
+    downstream: super::DownstreamFlag,
 ) {
     let mut runner = Runner::<ChainSync>::new(Role::Server, cs_send, cs_recv);
-    let mut read_index: Option<usize> = None;
+    // The follower's position is tracked solely by point; the index is
+    // re-resolved per request (`next_after_cursor`) because capacity eviction
+    // renumbers the store.
     let mut read_point: Option<Point> = None;
     let mut subscription = store.subscribe();
     let mut first_recv = true;
@@ -87,6 +90,8 @@ pub async fn serve_chainsync(
 
         match msg {
             CsMsg::MsgFindIntersect { points } => {
+                // Downstream is pulling our chain → HOT.
+                super::mark_downstream_hot(&downstream);
                 tracing::info!(
                     peer = peer.0,
                     candidates = points.len(),
@@ -94,7 +99,6 @@ pub async fn serve_chainsync(
                 );
                 match store.find_intersection(&points) {
                     Some((point, tip)) => {
-                        read_index = store.index_of(&point);
                         read_point = Some(point.clone());
                         let _ = runner.send(&CsMsg::MsgIntersectFound { point, tip }).await;
                     }
@@ -105,37 +109,40 @@ pub async fn serve_chainsync(
                 }
             }
             CsMsg::MsgRequestNext => {
-                // Check if our read pointer was invalidated by a rollback.
-                // Point-matching detects the case where a rollback + re-append
-                // leaves the same index occupied by a different block.
-                if !store.is_valid_index(read_index, &read_point) {
-                    // Roll back to the fork point (where the chain was truncated).
-                    let rollback_target = store.last_rollback_target().unwrap_or(Point::Origin);
-                    let tip = store.tip();
-                    read_index = store.index_of(&rollback_target);
-                    read_point = Some(rollback_target.clone());
-                    let _ = runner
-                        .send(&CsMsg::MsgRollBackward {
-                            point: rollback_target,
-                            tip,
-                        })
-                        .await;
-                } else {
-                    let pending = store.blocks_after(read_index);
-                    if let Some(block) = pending.first() {
-                        read_index = store.index_of(&block.point);
+                // Resolve the cursor by point. Capacity eviction `pop_front`s
+                // the oldest blocks and renumbers the rest, so a still-present
+                // cursor must not be mistaken for a rollback — only a
+                // genuinely-absent cursor point (real rollback / truncation, or
+                // eviction past the window) is one.
+                match store.next_after_cursor(&read_point) {
+                    NextForCursor::Gone => {
+                        // Roll back to a servable target — never an evicted one,
+                        // which would re-resolve to Gone forever (see
+                        // `servable_rollback_target`).
+                        let rollback_target = store.servable_rollback_target();
+                        let tip = store.tip();
+                        read_point = Some(rollback_target.clone());
+                        let _ = runner
+                            .send(&CsMsg::MsgRollBackward {
+                                point: rollback_target,
+                                tip,
+                            })
+                            .await;
+                    }
+                    NextForCursor::Next(block) => {
                         read_point = Some(block.point.clone());
                         let tip = store.tip();
                         send_roll_forward(
                             &mut runner,
-                            block.header.clone(),
+                            block.header,
                             &block.point,
                             tip,
                             peer,
                             controls.as_ref(),
                         )
                         .await;
-                    } else {
+                    }
+                    NextForCursor::AtTip => {
                         tracing::info!(
                             peer = peer.0,
                             "chainsync: sending MsgAwaitReply (entering StMustReply — no chain past downstream's intersection)"
@@ -146,36 +153,35 @@ pub async fn serve_chainsync(
                             if subscription.changed().await.is_err() {
                                 return;
                             }
-                            // After waking, check for rollback first.
-                            if !store.is_valid_index(read_index, &read_point) {
-                                let rollback_target =
-                                    store.last_rollback_target().unwrap_or(Point::Origin);
-                                let tip = store.tip();
-                                read_index = store.index_of(&rollback_target);
-                                read_point = Some(rollback_target.clone());
-                                let _ = runner
-                                    .send(&CsMsg::MsgRollBackward {
-                                        point: rollback_target,
+                            // After waking, re-resolve atomically (see above).
+                            match store.next_after_cursor(&read_point) {
+                                NextForCursor::Gone => {
+                                    let rollback_target = store.servable_rollback_target();
+                                    let tip = store.tip();
+                                    read_point = Some(rollback_target.clone());
+                                    let _ = runner
+                                        .send(&CsMsg::MsgRollBackward {
+                                            point: rollback_target,
+                                            tip,
+                                        })
+                                        .await;
+                                    break;
+                                }
+                                NextForCursor::Next(block) => {
+                                    read_point = Some(block.point.clone());
+                                    let tip = store.tip();
+                                    send_roll_forward(
+                                        &mut runner,
+                                        block.header,
+                                        &block.point,
                                         tip,
-                                    })
+                                        peer,
+                                        controls.as_ref(),
+                                    )
                                     .await;
-                                break;
-                            }
-                            let pending = store.blocks_after(read_index);
-                            if let Some(block) = pending.first() {
-                                read_index = store.index_of(&block.point);
-                                read_point = Some(block.point.clone());
-                                let tip = store.tip();
-                                send_roll_forward(
-                                    &mut runner,
-                                    block.header.clone(),
-                                    &block.point,
-                                    tip,
-                                    peer,
-                                    controls.as_ref(),
-                                )
-                                .await;
-                                break;
+                                    break;
+                                }
+                                NextForCursor::AtTip => {}
                             }
                         }
                     }
@@ -283,6 +289,7 @@ pub async fn serve_blockfetch(
     store: Arc<ChainStore>,
     peer: PeerId,
     controls: Option<OutboundControls>,
+    downstream: super::DownstreamFlag,
 ) {
     let mut runner = Runner::<BlockFetch>::new(Role::Server, bf_send, bf_recv);
     let mut first_recv = true;
@@ -309,6 +316,8 @@ pub async fn serve_blockfetch(
 
         match msg {
             BfMsg::MsgRequestRange { from, to } => {
+                // Downstream is fetching block bodies from us → HOT.
+                super::mark_downstream_hot(&downstream);
                 tracing::info!(
                     peer = peer.0,
                     %from,
@@ -380,7 +389,12 @@ fn lookup_variant_body(
 /// On exit, the task drops its ingress channel.  The outer duplex_task
 /// watches `ka_server`'s JoinHandle and tears down the whole connection
 /// when this function returns — that's the watchdog's actual effect.
-pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerId) {
+pub async fn serve_keepalive(
+    ka_send: CodecSend,
+    ka_recv: CodecRecv,
+    peer: PeerId,
+    downstream: super::DownstreamFlag,
+) {
     let mut runner = Runner::<KeepAlive>::new(Role::Server, ka_send, ka_recv);
     tracing::info!(
         peer = peer.0,
@@ -403,10 +417,14 @@ pub async fn serve_keepalive(ka_send: CodecSend, ka_recv: CodecRecv, peer: PeerI
                 // rounds drop to debug to avoid one log per ~10s per
                 // active peer.
                 if msg_count == 1 {
+                    // Downstream started keepalive → it has promoted us to
+                    // WARM. (Hot is when it opens ChainSync/BlockFetch to pull
+                    // our chain — see serve_chainsync / serve_blockfetch.)
+                    super::mark_downstream_warm(&downstream);
                     tracing::info!(
                         peer = peer.0,
                         cookie,
-                        "cardano-keepalive: first MsgKeepAlive received (downstream is now hot)"
+                        "cardano-keepalive: first MsgKeepAlive received (downstream warm)"
                     );
                 } else {
                     tracing::debug!(
@@ -1157,6 +1175,7 @@ mod tests {
             store,
             PeerId(0),
             None,
+            crate::peer::new_downstream_flag(),
         ));
 
         // Client: find intersection at Origin.
@@ -1209,6 +1228,7 @@ mod tests {
             store,
             PeerId(0),
             None,
+            crate::peer::new_downstream_flag(),
         ));
 
         let mut client = Runner::<ChainSync>::new(Role::Client, client_send, client_recv);
@@ -1263,6 +1283,7 @@ mod tests {
             store,
             PeerId(0),
             None,
+            crate::peer::new_downstream_flag(),
         ));
 
         let mut client = Runner::<BlockFetch>::new(Role::Client, client_send, client_recv);
@@ -1298,7 +1319,12 @@ mod tests {
         let ((client_send, client_recv), (server_send, server_recv), mux_a, mux_b) =
             mux_pair_for_protocol(&ka_proto);
 
-        let server_handle = tokio::spawn(serve_keepalive(server_send, server_recv, PeerId(0)));
+        let server_handle = tokio::spawn(serve_keepalive(
+            server_send,
+            server_recv,
+            PeerId(0),
+            crate::peer::new_downstream_flag(),
+        ));
 
         let mut client = Runner::<KeepAlive>::new(Role::Client, client_send, client_recv);
         let rtt = keepalive::keep_alive(&mut client, 42).await.unwrap();
