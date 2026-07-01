@@ -1002,11 +1002,11 @@ impl PraosState {
             .highest_tip_block_no
             .saturating_sub(self.security_param_k);
         // (1) Volatile announcer: fetch this block's own announced EB now.
-        if let Some(eb_hash) = announced_eb_hash {
-            if block_no > immutable_max_bn {
+        if let Some(eb_hash) = header.announced_eb_hash {
+            if header.block_number > immutable_max_bn {
                 self.push_eb_fetch(
                     Point::Specific {
-                        slot,
+                        slot: header.slot,
                         hash: eb_hash,
                     },
                     &mut fx,
@@ -1026,7 +1026,7 @@ impl PraosState {
             .map(|c| (c.eb_slot, c.eb_hash))
             .or_else(|| self.parent_announced_eb_for_cert(&point));
         if let Some((eb_slot, eb_hash)) = cert_eb {
-            let announcer_bn = block_no.saturating_sub(1);
+            let announcer_bn = header.block_number.saturating_sub(1);
             if announcer_bn <= immutable_max_bn {
                 self.push_eb_fetch(
                     Point::Specific {
@@ -1751,7 +1751,7 @@ impl PraosState {
                 let walk: HashSet<[u8; 32]> = walk_result.chain.iter().copied().collect();
                 let all_on_chain = replay_hashes.iter().all(|h| walk.contains(h));
                 if !all_on_chain {
-                    tracing::debug!(
+                    debug!(
                         node_id = %self.node_id,
                         %peer_id,
                         tip_block_no = candidate_tip.block_no,
@@ -2046,7 +2046,7 @@ impl PraosState {
                     self.queued_validator_tip = Some(parent_hash);
                 } else {
                     let hex = |h: &[u8; 32]| format!("{:02x}{:02x}", h[30], h[31]);
-                    tracing::debug!(
+                    debug!(
                         node_id = %self.node_id,
                         parent = hex(&parent_hash),
                         queued_tip = self
@@ -2941,7 +2941,7 @@ mod tests {
         let eb_hash = [0xEE; 32];
         let mut info = hi(2, 101, Some(1));
         info.announced_eb_hash = Some(eb_hash);
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(101, 2),
             vec![0xAA],
             vec![0xBB],
@@ -2974,7 +2974,7 @@ mod tests {
         let mut s = fresh();
         let pid = PeerId(7);
         s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(101, 2),
             vec![0xAA],
             vec![0xBB],
@@ -2999,7 +2999,7 @@ mod tests {
 
         let mut info = hi(500, 5000, None);
         info.announced_eb_hash = Some([0xEE; 32]); // announces, but not certified
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(5000, 5),
             vec![0xAA],
             vec![0xBB],
@@ -3026,7 +3026,7 @@ mod tests {
         let eb_p = [0xEE; 32];
         let mut p_info = hi(500, 5000, None);
         p_info.announced_eb_hash = Some(eb_p);
-        let fx_p = s.on_block_received(
+        let (fx_p, _lx_p) = s.on_block_received(
             pt(5000, 1),
             vec![0xAA],
             vec![0xBB],
@@ -3043,7 +3043,7 @@ mod tests {
         // C (child of P) certifies P's announced EB.
         let mut c_info = hi(501, 5001, Some(1)); // prev = P (h(1))
         c_info.certified_eb = true;
-        let fx_c = s.on_block_received(
+        let (fx_c, _lx_c) = s.on_block_received(
             pt(5001, 2),
             vec![0xAA],
             vec![0xBB],
@@ -3086,7 +3086,7 @@ mod tests {
         // Certifier at block 501 (announcer bn 500 <= immutable_max 900), with
         // NO parent cached. prev_hash is irrelevant: the body cert resolves the
         // EB directly, short-circuiting the parent-announced fallback.
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(5001, 2),
             vec![0xAA],
             vec![0xBB],
