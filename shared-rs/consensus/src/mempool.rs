@@ -336,8 +336,9 @@ impl MempoolState {
     /// A block was applied — the listed txs are now on-chain.  Drops
     /// them from the mempool (their inputs are spent).  No-op for ids
     /// not in the mempool.
-    pub fn on_block_applied(&mut self, eb_key: &EbKey, included_tx_ids: &[TxId]) {
+    pub fn on_block_applied(&mut self, eb_key: &Option<EbKey>, included_tx_ids: &[TxId]) {
         if included_tx_ids.is_empty() {
+            let eb_key = eb_key.map(|k| k.to_string()).unwrap_or("(none)".to_string());
             info!("Applying EB {eb_key}: empty EB, {} remaining txs in mempool", self.txs.len());
             return;
         }
@@ -355,6 +356,7 @@ impl MempoolState {
                 self.prune_from_peer_sets(tx_id);
             }
         }
+        let eb_key = eb_key.map(|k| k.to_string()).unwrap_or("(none)".to_string());
         info!(
             "Applying EB {eb_key}: has {} txs, removed {} txs from mempool, {after} remaining txs",
             included_tx_ids.len(),
