@@ -32,6 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Display;
 use std::sync::Arc;
+use serde::Serialize;
 use tracing::info;
 
 use crate::peer::PeerId;
@@ -241,6 +242,48 @@ pub struct MempoolState {
     /// (`apply_control`). Honest by default; actuators read it instead of
     /// calling behaviour hooks.
     pub control: crate::behaviour::tree::control::ControlSignal,
+}
+
+/// Snapshot of the sizes of every internal mempool collection, plus the
+/// byte pools that dominate its footprint (`total_bytes` for the free
+/// pool, `eb_pinned_bytes` for the EB-pinned pool).  Mirrors
+/// `PraosStateSizes`; emitted per slot via telemetry so mempool memory
+/// can be plotted independently of run length — the free/EB-pinned byte
+/// pools are the mempool's real footprint and were previously invisible
+/// to the structured `MemorySizes` event.
+#[derive(Debug, Clone, Serialize)]
+pub struct MempoolStateSizes {
+    /// Free-pool transaction count (`txs`).
+    pub txs: usize,
+    /// Membership index size (`tx_index`).
+    pub tx_index: usize,
+    /// Bytes held in the free pool.
+    pub total_bytes: usize,
+    /// Free-pool count ceiling (FIFO eviction above this).
+    pub capacity: usize,
+    /// Peers with a non-empty advertised set.
+    pub peer_advertised: usize,
+    /// Total advertised-set entries across all peers.
+    pub peer_advertised_total: usize,
+    /// Largest single-peer advertised set.
+    pub peer_advertised_max: usize,
+    /// Peers with a non-empty owed set.
+    pub peer_unannounced: usize,
+    /// Total owed-set entries across all peers.
+    pub peer_unannounced_total: usize,
+    /// Largest single-peer owed set.
+    pub peer_unannounced_max: usize,
+    /// Bodies currently with the validator.
+    pub pending_validation: usize,
+    /// Retained EB manifests.
+    pub eb_manifests: usize,
+    /// Total tx-hash entries across all retained manifests.
+    pub eb_manifest_entries_total: usize,
+    /// EB-pinned body count.
+    pub eb_pinned: usize,
+    /// Bytes held by EB-pinned bodies — untracked before this and the
+    /// first place to look when node RSS climbs.
+    pub eb_pinned_bytes: usize,
 }
 
 impl MempoolState {
@@ -535,11 +578,11 @@ impl MempoolState {
         self.txs.is_empty()
     }
 
-    /// Emit an `info!` line summarising the sizes of every internal
-    /// collection.  Used by adapters to monitor memory growth — if any
-    /// collection grows without bound across consecutive lines, that's
-    /// the leak.
-    pub fn log_state_sizes(&self, node_id: &str) {
+    /// Snapshot the sizes of every internal collection plus the free and
+    /// EB-pinned byte pools.  Used by adapters to emit per-slot telemetry
+    /// (the structured `MemorySizes` event) and by `log_state_sizes` for
+    /// the periodic info line.
+    pub fn state_sizes(&self) -> MempoolStateSizes {
         let peer_advertised_total: usize = self.peer_advertised.values().map(|s| s.len()).sum();
         let peer_advertised_max: usize = self
             .peer_advertised
@@ -555,21 +598,49 @@ impl MempoolState {
             .max()
             .unwrap_or(0);
         let eb_manifest_entries_total: usize = self.eb_manifests.values().map(|v| v.len()).sum();
-        info!(
-            node_id,
-            txs = self.txs.len(),
-            tx_index = self.tx_index.len(),
-            total_bytes = self.total_bytes,
-            peer_advertised = self.peer_advertised.len(),
+        let eb_pinned_bytes: usize = self.eb_pinned.values().map(|tx| tx.size as usize).sum();
+        MempoolStateSizes {
+            txs: self.txs.len(),
+            tx_index: self.tx_index.len(),
+            total_bytes: self.total_bytes,
+            capacity: self.capacity,
+            peer_advertised: self.peer_advertised.len(),
             peer_advertised_total,
             peer_advertised_max,
-            peer_unannounced = self.peer_unannounced.len(),
+            peer_unannounced: self.peer_unannounced.len(),
             peer_unannounced_total,
             peer_unannounced_max,
-            pending_validation = self.pending_validation.len(),
-            eb_manifests = self.eb_manifests.len(),
+            pending_validation: self.pending_validation.len(),
+            eb_manifests: self.eb_manifests.len(),
             eb_manifest_entries_total,
-            eb_pinned = self.eb_pinned.len(),
+            eb_pinned: self.eb_pinned.len(),
+            eb_pinned_bytes,
+        }
+    }
+
+    /// Emit an `info!` line summarising the sizes of every internal
+    /// collection.  Used by adapters to monitor memory growth — if any
+    /// collection grows without bound across consecutive lines, that's
+    /// the leak.
+    pub fn log_state_sizes(&self, node_id: &str) {
+        let s = self.state_sizes();
+        info!(
+            node_id,
+            txs = s.txs,
+            tx_index = s.tx_index,
+            total_bytes = s.total_bytes,
+            capacity = s.capacity,
+            peer_advertised = s.peer_advertised,
+            peer_advertised_total = s.peer_advertised_total,
+            peer_advertised_max = s.peer_advertised_max,
+            peer_unannounced = s.peer_unannounced,
+            peer_unannounced_total = s.peer_unannounced_total,
+            peer_unannounced_max = s.peer_unannounced_max,
+            pending_validation = s.pending_validation,
+            eb_manifests = s.eb_manifests,
+            eb_manifest_entries_total = s.eb_manifest_entries_total,
+            eb_pinned = s.eb_pinned,
+            eb_pinned_bytes = s.eb_pinned_bytes,
             "mempool state sizes"
         );
     }
@@ -821,6 +892,23 @@ mod tests {
     fn admit(state: &mut MempoolState, id: u8, size: u32) -> Vec<MempoolEffect> {
         let (tx_id, body, sz) = tx(id, size);
         state.admit_validated(tx_id, body, sz)
+    }
+
+    #[test]
+    fn state_sizes_reports_free_pool_count_and_bytes() {
+        let mut s = MempoolState::new(10);
+        assert_eq!(s.state_sizes().txs, 0);
+        assert_eq!(s.state_sizes().total_bytes, 0);
+        admit(&mut s, 1, 100);
+        admit(&mut s, 2, 250);
+        let sizes = s.state_sizes();
+        assert_eq!(sizes.txs, 2);
+        assert_eq!(sizes.tx_index, 2);
+        assert_eq!(sizes.total_bytes, 350, "free-pool bytes = sum of tx sizes");
+        assert_eq!(sizes.capacity, 10);
+        // Nothing pinned under an EB yet.
+        assert_eq!(sizes.eb_pinned, 0);
+        assert_eq!(sizes.eb_pinned_bytes, 0);
     }
 
     // -- on_tx_received → ValidateTx dance ---------------------------------
