@@ -1692,6 +1692,10 @@ impl SharedConsensus {
                 // handshake; fetch routing through shared-consensus's pluggable
                 // policy isn't wired here yet.
                 PraosEffect::FetchBlockRange { .. } => {}
+                // Same reason as FetchBlockRange: the sim diffuses EBs via its
+                // own announce/request handshake, so shared-consensus's
+                // historical-sync EB fetch routing isn't wired here.
+                PraosEffect::FetchAnnouncedEb { .. } => {}
                 // No ChainSync mini-protocol in the sim.
                 PraosEffect::ReIntersect { .. } => {}
                 // Sim's chain-state mirror is maintained inline by the
