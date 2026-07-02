@@ -8,7 +8,9 @@
 //! tx hash set in wire order (sizes are ignored — the consumer only needs the
 //! hash set + order for bitmap indexing).
 
-use shared_consensus::mempool::TxId;
+use shared_consensus::mempool::{EbKey, TxId};
+use shared_consensus::Point;
+use crate::blake2b_256;
 
 /// Maximum number of tx-hash entries accepted in an overflow EB manifest.
 ///
@@ -25,7 +27,7 @@ pub const MAX_OVERFLOW_EB_TXS: usize = 65_536;
 /// the referenced tx hashes in wire order. Returns `None` if the blob isn't a
 /// well-formed manifest map (32-byte keys, integer values) or declares more
 /// than [`MAX_OVERFLOW_EB_TXS`] entries. Sizes are ignored.
-pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
+pub fn decode_overflow_eb(point: &Point, blob: &[u8]) -> Option<(Option<EbKey>, Vec<TxId>)> {
     fn read_hash(dec: &mut minicbor::Decoder) -> Option<TxId> {
         let bytes = dec.bytes().ok()?;
         if bytes.len() != 32 {
@@ -64,7 +66,15 @@ pub fn decode_overflow_eb(blob: &[u8]) -> Option<Vec<TxId>> {
             hashes.push(read_hash(&mut dec)?);
         },
     }
-    Some(hashes)
+
+    let eb_hash = blake2b_256(blob);
+    let eb_key = match point {
+        Point::Origin => None,
+        Point::Specific { slot, .. } => {
+            Some(EbKey::new(*slot, eb_hash))
+        },
+    };
+    Some((eb_key, hashes))
 }
 
 /// Encode an endorser-block manifest as the prototype
@@ -87,6 +97,8 @@ mod tests {
     use super::*;
     use crate::blake2b_256;
 
+    const BLANK_POINT: Point = Point::Specific { slot: 0, hash: [0u8; 32] };
+
     #[test]
     fn encode_overflow_eb_is_deterministic() {
         let manifest = vec![
@@ -106,14 +118,14 @@ mod tests {
             TxId::new_with_array([0x20u8; 32]),
         ];
         let data = encode_overflow_eb(&manifest);
-        let hashes = decode_overflow_eb(&data).expect("decode");
+        let (_eb_key, hashes) = decode_overflow_eb(&BLANK_POINT, &data).expect("decode");
         assert_eq!(hashes, manifest);
     }
 
     #[test]
     fn decode_overflow_eb_rejects_garbage() {
-        assert!(decode_overflow_eb(&[0xFF, 0xFF]).is_none());
-        assert!(decode_overflow_eb(&[]).is_none());
+        assert!(decode_overflow_eb(&BLANK_POINT, &[0xFF, 0xFF]).is_none());
+        assert!(decode_overflow_eb(&BLANK_POINT, &[]).is_none());
     }
 
     #[test]
@@ -122,7 +134,7 @@ mod tests {
         // rejected before any reserve/allocation (no panic, no OOM).
         // `bb` = map(uint64 length), followed by 8x 0xff.
         let blob = [0xbb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-        assert!(decode_overflow_eb(&blob).is_none());
+        assert!(decode_overflow_eb(&BLANK_POINT, &blob).is_none());
     }
 
     #[test]

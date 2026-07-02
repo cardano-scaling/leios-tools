@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::chain_tree::{is_better_tip, ChainTree, ChainTreeEntry};
 use crate::fetch::{BlockFetchPolicy, LowestRttFirst, PeerRtt, UniformRtt};
+use crate::mempool::EbKey;
 use crate::peer::PeerId;
 use crate::peer_chain::{PeerChain, PeerChainEntry};
 use crate::types::Point;
@@ -845,12 +846,12 @@ impl PraosState {
         body_bytes: Vec<u8>,
         parsed_header: Option<ParsedHeaderInfo>,
         parsed_body: ParsedBodyInfo,
-    ) -> Vec<PraosEffect> {
+    ) -> (Vec<PraosEffect>, Vec<EbKey>) {
         let mut fx = Vec::new();
         let hash = match &point {
             Point::Specific { hash, .. } => *hash,
             _ => {
-                return fx;
+                return (fx, Vec::new());
             }
         };
         // Dedup.
@@ -858,33 +859,23 @@ impl PraosState {
             || self.validated.contains(&hash)
             || self.in_flight_validation.contains(&hash)
         {
-            return fx;
+            return (fx, Vec::new());
         }
         let header_was_parsed = parsed_header.is_some();
-        let (block_no, slot, prev_hash, announced_eb_hash, announced_eb_size, certified_eb, issuer) =
-            match parsed_header {
-                Some(info) => (
-                    info.block_number,
-                    info.slot,
-                    info.prev_hash,
-                    info.announced_eb_hash,
-                    info.announced_eb_size,
-                    info.certified_eb,
-                    info.issuer,
-                ),
-                None => (
-                    self.chain_tree.block_number(&hash).unwrap_or(0),
-                    match &point {
-                        Point::Specific { slot, .. } => *slot,
-                        _ => 0,
-                    },
-                    self.chain_tree.prev_hash(&hash),
-                    None,
-                    None,
-                    false,
-                    Vec::new(),
-                ),
-            };
+
+        let header = parsed_header.unwrap_or_else(|| ParsedHeaderInfo {
+            block_number: self.chain_tree.block_number(&hash).unwrap_or(0),
+            slot: match &point {
+                Point::Specific { slot, .. } => *slot,
+                _ => 0,
+            },
+            prev_hash: self.chain_tree.prev_hash(&hash),
+            announced_eb_hash: None,
+            announced_eb_size: None,
+            certified_eb: false,
+            issuer: Vec::new(),
+        });
+
         // CIP-0164 certification is signalled two ways: the RB header's
         // `certified_eb` bit, or an `eb_certificate` in the block body. The
         // Leios dev-relay (their bug, 2026-06) leaves the header bit unset but
@@ -893,7 +884,7 @@ impl PraosState {
         // authoritative too, so certification is reflected in the chain tree
         // (UI `*`) and fed to on-chain EB endorsement tracking
         // (`parent_announced_eb_for_cert`).
-        let certified_eb = certified_eb
+        let certified_eb = header.certified_eb
             || parsed_body.eb_certificate.is_some()
             || parsed_body.eb_certificate_pending;
         // CIP-0164 RB-header equivocation tracking — must run on
@@ -901,19 +892,19 @@ impl PraosState {
         // would short-circuit the path).  Honored across both
         // peer-received and self-produced headers; a node that
         // self-produces two headers at the same slot equivocates too.
-        self.note_header_for_equivocation(slot, &issuer, hash);
+        self.note_header_for_equivocation(header.slot, &header.issuer, hash);
         // Insert into chain_tree only when we have a real block_no
         // (parsed header) or, for opaque headers, when fallback metadata
-        // is non-default.  Inserting block_no=0 confuses pruning.
-        if header_was_parsed || block_no > 0 {
+        // is non-default.  Inserting block_number=0 confuses pruning.
+        if header_was_parsed || header.block_number > 0 {
             self.chain_tree.insert(
                 hash,
                 point.clone(),
-                block_no,
-                slot,
-                prev_hash,
+                header.block_number,
+                header.slot,
+                header.prev_hash,
                 parsed_body.tx_count,
-                announced_eb_hash,
+                header.announced_eb_hash,
                 certified_eb,
             );
         }
@@ -929,14 +920,37 @@ impl PraosState {
             hash,
             CachedBlock {
                 point: point.clone(),
-                block_no,
-                prev_hash,
+                block_no: header.block_number,
+                prev_hash: header.prev_hash,
                 header: header_bytes,
                 body: body_bytes,
-                announced_eb_hash,
+                announced_eb_hash: header.announced_eb_hash,
                 certified_eb,
             },
         );
+
+        let mut lx = Vec::new();
+        // TODO: remaining certification variant (eb_certificate_pending)
+        if let Some(cert) = &parsed_body.eb_certificate {
+            lx.push(EbKey {
+                slot: cert.eb_slot,
+                hash: cert.eb_hash,
+            });
+        }
+        else if header.certified_eb {
+            if let Some(prev_hash) = &header.prev_hash {
+                if let Some(announced_eb_key) = self.chain_tree.announced_eb_key_by(prev_hash) {
+                    lx.push(announced_eb_key);
+                }
+                else {
+                    tracing::error!("Point: {point:?}, has certified_eb but prev={prev_hash:?} has no announced_eb");
+                }
+            }
+            else {
+                tracing::error!("Point: {point:?}, has certified_eb but prev_hash is absent");
+            }
+        }
+
         // The block-receive line carries enough of the cached block's
         // shape for an operator to read off the producer's body-path
         // decision: `body_bytes` and `tx_count` describe the inline
@@ -948,7 +962,7 @@ impl PraosState {
             node_id = %self.node_id,
             %point,
             block_hash = %hex32(&hash),
-            block_no,
+            block_no = header.block_number,
             body_bytes = body_bytes_len,
             body_field_count = parsed_body.field_count,
             tx_count = parsed_body.tx_count,
@@ -960,11 +974,11 @@ impl PraosState {
                 .unwrap_or_else(|| "none".to_string()),
             body_cert_pending = parsed_body.eb_certificate_pending,
             body_peras_pending = parsed_body.peras_cert_pending,
-            eb_announced = %announced_eb_hash
+            eb_announced = %header.announced_eb_hash
                 .as_ref()
                 .map(hex32)
                 .unwrap_or_else(|| "none".to_string()),
-            eb_announced_bytes = announced_eb_size.unwrap_or(0),
+            eb_announced_bytes = header.announced_eb_size.unwrap_or(0),
             eb_certified = certified_eb,
             "block received and cached"
         );
@@ -988,11 +1002,11 @@ impl PraosState {
             .highest_tip_block_no
             .saturating_sub(self.security_param_k);
         // (1) Volatile announcer: fetch this block's own announced EB now.
-        if let Some(eb_hash) = announced_eb_hash {
-            if block_no > immutable_max_bn {
+        if let Some(eb_hash) = header.announced_eb_hash {
+            if header.block_number > immutable_max_bn {
                 self.push_eb_fetch(
                     Point::Specific {
-                        slot,
+                        slot: header.slot,
                         hash: eb_hash,
                     },
                     &mut fx,
@@ -1012,7 +1026,7 @@ impl PraosState {
             .map(|c| (c.eb_slot, c.eb_hash))
             .or_else(|| self.parent_announced_eb_for_cert(&point));
         if let Some((eb_slot, eb_hash)) = cert_eb {
-            let announcer_bn = block_no.saturating_sub(1);
+            let announcer_bn = header.block_number.saturating_sub(1);
             if announcer_bn <= immutable_max_bn {
                 self.push_eb_fetch(
                     Point::Specific {
@@ -1024,7 +1038,7 @@ impl PraosState {
             }
         }
         self.try_switch_and_execute_internal(hash, &mut fx);
-        fx
+        (fx, lx)
     }
 
     /// A `BlockFetch` failed for the requested range.  Drop the
@@ -1737,7 +1751,7 @@ impl PraosState {
                 let walk: HashSet<[u8; 32]> = walk_result.chain.iter().copied().collect();
                 let all_on_chain = replay_hashes.iter().all(|h| walk.contains(h));
                 if !all_on_chain {
-                    tracing::debug!(
+                    debug!(
                         node_id = %self.node_id,
                         %peer_id,
                         tip_block_no = candidate_tip.block_no,
@@ -2032,7 +2046,7 @@ impl PraosState {
                     self.queued_validator_tip = Some(parent_hash);
                 } else {
                     let hex = |h: &[u8; 32]| format!("{:02x}{:02x}", h[30], h[31]);
-                    tracing::debug!(
+                    debug!(
                         node_id = %self.node_id,
                         parent = hex(&parent_hash),
                         queued_tip = self
@@ -2880,14 +2894,14 @@ mod tests {
     fn on_block_received_dedups_via_cache() {
         let mut s = fresh();
         install_validated_block(&mut s, 100, 1, 1, None);
-        let fx = s.on_block_received(pt(100, 1), vec![], vec![], None, ParsedBodyInfo::default());
+        let (fx, _lx) = s.on_block_received(pt(100, 1), vec![], vec![], None, ParsedBodyInfo::default());
         assert!(fx.is_empty());
     }
 
     #[test]
     fn on_block_received_origin_point_is_noop() {
         let mut s = fresh();
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             Point::Origin,
             vec![],
             vec![],
@@ -2900,7 +2914,7 @@ mod tests {
     #[test]
     fn on_block_received_inserts_and_emits_validator_apply() {
         let mut s = fresh();
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(100, 1),
             vec![0xAA],
             vec![0xBB],
@@ -2927,7 +2941,7 @@ mod tests {
         let eb_hash = [0xEE; 32];
         let mut info = hi(2, 101, Some(1));
         info.announced_eb_hash = Some(eb_hash);
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(101, 2),
             vec![0xAA],
             vec![0xBB],
@@ -2960,7 +2974,7 @@ mod tests {
         let mut s = fresh();
         let pid = PeerId(7);
         s.record_peer_tip(pid, pt(101, 2), 2, 2, h(2), 101, Some(h(1)));
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(101, 2),
             vec![0xAA],
             vec![0xBB],
@@ -2985,7 +2999,7 @@ mod tests {
 
         let mut info = hi(500, 5000, None);
         info.announced_eb_hash = Some([0xEE; 32]); // announces, but not certified
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(5000, 5),
             vec![0xAA],
             vec![0xBB],
@@ -3012,7 +3026,7 @@ mod tests {
         let eb_p = [0xEE; 32];
         let mut p_info = hi(500, 5000, None);
         p_info.announced_eb_hash = Some(eb_p);
-        let fx_p = s.on_block_received(
+        let (fx_p, _lx_p) = s.on_block_received(
             pt(5000, 1),
             vec![0xAA],
             vec![0xBB],
@@ -3029,7 +3043,7 @@ mod tests {
         // C (child of P) certifies P's announced EB.
         let mut c_info = hi(501, 5001, Some(1)); // prev = P (h(1))
         c_info.certified_eb = true;
-        let fx_c = s.on_block_received(
+        let (fx_c, _lx_c) = s.on_block_received(
             pt(5001, 2),
             vec![0xAA],
             vec![0xBB],
@@ -3072,7 +3086,7 @@ mod tests {
         // Certifier at block 501 (announcer bn 500 <= immutable_max 900), with
         // NO parent cached. prev_hash is irrelevant: the body cert resolves the
         // EB directly, short-circuiting the parent-announced fallback.
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(5001, 2),
             vec![0xAA],
             vec![0xBB],
@@ -3096,7 +3110,7 @@ mod tests {
     #[test]
     fn on_block_received_opaque_header_no_chain_tree_insert() {
         let mut s = fresh();
-        let fx = s.on_block_received(
+        let (fx, _lx) = s.on_block_received(
             pt(100, 1),
             vec![0xAA],
             vec![0xBB],

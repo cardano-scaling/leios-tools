@@ -1765,7 +1765,7 @@ impl SharedConsensus {
         // Sim doesn't model the per-peer LeiosNotify source filter, so
         // pass None — the resulting RecordLeiosEbManifest effect is a
         // no-op in sim's dispatcher anyway.
-        let _ = self.leios.on_eb_received(None, point, Some(manifest));
+        let _ = self.leios.on_eb_received(None, point, Some((Some(EbKey::new(eb_id.slot, eb_hash)), manifest)));
     }
 
     /// Wire an EB (locally produced or peer-received) into
@@ -1929,7 +1929,7 @@ impl SharedConsensus {
             tx_count: rb.transactions.len() as u32,
             ..Default::default()
         };
-        let fx =
+        let (fx, _lx) =
             self.praos
                 .on_block_received(point, Vec::new(), Vec::new(), Some(parsed), parsed_body);
         self.dispatch_praos_effects(out, fx);
@@ -1943,13 +1943,15 @@ impl SharedConsensus {
     fn finish_applying_rb(&mut self, out: &mut EventResult, rb: Arc<LinearRankingBlock>) {
         let id = rb.header.id;
         let point = block_id_to_point(id);
+        let eb_hash = rb.header.eb_announcement.map(|eb| synthesize_eb_hash(eb));
+        let eb_key = eb_hash.map(|eh| EbKey::new(id.slot, eh));
         let now = self.instant_now();
         let fx = self.praos.on_block_applied(point, now);
         self.dispatch_praos_effects(out, fx);
         // Drop tx_arcs entries that are now on-chain so the mempool
         // accounting doesn't carry phantom references.
         let ids_on_chain: Vec<TxId> = rb.transactions.iter().map(|tx| tx_id_for(tx.id)).collect();
-        self.mempool.on_block_applied(&ids_on_chain);
+        self.mempool.on_block_applied(&eb_key, &ids_on_chain);
         for id in &ids_on_chain {
             self.tx_arcs.remove(id);
             self.announced_or_known.remove(id);
@@ -1995,7 +1997,9 @@ impl SharedConsensus {
     /// aren't currently held are silently skipped.
     fn drain_endorsed_eb(&mut self, eb: &LinearEndorserBlock) {
         let tx_ids: Vec<TxId> = eb.txs.iter().map(|tx| tx_id_for(tx.id)).collect();
-        self.mempool.on_block_applied(&tx_ids);
+        let eb_hash = synthesize_eb_hash(eb.id());
+        let eb_key = EbKey::new(eb.slot, eb_hash);
+        self.mempool.on_block_applied(&Some(eb_key), &tx_ids);
         for id in &tx_ids {
             self.tx_arcs.remove(id);
             self.announced_or_known.remove(id);

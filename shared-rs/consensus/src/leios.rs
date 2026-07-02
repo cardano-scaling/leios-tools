@@ -33,7 +33,7 @@ use crate::elections::{Elections, SlotEffect};
 use crate::fetch::{
     CandidateTracker, EbFetchPolicy, EbTxsFetchPolicy, LowestRttFirst, PeerRtt, UniformRtt,
 };
-use crate::mempool::{TxBody, TxId};
+use crate::mempool::{EbKey, TxBody, TxId};
 use crate::peer::PeerId;
 use crate::pipeline::PipelineConfig;
 use crate::types::Point;
@@ -222,6 +222,7 @@ pub enum LeiosEffect {
     RecordLeiosEbManifest {
         source: Option<PeerId>,
         point: Point,
+        eb_key: Option<EbKey>,
         tx_hashes: Vec<TxId>,
     },
 
@@ -899,7 +900,7 @@ impl LeiosState {
         &mut self,
         source: Option<PeerId>,
         point: Point,
-        manifest_hashes: Option<Vec<TxId>>,
+        manifest_hashes: Option<(Option<EbKey>, Vec<TxId>)>,
     ) -> Vec<LeiosEffect> {
         // EB-processing filter (t22 with `hide_eb_tx`): drop manifest + validate
         // processing for a filtered EB.
@@ -909,12 +910,13 @@ impl LeiosState {
         }
         self.in_flight.remove(&point);
         let mut fx = Vec::new();
-        if let (Some(hashes), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
-            self.eb_tx_hashes.insert(*hash, (*slot, hashes.clone()));
+        if let (Some((eb_key, tx_hashes)), Point::Specific { slot, hash }) = (manifest_hashes, &point) {
+            self.eb_tx_hashes.insert(*hash, (*slot, tx_hashes.clone()));
             fx.push(LeiosEffect::RecordLeiosEbManifest {
                 source,
                 point: point.clone(),
-                tx_hashes: hashes,
+                eb_key,
+                tx_hashes,
             });
         }
         fx.push(LeiosEffect::ValidateEb { point });
@@ -1568,7 +1570,7 @@ mod tests {
     fn on_eb_received_emits_record_and_validate() {
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(0), pipeline());
         let manifest = vec![tx_id(0xA0), tx_id(0xA1)];
-        let fx = state.on_eb_received(None, point(10, 1), Some(manifest.clone()));
+        let fx = state.on_eb_received(None, point(10, 1), Some((None, manifest.clone())));
         assert_eq!(fx.len(), 2);
         assert!(matches!(fx[0], LeiosEffect::RecordLeiosEbManifest { .. }));
         assert!(matches!(fx[1], LeiosEffect::ValidateEb { .. }));
@@ -1634,7 +1636,7 @@ mod tests {
         // hide_eb_tx + filtered (threshold 0) => on_eb_received produces nothing.
         let mut state = LeiosState::new("n0".into(), elections_for("n0"), cfg(1), pipeline());
         with_tx_filter(&mut state, 0, 0, true);
-        let fx = state.on_eb_received(None, point(10, 1), Some(vec![tx_id(0xA0)]));
+        let fx = state.on_eb_received(None, point(10, 1), Some((None, vec![tx_id(0xA0)])));
         assert!(fx.is_empty());
     }
 
