@@ -122,7 +122,13 @@ pub struct PeerInfo {
 }
 
 /// Commands sent from the application to the coordinator.
+///
+/// `#[non_exhaustive]`: new command variants are added as the protocol
+/// grows (e.g. `SetPeerBlocklist`), so downstream matches must carry a
+/// wildcard arm rather than enumerate every variant — keeps adding a
+/// variant a non-breaking change.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NetworkCommand {
     /// Add a peer by address. The coordinator will connect and manage it.
     AddPeer { address: String },
@@ -214,6 +220,16 @@ pub enum NetworkCommand {
     /// `DropInboundPeers` behaviour to mimic a relay that resets
     /// inbound connections (the reconnect-handover trigger).
     DropInboundPeers,
+
+    /// Replace this node's outbound peer blocklist (full replace; an
+    /// empty set heals).  While an address is blocklisted the
+    /// coordinator refuses to dial it (`AddPeer` and peer discovery),
+    /// parks any pending reconnection to it, and disconnects it if it is
+    /// currently connected.  Because a duplex connection carries both
+    /// directions over a single socket, dropping the dialing side cuts
+    /// the link in both directions — this is the enforcement primitive
+    /// behind cluster-driven network partitions.
+    SetPeerBlocklist { addresses: Vec<String> },
 
     /// Shut down all peers and stop the coordinator.
     Shutdown,
