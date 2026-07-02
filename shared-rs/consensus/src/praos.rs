@@ -283,6 +283,14 @@ pub struct PraosState {
     /// Throttle for the stuck-rollup WARN: the timestamp of the most
     /// recent emission.  Compared against [`STUCK_WARNING_INTERVAL`].
     pub last_stuck_warning_at: Option<Instant>,
+    /// When a strictly-better peer tip first became available while we were
+    /// not advancing.  `None` whenever no peer is ahead of us, and reset on
+    /// every successful apply (progress).  The "chain stuck" WARN measures
+    /// from here rather than from `last_validated_at`, so a normal
+    /// block-production gap — where no better tip exists, or one appears and
+    /// we fetch it promptly — never trips it; only a better tip that sits
+    /// unadopted does.
+    pub better_tip_since: Option<Instant>,
     /// Per-peer throttle for the ChainSync ingress-time non-contiguous
     /// header WARN.  Compared against [`GAP_WARNING_INTERVAL`].
     pub last_gap_warning_at: BTreeMap<PeerId, Instant>,
@@ -379,6 +387,7 @@ impl PraosState {
             last_validated_tip: None,
             last_validated_at: None,
             last_stuck_warning_at: None,
+            better_tip_since: None,
             last_gap_warning_at: BTreeMap::new(),
             header_first_seen: BTreeMap::new(),
             authentic_headers: BTreeMap::new(),
@@ -1203,6 +1212,9 @@ impl PraosState {
         self.validated.insert(hash);
         self.last_validated_tip = Some(hash);
         self.last_validated_at = Some(now);
+        // We made progress — re-arm the stuck timer. If a peer is still
+        // ahead, the next evaluation restarts the clock from now.
+        self.better_tip_since = None;
         info!(
             node_id = %self.node_id,
             %point,
@@ -1420,26 +1432,90 @@ impl PraosState {
     ///
     /// - we've validated at least one block (otherwise we're still
     ///   booting, not stuck),
-    /// - validation has been frozen for [`STUCK_THRESHOLD`] or longer,
-    /// - the throttle ([`STUCK_WARNING_INTERVAL`]) has elapsed since the
-    ///   last emission, and
     /// - some peer announces a strictly-better tip than the one we've
-    ///   adopted (otherwise there's nothing to be stuck on).
+    ///   adopted (otherwise there's nothing to be stuck on), *and that tip
+    ///   has stayed available and unadopted* for [`STUCK_THRESHOLD`] or
+    ///   longer, and
+    /// - the throttle ([`STUCK_WARNING_INTERVAL`]) has elapsed since the
+    ///   last emission.
     ///
-    /// The diagnostic counts how many entries in that peer's announced
+    /// The "stuck for" clock runs from [`Self::better_tip_since`] — set the
+    /// first time a better tip is seen unadopted, cleared on every apply
+    /// (progress) and whenever no peer is ahead.  Measuring from there
+    /// rather than from `last_validated_at` is deliberate: at low block
+    /// rates the gap between blocks is exponentially distributed and
+    /// routinely exceeds the threshold, so a time-since-validation trigger
+    /// cries wolf on every long *production* gap (there was simply no block
+    /// to adopt).  A better tip that sits unadopted while we make no
+    /// progress is the real wedge signal.
+    ///
+    /// The diagnostic also counts how many entries in that peer's announced
     /// replay carry a `prev_hash` we don't have locally (neither in
-    /// `chain_tree` nor in `block_cache`).  A nonzero count means the
-    /// peer's chain has parents we never received — typically because
-    /// ChainSync skipped their headers and BlockFetch range requests
-    /// don't include them either.  In a healthy interop that count is
-    /// zero; a steady nonzero count points the operator at an upstream
-    /// chain inconsistency rather than at a local consensus bug.
+    /// `chain_tree` nor in `block_cache`) — a nonzero count means the peer's
+    /// chain has parents we never received (gappy forwarding); a zero count
+    /// with a persistent warning points instead at a fetch/selection stall
+    /// for a tip whose ancestry we do hold.
     fn maybe_emit_stuck_warning(&mut self, now: Instant) {
-        let last_validated_at = match self.last_validated_at {
-            Some(t) => t,
-            None => return,
+        if self.last_validated_at.is_none() {
+            return;
+        }
+        let our_block_no = self
+            .adopted_tip_hash
+            .and_then(|h| self.chain_tree.block_number(&h))
+            .unwrap_or(0);
+        // Pick the peer with the highest announced tip strictly above ours
+        // (ties broken by PeerId for a stable choice) and gather its
+        // diagnostics as owned values, releasing the `peer_chains` borrow
+        // before we touch `better_tip_since`.
+        //
+        // "Unreachable" means we have no record of the parent anywhere in
+        // our local view — the whole `chain_tree` (every fork we've heard
+        // of, not just adopted ancestry) plus `block_cache` (fetched bodies
+        // not yet in the tree).  Restricting to adopted ancestors would
+        // false-positive whenever the peer forks off a branch we hold but
+        // haven't adopted.
+        let diag = {
+            let best = self
+                .peer_chains
+                .iter()
+                .filter_map(|(pid, chain)| {
+                    chain.iter().next_back().map(|e| (*pid, e.block_no, chain))
+                })
+                .filter(|(_, bn, _)| *bn > our_block_no)
+                .max_by_key(|(pid, bn, _)| (*bn, *pid));
+            best.map(|(peer_id, peer_tip_block_no, peer_chain)| {
+                let unreachable_parents = peer_chain
+                    .iter()
+                    .filter(|e| match e.prev_hash {
+                        Some(p) => {
+                            self.chain_tree.block_number(&p).is_none()
+                                && !self.block_cache.contains_key(&p)
+                        }
+                        None => false,
+                    })
+                    .count();
+                (
+                    peer_id,
+                    peer_tip_block_no,
+                    unreachable_parents,
+                    peer_chain.iter().count(),
+                )
+            })
         };
-        let stuck_for = now.saturating_duration_since(last_validated_at);
+        let (peer_id, peer_tip_block_no, unreachable_parents, peer_chain_len) = match diag {
+            Some(d) => d,
+            None => {
+                // No peer is ahead of us: we're at the tip of everything we
+                // know, not stuck.  Re-arm the clock.
+                self.better_tip_since = None;
+                return;
+            }
+        };
+        // A strictly-better tip is available.  Start (or continue) the clock;
+        // it's reset on every apply, so this measures "behind AND making no
+        // progress", which a normal production gap never sustains.
+        let since = *self.better_tip_since.get_or_insert(now);
+        let stuck_for = now.saturating_duration_since(since);
         if stuck_for < STUCK_THRESHOLD {
             return;
         }
@@ -1448,39 +1524,6 @@ impl PraosState {
                 return;
             }
         }
-        let our_block_no = self
-            .adopted_tip_hash
-            .and_then(|h| self.chain_tree.block_number(&h))
-            .unwrap_or(0);
-        // Pick the peer with the highest announced tip strictly above
-        // ours.  Ties broken by PeerId order so the choice is stable
-        // across calls; the warning is informational, not load-bearing.
-        let best = self
-            .peer_chains
-            .iter()
-            .filter_map(|(pid, chain)| chain.iter().next_back().map(|e| (*pid, e.block_no, chain)))
-            .filter(|(_, bn, _)| *bn > our_block_no)
-            .max_by_key(|(pid, bn, _)| (*bn, *pid));
-        let (peer_id, peer_tip_block_no, peer_chain) = match best {
-            Some(b) => b,
-            None => return,
-        };
-        // "Unreachable" means we have no record of the parent at all,
-        // anywhere in our local view of the network's chain.  Check the
-        // whole `chain_tree` (every fork we've heard of, not just our
-        // adopted ancestry) plus `block_cache` (fetched bodies not yet in
-        // the tree).  Restricting to adopted-tip ancestors here would
-        // false-positive whenever the peer's chain forks off into a
-        // branch we hold but haven't adopted.
-        let unreachable_parents = peer_chain
-            .iter()
-            .filter(|e| match e.prev_hash {
-                Some(p) => {
-                    self.chain_tree.block_number(&p).is_none() && !self.block_cache.contains_key(&p)
-                }
-                None => false,
-            })
-            .count();
         warn!(
             node_id = %self.node_id,
             stuck_secs = stuck_for.as_secs(),
@@ -1488,8 +1531,8 @@ impl PraosState {
             %peer_id,
             peer_tip_block_no,
             unreachable_parent_hashes = unreachable_parents,
-            peer_chain_len = peer_chain.iter().count(),
-            "chain stuck: best peer offers a strictly-better tip but its replay has parent hashes we never received — likely upstream chain inconsistency (gappy ChainSync forwarding)"
+            peer_chain_len,
+            "chain stuck: a strictly-better tip has stayed available but unadopted while we made no progress (not just waiting on block production)"
         );
         self.last_stuck_warning_at = Some(now);
     }
@@ -2456,6 +2499,52 @@ mod tests {
         s.record_peer_disconnected(pid);
         assert!(!s.peer_chains.contains_key(&pid));
         assert!(!s.orphan_cooldown.contains_key(&pid));
+    }
+
+    #[test]
+    fn stuck_warning_ignores_production_gaps_and_fires_only_on_sustained_unadopted_tip() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        // We have adopted block 5.
+        install_validated_block(&mut s, 105, 5, 5, Some(4));
+        s.adopted_tip_hash = Some(h(5));
+        s.last_validated_at = Some(t0);
+
+        // A long production gap: no peer is ahead of us. Even well past the
+        // threshold we are not "stuck" — there is simply no block to adopt.
+        let gap = t0 + STUCK_THRESHOLD + Duration::from_secs(60);
+        s.maybe_emit_stuck_warning(gap);
+        assert!(s.last_stuck_warning_at.is_none());
+        assert!(s.better_tip_since.is_none());
+
+        // Block 6 is now produced and a peer announces it — long after our
+        // last validation. The old time-since-validation trigger would fire
+        // here on the production gap alone; the new one must not, because the
+        // better tip has only just become available.
+        s.record_peer_tip(PeerId(7), pt(106, 6), 6, 6, h(6), 106, Some(h(5)));
+        s.maybe_emit_stuck_warning(gap);
+        assert_eq!(
+            s.better_tip_since,
+            Some(gap),
+            "clock starts when the better tip first appears"
+        );
+        assert!(
+            s.last_stuck_warning_at.is_none(),
+            "a freshly-announced better tip is not a wedge"
+        );
+
+        // The same tip is still unadopted a threshold later -> genuine wedge.
+        let wedged = gap + STUCK_THRESHOLD + Duration::from_secs(1);
+        s.maybe_emit_stuck_warning(wedged);
+        assert_eq!(s.last_stuck_warning_at, Some(wedged));
+
+        // Progress re-arms the clock: an apply clears better_tip_since, so a
+        // still-ahead peer restarts the countdown rather than warning again.
+        s.better_tip_since = None; // on_block_applied does this on every apply
+        s.last_stuck_warning_at = None;
+        s.maybe_emit_stuck_warning(wedged + Duration::from_secs(1));
+        assert_eq!(s.better_tip_since, Some(wedged + Duration::from_secs(1)));
+        assert!(s.last_stuck_warning_at.is_none());
     }
 
     // -- CIP-0164 RB-header equivocation detection ----------------------

@@ -4,9 +4,12 @@
 //! reading from an `Arc<ChainStore>` for chain state and sending
 //! events to the coordinator via an `mpsc` channel.
 
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
+
+use shared_consensus::mempool::TxId;
 
 use shared_consensus::behaviour::actions::equivocation_bucket;
 use shared_consensus::behaviour::tree::control::OutboundControl;
@@ -481,15 +484,154 @@ pub async fn serve_keepalive(
     );
 }
 
+/// Node-wide dedup of transaction ids already fetched from some peer.
+///
+/// TxSubmission is a pull protocol: every peer independently offers the
+/// transactions in its own mempool, so the same tx is announced to us by
+/// each peer that holds it. Without dedup we fetch that body — and, in the
+/// consumer, Blake2b-hash it to recover its id — once per peer that offers
+/// it: a `degree`× amplification of both bandwidth and hashing that
+/// dominates CPU under load. This set is shared across all of a node's
+/// tx-submission peer tasks; an id seen here has already been requested
+/// from someone, so later offers are acknowledged (to keep the pull
+/// window flowing) but not re-fetched.
+///
+/// Ids have no slot to prune by (unlike the Leios offer dedup), so the set
+/// is bounded by insertion order: the oldest id is evicted once `cap` is
+/// reached. `cap` should comfortably exceed the number of distinct
+/// in-flight txs across the acknowledgement windows of all peers.
+pub struct TxDedup {
+    seen: HashSet<TxId>,
+    order: VecDeque<TxId>,
+    cap: usize,
+}
+
+impl TxDedup {
+    /// Create a dedup set holding at most `cap` recent ids.
+    pub fn new(cap: usize) -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Record `id`. Returns `true` if it was not seen before (the caller
+    /// should fetch it), `false` if it is a duplicate (skip the fetch).
+    pub fn insert_fresh(&mut self, id: &TxId) -> bool {
+        if self.seen.contains(id) {
+            return false;
+        }
+        self.seen.insert(id.clone());
+        self.order.push_back(id.clone());
+        if self.order.len() > self.cap {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
+        }
+        true
+    }
+}
+
+/// Filter announced ids through the shared dedup, request bodies for only
+/// the fresh ones, and forward them to the coordinator.
+///
+/// Returns `Some(ack)` where `ack` is the number of ids to acknowledge on
+/// the next `MsgRequestTxIds` — always the full received count, because
+/// acknowledgement advances the peer's pull window and is independent of
+/// which bodies we chose to fetch (a consumer is free to ack a tx it
+/// already has without re-downloading it). Returns `None` if the
+/// connection should terminate.
+async fn fetch_fresh_txs(
+    runner: &mut Runner<TxSubmission>,
+    tx_dedup: &Arc<Mutex<TxDedup>>,
+    tx_ids: Vec<txsubmission::TxIdAndSize>,
+    peer_id: PeerId,
+    event_sender: &mpsc::Sender<(PeerId, PeerEvent)>,
+) -> Option<usize> {
+    let count = tx_ids.len();
+    // Fresh-filter under the lock; a poisoned lock falls back to
+    // requesting everything (correct, just un-deduped).
+    let fresh: Vec<txsubmission::EraTxId> = match tx_dedup.lock() {
+        Ok(mut dedup) => tx_ids
+            .into_iter()
+            .filter(|t| dedup.insert_fresh(&t.tx_id))
+            .map(|t| txsubmission::EraTxId {
+                era: t.era,
+                tx_id: t.tx_id,
+            })
+            .collect(),
+        Err(_) => tx_ids
+            .into_iter()
+            .map(|t| txsubmission::EraTxId {
+                era: t.era,
+                tx_id: t.tx_id,
+            })
+            .collect(),
+    };
+    let skipped = count - fresh.len();
+
+    if fresh.is_empty() {
+        // Everything was a duplicate — ack the batch, request no bodies.
+        if skipped > 0 {
+            tracing::debug!(
+                peer = peer_id.0,
+                skipped,
+                "txsubmission: all announced txs already known, skipping fetch"
+            );
+        }
+        return Some(count);
+    }
+
+    runner.send(&TsMsg::MsgRequestTxs { tx_ids: fresh }).await.ok();
+    match runner.recv().await {
+        Ok(TsMsg::MsgReplyTxs { txs }) => {
+            for tx in &txs {
+                let _ = event_sender
+                    .send((peer_id, PeerEvent::TransactionReceived { body: tx.clone() }))
+                    .await;
+            }
+            if skipped > 0 {
+                tracing::debug!(
+                    peer = peer_id.0,
+                    skipped,
+                    fetched = txs.len(),
+                    "txsubmission: deduped announced txs"
+                );
+            }
+            Some(count)
+        }
+        Ok(other) => {
+            tracing::warn!(
+                peer = peer_id.0,
+                ?other,
+                "txsubmission: unexpected message awaiting MsgReplyTxs, exiting"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                peer = peer_id.0,
+                err = %e,
+                "txsubmission: recv MsgReplyTxs failed"
+            );
+            None
+        }
+    }
+}
+
 /// Serve TxSubmission for one connection (transaction consumer).
 ///
 /// Pulls transactions from the client and forwards them as
-/// `PeerEvent::TransactionReceived` to the coordinator.
+/// `PeerEvent::TransactionReceived` to the coordinator. `tx_dedup` is the
+/// node-wide seen-set (shared across all peers) that suppresses re-fetching
+/// a tx already pulled from another peer; see [`TxDedup`].
 pub async fn serve_txsubmission(
     ts_send: CodecSend,
     ts_recv: CodecRecv,
     peer_id: PeerId,
     event_sender: mpsc::Sender<(PeerId, PeerEvent)>,
+    tx_dedup: Arc<Mutex<TxDedup>>,
 ) {
     let mut runner = Runner::<TxSubmission>::new(Role::Server, ts_send, ts_recv);
 
@@ -581,43 +723,17 @@ pub async fn serve_txsubmission(
                     match msg {
                         TsMsg::MsgDone => break,
                         TsMsg::MsgReplyTxIds { tx_ids } if !tx_ids.is_empty() => {
-                            let ids: Vec<_> = tx_ids
-                                .into_iter()
-                                .map(|t| txsubmission::EraTxId {
-                                    era: t.era,
-                                    tx_id: t.tx_id,
-                                })
-                                .collect();
-                            let count = ids.len();
-                            runner
-                                .send(&TsMsg::MsgRequestTxs { tx_ids: ids })
-                                .await
-                                .ok();
-
-                            let msg = match runner.recv().await {
-                                Ok(msg) => msg,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        peer = peer_id.0,
-                                        err = %e,
-                                        "txsubmission: recv MsgReplyTxs failed (retry path)"
-                                    );
-                                    break;
-                                }
-                            };
-                            match msg {
-                                TsMsg::MsgReplyTxs { txs } => {
-                                    for tx in &txs {
-                                        let _ = event_sender
-                                            .send((
-                                                peer_id,
-                                                PeerEvent::TransactionReceived { body: tx.clone() },
-                                            ))
-                                            .await;
-                                    }
-                                    outstanding = count;
-                                }
-                                _ => break,
+                            match fetch_fresh_txs(
+                                &mut runner,
+                                &tx_dedup,
+                                tx_ids,
+                                peer_id,
+                                &event_sender,
+                            )
+                            .await
+                            {
+                                Some(ack) => outstanding = ack,
+                                None => break,
                             }
                         }
                         _ => break,
@@ -625,50 +741,11 @@ pub async fn serve_txsubmission(
                     continue;
                 }
 
-                let ids: Vec<_> = tx_ids
-                    .into_iter()
-                    .map(|t| txsubmission::EraTxId {
-                        era: t.era,
-                        tx_id: t.tx_id,
-                    })
-                    .collect();
-                let count = ids.len();
-                runner
-                    .send(&TsMsg::MsgRequestTxs { tx_ids: ids })
+                match fetch_fresh_txs(&mut runner, &tx_dedup, tx_ids, peer_id, &event_sender)
                     .await
-                    .ok();
-
-                let msg = match runner.recv().await {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        tracing::warn!(
-                            peer = peer_id.0,
-                            err = %e,
-                            "txsubmission: recv MsgReplyTxs failed"
-                        );
-                        break;
-                    }
-                };
-                match msg {
-                    TsMsg::MsgReplyTxs { txs } => {
-                        for tx in &txs {
-                            let _ = event_sender
-                                .send((
-                                    peer_id,
-                                    PeerEvent::TransactionReceived { body: tx.clone() },
-                                ))
-                                .await;
-                        }
-                        outstanding = count;
-                    }
-                    other => {
-                        tracing::warn!(
-                            peer = peer_id.0,
-                            ?other,
-                            "txsubmission: unexpected message awaiting MsgReplyTxs, exiting"
-                        );
-                        break;
-                    }
+                {
+                    Some(ack) => outstanding = ack,
+                    None => break,
                 }
             }
             TsMsg::MsgDone => break,
@@ -1068,6 +1145,35 @@ pub async fn serve_leios_fetch(
 mod tests {
     use super::*;
     use shared_consensus::mempool::{TxBody, TxId};
+
+    fn txid(b: u8) -> TxId {
+        TxId::new_with_array([b; 32])
+    }
+
+    #[test]
+    fn tx_dedup_first_sight_is_fresh_repeat_is_not() {
+        let mut d = TxDedup::new(16);
+        assert!(d.insert_fresh(&txid(1)), "first sight of an id is fresh");
+        assert!(!d.insert_fresh(&txid(1)), "second sight is a duplicate");
+        assert!(d.insert_fresh(&txid(2)), "a different id is fresh");
+        assert!(!d.insert_fresh(&txid(2)));
+    }
+
+    #[test]
+    fn tx_dedup_evicts_oldest_beyond_cap() {
+        // cap=2: inserting a third id evicts the first, so it reads as
+        // fresh again while the most-recent two are still remembered.
+        let mut d = TxDedup::new(2);
+        assert!(d.insert_fresh(&txid(1)));
+        assert!(d.insert_fresh(&txid(2)));
+        assert!(d.insert_fresh(&txid(3))); // evicts id 1
+        assert!(!d.insert_fresh(&txid(3)), "just-inserted id is remembered");
+        assert!(!d.insert_fresh(&txid(2)), "id 2 still within cap");
+        assert!(
+            d.insert_fresh(&txid(1)),
+            "id 1 was evicted, so it is fresh again"
+        );
+    }
 
     /// Build an `OutboundControls` carrying a fixed control signal (and an empty
     /// variant store) for the outbound-actuator tests. The returned sender is

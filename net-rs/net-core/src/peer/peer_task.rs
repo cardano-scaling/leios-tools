@@ -1368,6 +1368,9 @@ mod tests {
             server_recv,
             server_peer_id,
             server_event_tx,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                super::super::server_handlers::TxDedup::new(1024),
+            )),
         ));
 
         // Client side: spawn_txsubmission with a tx channel.

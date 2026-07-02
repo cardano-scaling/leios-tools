@@ -5,7 +5,7 @@
 //! handlers from `server_handlers` on one mux, using `connect_duplex()`
 //! or `accept_duplex()` for connection setup.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -47,6 +47,9 @@ pub(crate) struct DuplexTaskConfig {
     /// Optional behaviour handle consulted by the ChainSync server's
     /// per-peer RB-header advertisement.  `None` = no transform.
     pub outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
+    /// Node-wide tx-submission dedup set, shared across all peers so a tx
+    /// pulled from one peer isn't re-fetched from every other.
+    pub tx_dedup: Arc<Mutex<crate::peer::server_handlers::TxDedup>>,
 }
 
 /// Configuration for a duplex peer task from an already-accepted connection.
@@ -62,6 +65,8 @@ pub(crate) struct AcceptedDuplexTaskConfig {
     pub leios_store: Option<Arc<LeiosStore>>,
     /// See [`DuplexTaskConfig::outbound_controls`].
     pub outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
+    /// See [`DuplexTaskConfig::tx_dedup`].
+    pub tx_dedup: Arc<Mutex<crate::peer::server_handlers::TxDedup>>,
 }
 
 /// Run a duplex peer task. Connects outbound, then runs both client and
@@ -139,6 +144,7 @@ pub(crate) async fn run_duplex_task(config: DuplexTaskConfig) {
             command_receiver: config.command_receiver,
             outbound_controls: config.outbound_controls,
             downstream,
+            tx_dedup: config.tx_dedup,
         },
     )
     .await;
@@ -174,6 +180,7 @@ pub(crate) async fn run_accepted_duplex_task(config: AcceptedDuplexTaskConfig) {
             command_receiver: config.command_receiver,
             outbound_controls: config.outbound_controls,
             downstream,
+            tx_dedup: config.tx_dedup,
         },
     )
     .await;
@@ -191,6 +198,7 @@ struct DuplexProtocolParams {
     command_receiver: mpsc::Receiver<PeerCommand>,
     outbound_controls: Option<crate::peer::server_handlers::OutboundControls>,
     downstream: super::DownstreamFlag,
+    tx_dedup: Arc<Mutex<crate::peer::server_handlers::TxDedup>>,
 }
 
 /// Shared protocol wiring for duplex connections (both outbound and accepted).
@@ -206,6 +214,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         mut command_receiver,
         outbound_controls,
         downstream,
+        tx_dedup,
     } = params;
     // --- Initiator (client) sub-tasks ---
     let mut init_channels = conn.initiator_channels.into_iter();
@@ -313,6 +322,7 @@ async fn run_duplex_protocols(conn: DuplexConnection, params: DuplexProtocolPara
         ts_srv_recv,
         peer_id,
         event_sender.clone(),
+        tx_dedup.clone(),
     ));
     let ps_server = tokio::spawn(server_handlers::serve_peersharing(
         ps_srv_send,
