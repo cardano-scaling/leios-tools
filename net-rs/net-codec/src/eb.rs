@@ -66,14 +66,12 @@ pub fn decode_overflow_eb(point: &Point, blob: &[u8]) -> Option<(Option<EbKey>, 
             hashes.push(read_hash(&mut dec)?);
         },
     }
-    
+
     let eb_hash = blake2b_256(blob);
     let eb_key = match point {
         Point::Origin => None,
         Point::Specific { slot, .. } => {
-            let eb_key = EbKey::new(*slot, eb_hash);
-            tracing::info!("decoded overflow EB manifest: eb_key={eb_key}");
-            Some(eb_key)
+            Some(EbKey::new(*slot, eb_hash))
         },
     };
     Some((eb_key, hashes))
