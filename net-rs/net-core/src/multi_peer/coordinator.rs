@@ -1104,16 +1104,14 @@ impl Coordinator {
         self.reconnect_queue = still_pending;
 
         for (address, next_backoff) in ready {
-            if self.blocklist.contains(&address) {
+            if self.blocklist.contains(&address) || (self.peers.len() >= self.config.max_peers) {
                 // Active partition: park the reconnection instead of dropping
-                // it.  Re-queued at the same (un-escalated) backoff so it
+                // it. Re-queued at the same (un-escalated) backoff so it
                 // keeps the link cut while blocklisted and reconnects on its
                 // own once the blocklist is cleared (heal) — no separate
                 // bookkeeping needed.
-                self.reconnect_queue
-                    .push((address, Instant::now() + next_backoff, next_backoff));
-            } else if self.peers.len() >= self.config.max_peers {
-                // Re-queue — we're at capacity.
+                // OR
+                // Re-queued at the same un-escalated backoff either way.
                 self.reconnect_queue
                     .push((address, Instant::now() + next_backoff, next_backoff));
             } else {
